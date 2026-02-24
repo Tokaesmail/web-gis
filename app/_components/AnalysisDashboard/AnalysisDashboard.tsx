@@ -42,7 +42,7 @@ export default function AnalysisDashboard({
   return (
     <div
       className={`
-        absolute bottom-0 left-0 right-0 z-1000
+        absolute bottom-0 left-0 right-0 z-[1050]
         transition-transform duration-400 ease-in-out
         ${visible ? "translate-y-0" : "translate-y-full"}
       `}

@@ -90,7 +90,7 @@ export default function AIAssistant({ open, onClose }: AIAssistantProps) {
     <>
       {/* Backdrop */}
       {open && (
-        <div className="fixed inset-0 z-1000" onClick={onClose} />
+        <div className="fixed inset-0 z-30" onClick={onClose} />
       )}
 
       {/* Panel */}
