@@ -148,7 +148,7 @@ function MapSearch({ onFlyTo }: { onFlyTo: (lat: number, lng: number) => void })
         <input ref={inputRef} value={query} onChange={(e) => setQuery(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => { setFocused(false); setTimeout(() => setOpen(false), 200); }}
-          placeholder="Search any location in the world..."
+          placeholder="Search....."
           className="flex-1 bg-transparent text-slate-100 text-sm placeholder:text-slate-500 outline-none" />
         {query && (
           <button onClick={() => { setQuery(""); setResults([]); setOpen(false); inputRef.current?.focus(); }} className="text-slate-500 hover:text-slate-300 cursor-pointer">
