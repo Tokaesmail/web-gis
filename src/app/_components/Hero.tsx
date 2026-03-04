@@ -120,7 +120,7 @@ export default function Hero() {
             </button>
 
             <Link
-              href="/signin"
+              href="../auth/change-password"
               className="flex items-center gap-1.5 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-400/10 hover:border-cyan-400 text-sm px-4 py-1.5 rounded-md no-underline"
             >
               <UserIcon />
@@ -193,7 +193,7 @@ export default function Hero() {
                 </Link>
 
                 <Link
-                  href="https://github.com"
+                  href="https://github.com/Tokaesmail/web-gis"
                   target="_blank"
                   rel="noopener noreferrer"
                   className={`bg-transparent text-slate-300 hover:text-cyan-400 hover:border-cyan-400/50 hover:bg-cyan-400/6 border border-white/10 text-sm px-6 py-3 rounded-lg flex items-center gap-2 no-underline transition-all duration-200 ${
