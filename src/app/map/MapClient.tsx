@@ -37,20 +37,7 @@ const SAT_LAYERS = {
   },
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  SPECTRAL INDICES — real Sentinel Hub WMS tiles
-//
-//  كل index بيجيب tile حقيقية من Sentinel Hub بـ band math حقيقي:
-//    RGB      → True Color (B04, B03, B02)
-//    NDVI     → (NIR-Red)/(NIR+Red) — أخضر = نبات كتير، أحمر = جرداء
-//    NDWI     → (Green-NIR)/(Green+NIR) — أزرق = مياه
-//    NDSI     → (Green-SWIR)/(Green+SWIR) — أبيض = ثلج
-//    SWIR     → Short Wave Infrared — كشف الحرائق والمعادن
-//    MOISTURE → رطوبة التربة والنبات
-//
-//  الـ index layer بيتحط على indexPane (zIndex 250) فوق satellitePane (200)
-//  لما يختار RGB بيتشال الـ index layer ويظهر الـ satellite العادي
-// ─────────────────────────────────────────────────────────────────────────────
+
 const SH_INSTANCE = "4f52df5b-3565-4935-b96a-d801bfd9306a";
 const SH_WMS_URL  = `https://services.sentinel-hub.com/ogc/wms/${SH_INSTANCE}`;
 
@@ -343,9 +330,6 @@ function LeafletMap({ activeTool, onAreaSelected, onCoordsUpdate, flyToRef, clea
       map.createPane("satellitePane");
       map.getPane("satellitePane")!.style.zIndex = "200";
 
-      // ── Pane 2: indexPane (zIndex 250) — real WMS index fوق الـ satellite ──
-      // لما يختار NDVI مثلاً بيتحط tile حقيقي هنا فوق الـ base
-      // لما يختار RGB بيتشال الـ index tile ويظهر الـ satellite العادي
       map.createPane("indexPane");
       map.getPane("indexPane")!.style.zIndex = "250";
 
@@ -401,13 +385,8 @@ console.log("🛰️ changeIndexRef ready");
         }
       };
 
-      // ── changeIndexRef: تغيير الـ spectral index (real WMS tile) ──────────
-      // لما تختار NDVI مثلاً:
-      //   1. بيشيل الـ index tile القديمة لو موجودة
-      //   2. لو مش RGB: بيحط WMS tile حقيقي من Sentinel Hub على indexPane
-      //   3. لو RGB: بيسيب الـ satellite base tile تظهر بدون أي overlay
+      
       changeIndexRef.current = (idxKey: IdxKey) => {
-        // شيل الـ index tile القديمة
         console.log("🌍 changeLayerRef ready");
 console.log("🛰️ changeIndexRef ready");
         if (indexTileRef.current) {
@@ -415,10 +394,8 @@ console.log("🛰️ changeIndexRef ready");
           indexTileRef.current = null;
         }
 
-        // RGB = True Color = مش محتاج index layer، الـ base tile كافية
         if (idxKey === "RGB") return;
 
-        // غير RGB: حط WMS tile حقيقي من Sentinel Hub
         indexTileRef.current = (L.tileLayer as any).wms(SH_WMS_URL, {
           layers:      INDEX_TILES[idxKey].layers,
           format:      "image/png",
@@ -426,12 +403,11 @@ console.log("🛰️ changeIndexRef ready");
           version:     "1.3.0",
           attribution: `Sentinel-2 ${idxKey} © Copernicus / Sentinel Hub`,
           maxZoom:     20,
-          pane:        "indexPane",       // فوق الـ satellite، تحت الـ labels
+          pane:        "indexPane",       
           opacity:     1,
         }).addTo(map);
       };
 
-      // Sample field polygon في دلتا النيل
       const fieldCoords: [number, number][] = [
         [30.54, 31.18], [30.56, 31.22], [30.53, 31.26],
         [30.50, 31.24], [30.49, 31.20], [30.52, 31.17],
