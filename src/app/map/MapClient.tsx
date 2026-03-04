@@ -273,7 +273,7 @@ function MapSearch({ onFlyTo }: { onFlyTo: (lat: number, lng: number) => void })
 // ─── Coordinates Popup ────────────────────────────────────────────────────────
 function CoordsPopup({ lat, lng, onClose }: { lat: number; lng: number; onClose: () => void }) {
   return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] pointer-events-auto animate-fadeUp">
+    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] pointer-events-auto animate-fadeUp mb-7">
       <div className="flex items-center gap-3 bg-[#0a1628]/98 backdrop-blur-xl border border-cyan-400/30 rounded-xl px-4 py-2.5 shadow-[0_8px_32px_rgba(0,212,255,0.15)]">
         <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee]"/>
         <span className="text-[0.74rem] font-mono text-cyan-400">{lat.toFixed(6)}°N</span>
