@@ -16,7 +16,13 @@ const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
     id: "polygon",
     label: "Polygon (dblclick finish)",
     icon: (
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2">
         <polygon points="12 2 22 18 2 18" />
       </svg>
     ),
@@ -25,7 +31,13 @@ const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
     id: "rectangle",
     label: "Rectangle (2 clicks)",
     icon: (
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2">
         <rect x="3" y="5" width="18" height="14" rx="1" />
       </svg>
     ),
@@ -34,7 +46,13 @@ const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
     id: "circle",
     label: "Circle (2 clicks)",
     icon: (
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2">
         <circle cx="12" cy="12" r="9" />
       </svg>
     ),
@@ -43,7 +61,13 @@ const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
     id: "measure",
     label: "Measure (dblclick finish)",
     icon: (
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2">
         <path d="M2 12h20M2 12l4-4M2 12l4 4M22 12l-4-4M22 12l-4 4" />
       </svg>
     ),
@@ -77,10 +101,11 @@ export default function MapToolbar({
             <button
               onClick={() => onToolChange(tool.id)}
               className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all cursor-pointer
-                ${activeTool === tool.id
-                  ? "bg-cyan-400 text-[#040d1a] shadow-[0_0_12px_rgba(0,212,255,0.5)]"
-                  : "text-slate-400 hover:text-slate-100 hover:bg-white/0.08"}`}
-            >
+                ${
+                  activeTool === tool.id
+                    ? "bg-cyan-400 text-[#040d1a] shadow-[0_0_12px_rgba(0,212,255,0.5)]"
+                    : "text-slate-400 hover:text-slate-100 hover:bg-white/0.08"
+                }`}>
               {tool.icon}
             </button>
             <div className="absolute left-11 top-1/2 -translate-y-1/2 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50">
@@ -97,9 +122,14 @@ export default function MapToolbar({
         <div className="relative group">
           <button
             onClick={onClear}
-            className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2">
               <polyline points="3 6 5 6 21 6" />
               <path d="M19 6l-1 14H6L5 6" />
               <path d="M10 11v6M14 11v6M9 6V4h6v2" />
@@ -117,15 +147,13 @@ export default function MapToolbar({
       <div className="flex flex-col gap-0.5 bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-lg">
         <button
           id="map-zoom-in"
-          className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-white/0.08 transition-all cursor-pointer text-lg font-light"
-        >
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-white/0.08 transition-all cursor-pointer text-lg font-light">
           +
         </button>
         <div className="h-px bg-white/10" />
         <button
           id="map-zoom-out"
-          className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-white/0.08 transition-all cursor-pointer text-lg font-light"
-        >
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-white/0.08 transition-all cursor-pointer text-lg font-light">
           −
         </button>
       </div>

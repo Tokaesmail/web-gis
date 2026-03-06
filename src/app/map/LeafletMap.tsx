@@ -7,7 +7,7 @@ import { useMapCanvas }      from "./useMapCanvas";
 import {
   DrawTool, SAT_LAYERS, INDEX_TILES,
   SatKey, IdxKey, LatLngPoint, CaptureMetadata,
-} from "./mapTypes";
+} from "./mapTypes_proxy";
 
 interface Props {
   activeTool:     DrawTool;
@@ -118,11 +118,12 @@ export default function LeafletMap({
       baseTileRef.current = L.tileLayer(SAT_LAYERS["Default"].url, {
         attribution: SAT_LAYERS["Default"].attribution,
         maxZoom: SAT_LAYERS["Default"].maxZoom, pane: "satellitePane",
+        crossOrigin: true,   // ← مهم عشان Canvas يقدر يرسم التايل بدون CORS
       }).addTo(map);
 
       labelsLayerRef.current = L.tileLayer(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        { attribution: "", maxZoom: 20, opacity: 0.8, pane: "labelsPane" }
+        "/api/tile/{z}/{x}/{y}?source=labels",   // ← عبر الـ proxy
+        { attribution: "", maxZoom: 20, opacity: 0.8, pane: "labelsPane", crossOrigin: true }
       ).addTo(map);
 
       // ── Canvas Layer ──────────────────────────────────────────────────────
@@ -154,8 +155,8 @@ export default function LeafletMap({
         if (baseTileRef.current)  map.removeLayer(baseTileRef.current);
         if (indexTileRef.current) { map.removeLayer(indexTileRef.current); indexTileRef.current = null; }
         baseTileRef.current = (def.type === "wms"
-          ? (L.tileLayer as any).wms(def.url, { layers: def.layers, format: "image/jpeg", transparent: false, version: "1.1.1", attribution: def.attribution, maxZoom: def.maxZoom, pane: "satellitePane" })
-          : L.tileLayer(def.url, { attribution: def.attribution, maxZoom: def.maxZoom, tileSize: 256, pane: "satellitePane" })
+          ? (L.tileLayer as any).wms(def.url, { layers: def.layers, format: "image/jpeg", transparent: false, version: "1.1.1", attribution: def.attribution, maxZoom: def.maxZoom, pane: "satellitePane", crossOrigin: true })
+          : L.tileLayer(def.url, { attribution: def.attribution, maxZoom: def.maxZoom, tileSize: 256, pane: "satellitePane", crossOrigin: true })
         ).addTo(map);
       });
 

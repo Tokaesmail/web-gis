@@ -8,10 +8,10 @@
 //   IndexedDB    → Blobs مباشرة، مئات MB، أسرع بكتير
 
 import { useCallback } from "react";
-import { LatLngPoint, CaptureMetadata } from "./mapTypes";
+import { LatLngPoint, CaptureMetadata } from "./mapTypes_proxy";
 
 const DB_NAME = "MapCapturesDB";
-const STORE   = "captures";
+const STORE = "captures";
 
 // ─── فتح الـ DB ───────────────────────────────────────────────────────────────
 function openDB(): Promise<IDBDatabase> {
@@ -23,27 +23,32 @@ function openDB(): Promise<IDBDatabase> {
         db.createObjectStore(STORE, { keyPath: "id", autoIncrement: true });
     };
     req.onsuccess = (e) => resolve((e.target as IDBOpenDBRequest).result);
-    req.onerror   = (e) => reject((e.target as IDBOpenDBRequest).error);
+    req.onerror = (e) => reject((e.target as IDBOpenDBRequest).error);
   });
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 export function useMapDB() {
-
   // ① حفظ Blob + الإحداثيات → يرجع id
-  const saveCapture = useCallback(async (
-    blob:        Blob,
-    coordinates: LatLngPoint[],
-    metadata:    CaptureMetadata
-  ): Promise<number> => {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const req = db.transaction(STORE, "readwrite").objectStore(STORE)
-        .add({ blob, coordinates, metadata, createdAt: Date.now() });
-      req.onsuccess = (e) => resolve((e.target as IDBRequest).result as number);
-      req.onerror   = (e) => reject((e.target as IDBRequest).error);
-    });
-  }, []);
+  const saveCapture = useCallback(
+    async (
+      blob: Blob,
+      coordinates: LatLngPoint[],
+      metadata: CaptureMetadata,
+    ): Promise<number> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const req = db
+          .transaction(STORE, "readwrite")
+          .objectStore(STORE)
+          .add({ blob, coordinates, metadata, createdAt: Date.now() });
+        req.onsuccess = (e) =>
+          resolve((e.target as IDBRequest).result as number);
+        req.onerror = (e) => reject((e.target as IDBRequest).error);
+      });
+    },
+    [],
+  );
 
   // ② جيب record بالـ id
   const getCapture = useCallback(async (id: number) => {
@@ -51,7 +56,7 @@ export function useMapDB() {
     return new Promise<any>((resolve, reject) => {
       const req = db.transaction(STORE, "readonly").objectStore(STORE).get(id);
       req.onsuccess = (e) => resolve((e.target as IDBRequest).result ?? null);
-      req.onerror   = (e) => reject((e.target as IDBRequest).error);
+      req.onerror = (e) => reject((e.target as IDBRequest).error);
     });
   }, []);
 
@@ -61,7 +66,7 @@ export function useMapDB() {
     return new Promise<any[]>((resolve, reject) => {
       const req = db.transaction(STORE, "readonly").objectStore(STORE).getAll();
       req.onsuccess = (e) => resolve((e.target as IDBRequest).result ?? []);
-      req.onerror   = (e) => reject((e.target as IDBRequest).error);
+      req.onerror = (e) => reject((e.target as IDBRequest).error);
     });
   }, []);
 
@@ -69,9 +74,12 @@ export function useMapDB() {
   const deleteCapture = useCallback(async (id: number): Promise<void> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const req = db.transaction(STORE, "readwrite").objectStore(STORE).delete(id);
+      const req = db
+        .transaction(STORE, "readwrite")
+        .objectStore(STORE)
+        .delete(id);
       req.onsuccess = () => resolve();
-      req.onerror   = (e) => reject((e.target as IDBRequest).error);
+      req.onerror = (e) => reject((e.target as IDBRequest).error);
     });
   }, []);
 

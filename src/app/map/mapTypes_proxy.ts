@@ -1,29 +1,28 @@
 // ─── mapTypes.ts ──────────────────────────────────────────────────────────────
-// كل الـ Types والـ Constants المشتركة في الـ map folder
 
 export type DrawTool = "pointer" | "polygon" | "rectangle" | "circle" | "measure" | "marker";
 
-// ─── LatLng ───────────────────────────────────────────────────────────────────
 export interface LatLngPoint {
   lat: number;
   lng: number;
 }
 
-// ─── Capture ──────────────────────────────────────────────────────────────────
 export interface CaptureMetadata {
   areaName:   string;
   areaSizeHa: number;
   zoom:       number;
-  capturedAt: string;   // ISO string
+  capturedAt: string;
 }
 
 // ─── Satellite Layers ─────────────────────────────────────────────────────────
+// URL بتاخد ?source= عشان الـ proxy يعرف يجيب إيه
 export const SAT_LAYERS = {
   "Default": {
-    url:         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    // ← الـ URL بيروح لـ proxy بتاعك مش Esri مباشرة
+    url:         "/api/tile/{z}/{x}/{y}?source=satellite",
     type:        "xyz" as const,
     layers:      "",
-    attribution: "Tiles © Esri",
+    attribution: "Tiles © Esri via proxy",
     maxZoom:     20,
   },
   "Sentinel-2": {
@@ -34,7 +33,7 @@ export const SAT_LAYERS = {
     maxZoom:     18,
   },
   "Street Map": {
-    url:         "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    url:         "/api/tile/{z}/{x}/{y}?source=osm",
     type:        "xyz" as const,
     layers:      "",
     attribution: "© OpenStreetMap contributors",
@@ -49,27 +48,16 @@ export const SAT_LAYERS = {
   },
 };
 
+// ─── Labels Layer (عبر الـ proxy كمان) ───────────────────────────────────────
+export const LABELS_TILE_URL = "/api/tile/{z}/{x}/{y}?source=labels";
+
 // ─── Index Tiles ──────────────────────────────────────────────────────────────
 export const INDEX_TILES: Record<string, { url: string; color: string; desc: string; maxZoom: number; opacity: number }> = {
-  "RGB": {
-    url: "", color: "#e2e8f0", desc: "True Color — ألوان طبيعية", maxZoom: 20, opacity: 1,
-  },
-  "NDVI": {
-    url:     "https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}",
-    color:   "#22c55e", desc: "NatGeo Vegetation Map", maxZoom: 16, opacity: 0.8,
-  },
-  "NDWI": {
-    url:     "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
-    color:   "#38bdf8", desc: "Ocean / Water Layer", maxZoom: 13, opacity: 0.85,
-  },
-  "NDSI": {
-    url:     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
-    color:   "#e0f2fe", desc: "Topo / Snow Terrain", maxZoom: 20, opacity: 0.75,
-  },
-  "SWIR": {
-    url:     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    color:   "#fb923c", desc: "Satellite Imagery Overlay", maxZoom: 20, opacity: 0.9,
-  },
+  "RGB":  { url: "",    color: "#e2e8f0", desc: "True Color",           maxZoom: 20, opacity: 1    },
+  "NDVI": { url: "https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}",  color: "#22c55e", desc: "Vegetation",  maxZoom: 16, opacity: 0.8  },
+  "NDWI": { url: "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}", color: "#38bdf8", desc: "Water",   maxZoom: 13, opacity: 0.85 },
+  "NDSI": { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",        color: "#e0f2fe", desc: "Terrain",  maxZoom: 20, opacity: 0.75 },
+  "SWIR": { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",         color: "#fb923c", desc: "Satellite", maxZoom: 20, opacity: 0.9  },
 };
 
 export type SatKey = keyof typeof SAT_LAYERS;
