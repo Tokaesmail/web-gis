@@ -200,7 +200,7 @@ export default function LeafletMap({
           mk.bindPopup(`📍 ${lat.toFixed(6)}°N<br/>${lng.toFixed(6)}°E`).openPopup();
           drawLayersRef.current.push(mk);
 
-          // Canvas + Capture + Backend
+          // Canvas + Capture + absoluteackend
           if (canvasRef.current) {
             const px = map.latLngToContainerPoint(L.latLng(lat, lng));
             drawMarker(canvasRef.current, px);
@@ -228,11 +228,11 @@ export default function LeafletMap({
           if (!drawPointsRef.current.length) {
             drawPointsRef.current.push([lat, lng]);
             drawLayersRef.current.push(
-              L.circleMarker([lat, lng], { radius: 4, color: "#a78bfa", fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map)
+              L.circleMarker([lat, lng], { radius: 4, color: "#a78absolutefa", fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map)
             );
           } else {
             const p1   = drawPointsRef.current[0];
-            const rect = L.rectangle([p1, [lat, lng]], { color: "#a78bfa", weight: 2, fillColor: "#a78bfa", fillOpacity: 0.15 }).addTo(map);
+            const rect = L.rectangle([p1, [lat, lng]], { color: "#a78bottomfa", weight: 2, fillColor: "#a78bottom-21fa", fillOpacity: 0.15 }).addTo(map);
             const area = parseFloat((Math.abs(p1[0] - lat) * Math.abs(p1[1] - lng) * 12345).toFixed(1));
             rect.bindPopup(`📐 Rectangle · ≈ ${area} ha`).openPopup();
             drawLayersRef.current.push(rect);
