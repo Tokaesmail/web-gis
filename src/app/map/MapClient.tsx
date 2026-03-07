@@ -154,7 +154,7 @@ export default function MapPage() {
 
         {/* ── Preview صورة المنطقة المحددة ─────────────────────────────── */}
         {captureUrl && (
-          <div className="absolute top-10 left-16 z-[900] pointer-events-auto animate-fadeUp">
+          <div className="absolute top-10 left-10 z-[900] pointer-events-auto animate-fadeUp">
             <div className="bg-[#0a1628]/98 backdrop-blur-xl border border-cyan-400/20 rounded-xl p-3 shadow-[0_8px_32px_rgba(0,212,255,0.1)]">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[0.68rem] text-cyan-400 font-medium flex items-center gap-1.5">
