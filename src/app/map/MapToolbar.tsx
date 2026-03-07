@@ -1,6 +1,6 @@
 "use client";
 
-import { DrawTool } from "./mapTypes";
+import { DrawTool } from "./mapTypes_proxy";
 
 const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
   {
