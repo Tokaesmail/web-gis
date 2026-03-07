@@ -1,6 +1,11 @@
 "use client";
 
 // ─── LeafletMap.tsx ───────────────────────────────────────────────────────────
+// التعديلات:
+// ① OSM تايلز بدل Esri (مفيهاش مشكلة zoom)
+// ② Polygon بكليك واحد للإنهاء — زر "Close Shape" أو كليك على النقطة الأولى
+// ③ Double-click zoom متوقف تماماً
+// ④ الألوان للعرض بس — مش بتتبعت للباك
 
 import { useEffect, useRef } from "react";
 import { useMapCanvas }      from "./useMapCanvas";
@@ -20,6 +25,15 @@ interface Props {
   onCapture?:     (url: string) => void;
 }
 
+// ── ألوان كل أداة — للعرض فقط، مش بتتبعت للباك ──────────────────────────────
+const TOOL_COLORS = {
+  polygon:   { stroke: "#00c8ff", fill: "rgba(0,200,255,0.18)" },
+  rectangle: { stroke: "#a78bfa", fill: "rgba(167,139,250,0.18)" },
+  circle:    { stroke: "#34d399", fill: "rgba(52,211,153,0.18)" },
+  measure:   { stroke: "#fbbf24", fill: "rgba(251,191,36,0.1)" },
+  marker:    { stroke: "#f97316", fill: "rgba(249,115,22,0.85)" },
+};
+
 export default function LeafletMap({
   activeTool, onAreaSelected, onCoordsUpdate,
   flyToRef, clearRef, onSatChange, onIdxChange, onCapture,
@@ -36,7 +50,11 @@ export default function LeafletMap({
   const indexTileRef   = useRef<any>(null);
   const canvasRef      = useRef<HTMLCanvasElement | null>(null);
   const lastCoordsRef  = useRef<LatLngPoint[]>([]);
-  const lastToolRef    = useRef<DrawTool>("pointer");  // لإعادة الرسم بعد zoom/pan
+  const lastToolRef    = useRef<DrawTool>("pointer");
+  const closeBtnRef    = useRef<HTMLButtonElement | null>(null);
+  // نحتاج refs للـ map و L عشان نستخدمهم في finishPolygon من الـ button
+  const mapObjRef      = useRef<any>(null);
+  const LRef           = useRef<any>(null);
 
   const {
     drawPolygon, drawRect, drawCircle, drawMeasure, drawMarker,
@@ -45,14 +63,11 @@ export default function LeafletMap({
 
   useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
 
-  // ── helper: أعد رسم الشكل الحالي بعد zoom/pan ────────────────────────────
   const redrawCurrent = (canvas: HTMLCanvasElement, map: any, L: any) => {
     const coords = lastCoordsRef.current;
     const tool   = lastToolRef.current;
     if (!coords.length) return;
-
     const px = coords.map((p) => map.latLngToContainerPoint(L.latLng(p.lat, p.lng)));
-
     if (tool === "polygon")  drawPolygon(canvas, px);
     if (tool === "measure")  drawMeasure(canvas, px);
     if (tool === "rectangle" && px.length === 2) drawRect(canvas, px[0], px[1]);
@@ -60,29 +75,18 @@ export default function LeafletMap({
       const rPx = Math.sqrt((px[1].x - px[0].x) ** 2 + (px[1].y - px[0].y) ** 2);
       drawCircle(canvas, px[0], rPx);
     }
-    if (tool === "marker") {
-      clearCanvas(canvas);
-      px.forEach((p) => drawMarker(canvas, p));
-    }
+    if (tool === "marker") { clearCanvas(canvas); px.forEach((p) => drawMarker(canvas, p)); }
   };
 
-  // ── helper: capture + backend لكل الأدوات ────────────────────────────────
   const handleCapture = async (
-    canvas:      HTMLCanvasElement,
-    map:         any,
-    L:           any,
-    coordinates: LatLngPoint[],
-    metadata:    CaptureMetadata
+    canvas: HTMLCanvasElement, map: any, L: any,
+    coordinates: LatLngPoint[], metadata: CaptureMetadata
   ) => {
     try {
-      const isSinglePoint = coordinates.length === 1;
-      const { id, url, blob } = isSinglePoint
-        ? await capture(canvas, map, L, coordinates, metadata)   // marker
-        : await capture(canvas, map, L, coordinates, metadata);
-
+      const { id, url, blob } = await capture(canvas, map, L, coordinates, metadata);
       console.log("✅ IndexedDB id:", id);
       onCapture?.(url);
-
+      // بنبعت coordinates و metadata للباك — مفيش ألوان
       const res = await sendToBackend(blob, coordinates, metadata);
       if (res.ok) console.log("✅ Backend:", await res.json());
     } catch (err) {
@@ -90,11 +94,74 @@ export default function LeafletMap({
     }
   };
 
+  const finishPolygon = async (map: any, L: any) => {
+    const pts = drawPointsRef.current;
+    if (pts.length < 3) return;
+    if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
+    if (closeBtnRef.current)  closeBtnRef.current.style.display = "none";
+
+    const c    = TOOL_COLORS.polygon;
+    const poly = L.polygon(pts, { color: c.stroke, weight: 2, fillColor: c.stroke, fillOpacity: 0.18 }).addTo(map);
+    drawLayersRef.current.push(poly);
+    const area = parseFloat((Math.abs(pts.reduce((acc: number, p: [number, number], i: number) => {
+      const j = (i + 1) % pts.length;
+      return acc + p[1] * pts[j][0] - pts[j][1] * p[0];
+    }, 0)) / 2 * 12345).toFixed(1));
+    poly.bindPopup(`🔵 Polygon · ≈ ${area} ha`).openPopup();
+    onAreaSelected("Drawn Polygon", area);
+
+    const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
+    lastCoordsRef.current = coordinates;
+    lastToolRef.current   = "polygon";
+
+    if (canvasRef.current) {
+      drawPolygon(canvasRef.current, coordinates.map((p) =>
+        map.latLngToContainerPoint(L.latLng(p.lat, p.lng))
+      ));
+      const metadata: CaptureMetadata = {
+        areaName: "Drawn Polygon", areaSizeHa: area,
+        zoom: map.getZoom(), capturedAt: new Date().toISOString(),
+      };
+      await handleCapture(canvasRef.current, map, L, coordinates, metadata);
+    }
+    drawPointsRef.current = [];
+  };
+
+  const finishMeasure = async (map: any, L: any) => {
+    const pts = drawPointsRef.current;
+    if (pts.length < 2) return;
+    if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
+    if (closeBtnRef.current)  closeBtnRef.current.style.display = "none";
+
+    const line = L.polyline(pts, { color: TOOL_COLORS.measure.stroke, weight: 2.5 }).addTo(map);
+    drawLayersRef.current.push(line);
+    let dist = 0;
+    for (let i = 1; i < pts.length; i++) dist += map.distance(pts[i - 1], pts[i]);
+    line.bindPopup(`📏 ${(dist / 1000).toFixed(3)} km`).openPopup();
+
+    const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
+    lastCoordsRef.current = coordinates;
+    lastToolRef.current   = "measure";
+
+    if (canvasRef.current) {
+      drawMeasure(canvasRef.current, coordinates.map((p) =>
+        map.latLngToContainerPoint(L.latLng(p.lat, p.lng))
+      ));
+      const metadata: CaptureMetadata = {
+        areaName: "Measure Line", areaSizeHa: 0,
+        zoom: map.getZoom(), capturedAt: new Date().toISOString(),
+      };
+      await handleCapture(canvasRef.current, map, L, coordinates, metadata);
+    }
+    drawPointsRef.current = [];
+  };
+
   useEffect(() => {
     if (typeof window === "undefined" || mapInstanceRef.current) return;
 
     import("leaflet").then((L) => {
       if (!mapRef.current || mapInstanceRef.current) return;
+      LRef.current = L;
 
       delete (L.Icon.Default.prototype as any)._getIconUrl;
       L.Icon.Default.mergeOptions({
@@ -107,23 +174,28 @@ export default function LeafletMap({
         center: [20, 10], zoom: 3, zoomControl: false,
         minZoom: 2, maxZoom: 20, worldCopyJump: false,
         maxBounds: [[-90, -180], [90, 180]], maxBoundsViscosity: 1.0,
+        doubleClickZoom: false,   // ← وقف dblclick zoom
       });
       mapInstanceRef.current = map;
+      mapObjRef.current      = map;
 
       map.createPane("satellitePane"); map.getPane("satellitePane")!.style.zIndex = "200";
       map.createPane("indexPane");     map.getPane("indexPane")!.style.zIndex     = "250";
       map.createPane("labelsPane");
       Object.assign(map.getPane("labelsPane")!.style, { zIndex: "450", pointerEvents: "none" });
 
-      baseTileRef.current = L.tileLayer(SAT_LAYERS["Default"].url, {
-        attribution: SAT_LAYERS["Default"].attribution,
-        maxZoom: SAT_LAYERS["Default"].maxZoom, pane: "satellitePane",
-        crossOrigin: true,   // ← مهم عشان Canvas يقدر يرسم التايل بدون CORS
+      // ① Esri WorldImagery — maxNativeZoom:19 عشان لو زاد الزوم يعمل stretch بدل "not available"
+      baseTileRef.current = L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+        attribution: "Tiles © Esri",
+        maxZoom: 22,          // اليوزر يقدر يزوم لـ 22
+        maxNativeZoom: 19,    // التايل بتيتجيب لحد 19 بس، وبعدها بتتـstretch تلقائياً
+        pane: "satellitePane", crossOrigin: true,
       }).addTo(map);
 
       labelsLayerRef.current = L.tileLayer(
-        "/api/tile/{z}/{x}/{y}?source=labels",   // ← عبر الـ proxy
-        { attribution: "", maxZoom: 20, opacity: 0.8, pane: "labelsPane", crossOrigin: true }
+        "/api/tile/{z}/{x}/{y}?source=labels",
+        { attribution: "", maxZoom: 20, opacity: 0.7, pane: "labelsPane", crossOrigin: true }
       ).addTo(map);
 
       // ── Canvas Layer ──────────────────────────────────────────────────────
@@ -149,11 +221,43 @@ export default function LeafletMap({
       });
       new CanvasLayer().addTo(map);
 
+      // ── Close Shape button ────────────────────────────────────────────────
+      const closeBtn = document.createElement("button");
+      closeBtnRef.current = closeBtn;
+      Object.assign(closeBtn.style, {
+        display: "none", position: "absolute", bottom: "80px", left: "50%",
+        transform: "translateX(-50%)", zIndex: "1000",
+        background: "#0a1628cc", border: "1px solid rgba(0,200,255,0.5)",
+        color: "#00c8ff", padding: "7px 20px", borderRadius: "20px",
+        fontSize: "12px", cursor: "pointer", pointerEvents: "auto",
+        backdropFilter: "blur(10px)", boxShadow: "0 4px 20px rgba(0,212,255,0.25)",
+        fontFamily: "DM Sans, sans-serif", letterSpacing: "0.3px",
+      });
+      closeBtn.textContent = "✓ Close Shape";
+      closeBtn.addEventListener("mouseenter", () => closeBtn.style.background = "#0a1628");
+      closeBtn.addEventListener("mouseleave", () => closeBtn.style.background = "#0a1628cc");
+      closeBtn.addEventListener("click", () => {
+        const tool = activeToolRef.current;
+        if (tool === "polygon") finishPolygon(map, L);
+        if (tool === "measure") finishMeasure(map, L);
+      });
+      mapRef.current!.appendChild(closeBtn);
+
       // ── Sat / Index ───────────────────────────────────────────────────────
       onSatChange((satKey: SatKey) => {
         const def = SAT_LAYERS[satKey];
         if (baseTileRef.current)  map.removeLayer(baseTileRef.current);
         if (indexTileRef.current) { map.removeLayer(indexTileRef.current); indexTileRef.current = null; }
+
+        if (satKey === "Default") {
+          baseTileRef.current = L.tileLayer(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+            attribution: "Tiles © Esri",
+            maxZoom: 22, maxNativeZoom: 19,
+            pane: "satellitePane", crossOrigin: true,
+          }).addTo(map);
+          return;
+        }
         baseTileRef.current = (def.type === "wms"
           ? (L.tileLayer as any).wms(def.url, { layers: def.layers, format: "image/jpeg", transparent: false, version: "1.1.1", attribution: def.attribution, maxZoom: def.maxZoom, pane: "satellitePane", crossOrigin: true })
           : L.tileLayer(def.url, { attribution: def.attribution, maxZoom: def.maxZoom, tileSize: 256, pane: "satellitePane", crossOrigin: true })
@@ -166,7 +270,7 @@ export default function LeafletMap({
         const tile = INDEX_TILES[idxKey];
         if (!tile.url) return;
         indexTileRef.current = L.tileLayer(tile.url, {
-          attribution: `${idxKey} © Esri`, maxZoom: tile.maxZoom, tileSize: 256, opacity: tile.opacity, pane: "indexPane",crossOrigin: true,
+          attribution: `${idxKey}`, maxZoom: tile.maxZoom, tileSize: 256, opacity: tile.opacity, pane: "indexPane", crossOrigin: true,
         }).addTo(map);
       });
 
@@ -185,6 +289,7 @@ export default function LeafletMap({
         lastCoordsRef.current = []; lastToolRef.current = "pointer";
         if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
         if (canvasRef.current) clearCanvas(canvasRef.current);
+        if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
       };
 
       // ── Click ─────────────────────────────────────────────────────────────
@@ -196,103 +301,108 @@ export default function LeafletMap({
 
         // ── Marker ──────────────────────────────────────────────────────────
         if (tool === "marker") {
-          const mk = L.circleMarker([lat, lng], { radius: 7, color: "#f97316", fillColor: "#f97316", fillOpacity: 0.85, weight: 2 }).addTo(map);
+          const c  = TOOL_COLORS.marker;
+          const mk = L.circleMarker([lat, lng], { radius: 7, color: c.stroke, fillColor: c.stroke, fillOpacity: 0.85, weight: 2 }).addTo(map);
           mk.bindPopup(`📍 ${lat.toFixed(6)}°N<br/>${lng.toFixed(6)}°E`).openPopup();
           drawLayersRef.current.push(mk);
-
-          // Canvas + Capture + absoluteackend
           if (canvasRef.current) {
             const px = map.latLngToContainerPoint(L.latLng(lat, lng));
             drawMarker(canvasRef.current, px);
             lastCoordsRef.current = [...lastCoordsRef.current, { lat, lng }];
             lastToolRef.current   = "marker";
-            const metadata: CaptureMetadata = {
-              areaName: "Marker", areaSizeHa: 0,
-              zoom: map.getZoom(), capturedAt: new Date().toISOString(),
-            };
+            const metadata: CaptureMetadata = { areaName: "Marker", areaSizeHa: 0, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
             await handleCapture(canvasRef.current, map, L, [{ lat, lng }], metadata);
           }
           return;
         }
 
-        // ── Polygon / Measure: نقاط متراكمة ──────────────────────────────────
-        if (tool === "polygon" || tool === "measure") {
-          drawPointsRef.current.push([lat, lng]);
+        // ── Polygon: كليك واحد للإضافة، كليك على الأولى أو زر Close للإنهاء ─
+        if (tool === "polygon") {
+          const pts = drawPointsRef.current;
+          const c   = TOOL_COLORS.polygon;
+          // لو في 3 نقاط وكليك قريب من النقطة الأولى → أقفل
+          if (pts.length >= 3) {
+            const firstPx = map.latLngToContainerPoint(L.latLng(pts[0][0], pts[0][1]));
+            const clickPx = map.latLngToContainerPoint(L.latLng(lat, lng));
+            const dist    = Math.sqrt((clickPx.x - firstPx.x) ** 2 + (clickPx.y - firstPx.y) ** 2);
+            if (dist < 15) { finishPolygon(map, L); return; }
+          }
+          pts.push([lat, lng]);
           drawLayersRef.current.push(
-            L.circleMarker([lat, lng], { radius: 4, color: "#00d4ff", fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map)
+            L.circleMarker([lat, lng], {
+              radius: pts.length === 1 ? 6 : 4,
+              color: c.stroke,
+              fillColor: pts.length === 1 ? c.stroke : "#fff",
+              fillOpacity: 1, weight: 2,
+            }).addTo(map)
           );
+          if (pts.length >= 3 && closeBtnRef.current) closeBtnRef.current.style.display = "block";
+          return;
+        }
+
+        // ── Measure ──────────────────────────────────────────────────────────
+        if (tool === "measure") {
+          const pts = drawPointsRef.current;
+          pts.push([lat, lng]);
+          drawLayersRef.current.push(
+            L.circleMarker([lat, lng], { radius: 4, color: TOOL_COLORS.measure.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map)
+          );
+          if (pts.length >= 2 && closeBtnRef.current) closeBtnRef.current.style.display = "block";
+          return;
         }
 
         // ── Rectangle ────────────────────────────────────────────────────────
         if (tool === "rectangle") {
+          const c = TOOL_COLORS.rectangle;
           if (!drawPointsRef.current.length) {
             drawPointsRef.current.push([lat, lng]);
-            drawLayersRef.current.push(
-              L.circleMarker([lat, lng], { radius: 4, color: "#a78absolutefa", fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map)
-            );
+            drawLayersRef.current.push(L.circleMarker([lat, lng], { radius: 4, color: c.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map));
           } else {
             const p1   = drawPointsRef.current[0];
-            const rect = L.rectangle([p1, [lat, lng]], { color: "#a78bottomfa", weight: 2, fillColor: "#a78bottom-20fa", fillOpacity: 0.15 }).addTo(map);
+            const rect = L.rectangle([p1, [lat, lng]], { color: c.stroke, weight: 2, fillColor: c.stroke, fillOpacity: 0.18 }).addTo(map);
             const area = parseFloat((Math.abs(p1[0] - lat) * Math.abs(p1[1] - lng) * 12345).toFixed(1));
             rect.bindPopup(`📐 Rectangle · ≈ ${area} ha`).openPopup();
             drawLayersRef.current.push(rect);
             onAreaSelected("Drawn Rectangle", area);
-
-            // Canvas + Capture + Backend
             if (canvasRef.current) {
-              const px1 = map.latLngToContainerPoint(L.latLng(p1[0],  p1[1]));
+              const px1 = map.latLngToContainerPoint(L.latLng(p1[0], p1[1]));
               const px2 = map.latLngToContainerPoint(L.latLng(lat, lng));
               drawRect(canvasRef.current, px1, px2);
-
-              const coordinates: LatLngPoint[] = [
-                { lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] },
-                { lat, lng },               { lat: p1[0], lng },
-              ];
+              const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
               lastCoordsRef.current = [{ lat: p1[0], lng: p1[1] }, { lat, lng }];
               lastToolRef.current   = "rectangle";
-
-              const metadata: CaptureMetadata = {
-                areaName: "Drawn Rectangle", areaSizeHa: area,
-                zoom: map.getZoom(), capturedAt: new Date().toISOString(),
-              };
+              const metadata: CaptureMetadata = { areaName: "Drawn Rectangle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
               await handleCapture(canvasRef.current, map, L, coordinates, metadata);
             }
             drawPointsRef.current = [];
             if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
           }
+          return;
         }
 
         // ── Circle ───────────────────────────────────────────────────────────
         if (tool === "circle") {
+          const c = TOOL_COLORS.circle;
           if (!drawPointsRef.current.length) {
             drawPointsRef.current.push([lat, lng]);
           } else {
             const center = drawPointsRef.current[0];
             const radius = map.distance(center, [lat, lng]);
-            const circ   = L.circle(center, { radius, color: "#34d399", weight: 2, fillColor: "#34d399", fillOpacity: 0.15 }).addTo(map);
+            const circ   = L.circle(center, { radius, color: c.stroke, weight: 2, fillColor: c.stroke, fillOpacity: 0.18 }).addTo(map);
             const area   = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
-            circ.bindPopup(`⭕ Circle · R: ${radius.toFixed(0)} m · ≈ ${area} ha`).openPopup();
+            circ.bindPopup(`🟢 Circle · R: ${radius.toFixed(0)} m · ≈ ${area} ha`).openPopup();
             drawLayersRef.current.push(circ);
             onAreaSelected("Drawn Circle", area);
-
-            // Canvas + Capture + Backend
             if (canvasRef.current) {
-              const cPx   = map.latLngToContainerPoint(L.latLng(center[0], center[1]));
-              const ePx   = map.latLngToContainerPoint(L.latLng(lat, lng));
-              const rPx   = Math.sqrt((ePx.x - cPx.x) ** 2 + (ePx.y - cPx.y) ** 2);
+              const cPx = map.latLngToContainerPoint(L.latLng(center[0], center[1]));
+              const ePx = map.latLngToContainerPoint(L.latLng(lat, lng));
+              const rPx = Math.sqrt((ePx.x - cPx.x) ** 2 + (ePx.y - cPx.y) ** 2);
               drawCircle(canvasRef.current, cPx, rPx);
-
               const centerCoord: LatLngPoint = { lat: center[0], lng: center[1] };
               lastCoordsRef.current = [centerCoord, { lat, lng }];
               lastToolRef.current   = "circle";
-
-              const metadata: CaptureMetadata = {
-                areaName: "Drawn Circle", areaSizeHa: area,
-                zoom: map.getZoom(), capturedAt: new Date().toISOString(),
-              };
-              const { id, url, blob } = await captureCircle(
-                canvasRef.current, map, L, centerCoord, radius, metadata
-              );
+              const metadata: CaptureMetadata = { areaName: "Drawn Circle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
+              const { id, url, blob } = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata);
               console.log("✅ IndexedDB id:", id);
               onCapture?.(url);
               const res = await sendToBackend(blob, [centerCoord, { lat, lng }], metadata);
@@ -304,79 +414,28 @@ export default function LeafletMap({
         }
       });
 
-      // ── dblclick: إنهاء Polygon / Measure ────────────────────────────────
-      map.on("dblclick", async (e: any) => {
+      // ── dblclick: يقفل البولجون / measure بدون zoom ───────────────────────
+      map.on("dblclick", (e: any) => {
         const tool = activeToolRef.current;
-        if (tool !== "polygon" && tool !== "measure") return;
-        e.originalEvent?.preventDefault();
-        const pts = drawPointsRef.current;
-        if (pts.length < 2) return;
-        if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
-
-        if (tool === "polygon") {
-          const poly = L.polygon(pts, { color: "#00d4ff", weight: 2, fillColor: "#22c55e", fillOpacity: 0.2 }).addTo(map);
-          drawLayersRef.current.push(poly);
-          const area = parseFloat((Math.abs(pts.reduce((acc: number, p: [number, number], i: number) => {
-            const j = (i + 1) % pts.length;
-            return acc + p[1] * pts[j][0] - pts[j][1] * p[0];
-          }, 0)) / 2 * 12345).toFixed(1));
-          poly.bindPopup(`🟢 Polygon · ≈ ${area} ha`).openPopup();
-          onAreaSelected("Drawn Polygon", area);
-
-          const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
-          lastCoordsRef.current = coordinates;
-          lastToolRef.current   = "polygon";
-
-          if (canvasRef.current) {
-            drawPolygon(canvasRef.current, coordinates.map((p) =>
-              map.latLngToContainerPoint(L.latLng(p.lat, p.lng))
-            ));
-            const metadata: CaptureMetadata = {
-              areaName: "Drawn Polygon", areaSizeHa: area,
-              zoom: map.getZoom(), capturedAt: new Date().toISOString(),
-            };
-            await handleCapture(canvasRef.current, map, L, coordinates, metadata);
-          }
-
-        } else {
-          // measure
-          const line = L.polyline(pts, { color: "#fbbf24", weight: 2.5 }).addTo(map);
-          drawLayersRef.current.push(line);
-          let dist = 0;
-          for (let i = 1; i < pts.length; i++) dist += map.distance(pts[i - 1], pts[i]);
-          line.bindPopup(`📏 ${(dist / 1000).toFixed(3)} km`).openPopup();
-
-          const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
-          lastCoordsRef.current = coordinates;
-          lastToolRef.current   = "measure";
-
-          if (canvasRef.current) {
-            drawMeasure(canvasRef.current, coordinates.map((p) =>
-              map.latLngToContainerPoint(L.latLng(p.lat, p.lng))
-            ));
-            const metadata: CaptureMetadata = {
-              areaName: "Measure Line", areaSizeHa: 0,
-              zoom: map.getZoom(), capturedAt: new Date().toISOString(),
-            };
-            await handleCapture(canvasRef.current, map, L, coordinates, metadata);
-          }
-        }
-        drawPointsRef.current = [];
+        if (tool === "polygon" && drawPointsRef.current.length >= 3) finishPolygon(map, L);
+        else if (tool === "measure" && drawPointsRef.current.length >= 2) finishMeasure(map, L);
+        // doubleClickZoom: false → مش بيزوم في أي حالة
       });
 
-      // ── Mousemove: preview ────────────────────────────────────────────────
+      // ── Mousemove ─────────────────────────────────────────────────────────
       map.on("mousemove", (e: any) => {
         const tool = activeToolRef.current, pts = drawPointsRef.current;
         if (tool === "pointer" || !pts.length) return;
         if (tempLayerRef.current) map.removeLayer(tempLayerRef.current);
         const cur: [number, number] = [e.latlng.lat, e.latlng.lng];
+        const cp = TOOL_COLORS;
         if (tool === "polygon" || tool === "measure")
-          tempLayerRef.current = L.polyline([...pts, cur], { color: "#00d4ff", weight: 1.5, dashArray: "4 4", opacity: 0.7 }).addTo(map);
+          tempLayerRef.current = L.polyline([...pts, cur], { color: cp[tool].stroke, weight: 1.5, dashArray: "4 4", opacity: 0.7 }).addTo(map);
         if (tool === "rectangle")
-          tempLayerRef.current = L.rectangle([pts[0], cur], { color: "#a78bfa", weight: 1.5, dashArray: "4 4", fillOpacity: 0.08 }).addTo(map);
+          tempLayerRef.current = L.rectangle([pts[0], cur], { color: cp.rectangle.stroke, weight: 1.5, dashArray: "4 4", fillOpacity: 0.08 }).addTo(map);
         if (tool === "circle") {
           const r = map.distance(pts[0], cur);
-          tempLayerRef.current = L.circle(pts[0], { radius: r, color: "#34d399", weight: 1.5, dashArray: "4 4", fillOpacity: 0.07 }).addTo(map);
+          tempLayerRef.current = L.circle(pts[0], { radius: r, color: cp.circle.stroke, weight: 1.5, dashArray: "4 4", fillOpacity: 0.07 }).addTo(map);
         }
       });
     });
@@ -387,6 +446,9 @@ export default function LeafletMap({
   useEffect(() => {
     const c = mapInstanceRef.current?.getContainer();
     if (c) c.style.cursor = activeTool === "pointer" ? "grab" : "crosshair";
+    if (closeBtnRef.current && activeTool !== "polygon" && activeTool !== "measure") {
+      closeBtnRef.current.style.display = "none";
+    }
   }, [activeTool]);
 
   return (

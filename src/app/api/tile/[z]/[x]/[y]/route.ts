@@ -6,7 +6,6 @@ const TILE_SOURCES: Record<string, string> = {
   labels:    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
 };
 
-// في Next.js 15 الـ params لازم تكون Promise
 type Props = {
   params: Promise<{
     z: string;

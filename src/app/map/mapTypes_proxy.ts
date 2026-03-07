@@ -18,12 +18,12 @@ export interface CaptureMetadata {
 // URL بتاخد ?source= عشان الـ proxy يعرف يجيب إيه
 export const SAT_LAYERS = {
   "Default": {
-    // ← الـ URL بيروح لـ proxy بتاعك مش Esri مباشرة
-    url:         "/api/tile/{z}/{x}/{y}?source=satellite",
-    type:        "xyz" as const,
-    layers:      "",
-    attribution: "Tiles © Esri via proxy",
-    maxZoom:     20,
+    url:            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    type:           "xyz" as const,
+    layers:         "",
+    attribution:    "Tiles © Esri",
+    maxZoom:        22,          // اليوزر يزوم لـ 22
+    maxNativeZoom:  19,          // التايل بتيتجيب لحد 19 ثم stretch
   },
   "Sentinel-2": {
     url:         "https://tiles.maps.eox.at/wms",
