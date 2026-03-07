@@ -54,8 +54,20 @@ export const LABELS_TILE_URL = "/api/tile/{z}/{x}/{y}?source=labels";
 // ─── Index Tiles ──────────────────────────────────────────────────────────────
 export const INDEX_TILES: Record<string, { url: string; color: string; desc: string; maxZoom: number; opacity: number }> = {
   "RGB":  { url: "",    color: "#e2e8f0", desc: "True Color",           maxZoom: 20, opacity: 1    },
-  "NDVI": { url: "https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}",  color: "#22c55e", desc: "Vegetation",  maxZoom: 16, opacity: 0.8  },
-  "NDWI": { url: "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}", color: "#38bdf8", desc: "Water",   maxZoom: 13, opacity: 0.85 },
+  "NDVI": { 
+    url: "/api/tile/{z}/{x}/{y}?source=satellite", // أو لو عندك سورس محدد للـ NDVI في الـ route
+    color: "#22c55e", 
+    desc: "Vegetation", 
+    maxZoom: 16, 
+    opacity: 0.8 
+  },
+  "NDWI": { 
+    url: "/api/tile/{z}/{x}/{y}?source=labels", 
+    color: "#38bdf8", 
+    desc: "Water", 
+    maxZoom: 13, 
+    opacity: 0.85 
+  },
   "NDSI": { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",        color: "#e0f2fe", desc: "Terrain",  maxZoom: 20, opacity: 0.75 },
   "SWIR": { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",         color: "#fb923c", desc: "Satellite", maxZoom: 20, opacity: 0.9  },
 };

@@ -166,7 +166,7 @@ export default function LeafletMap({
         const tile = INDEX_TILES[idxKey];
         if (!tile.url) return;
         indexTileRef.current = L.tileLayer(tile.url, {
-          attribution: `${idxKey} © Esri`, maxZoom: tile.maxZoom, tileSize: 256, opacity: tile.opacity, pane: "indexPane",
+          attribution: `${idxKey} © Esri`, maxZoom: tile.maxZoom, tileSize: 256, opacity: tile.opacity, pane: "indexPane",crossOrigin: true,
         }).addTo(map);
       });
 
