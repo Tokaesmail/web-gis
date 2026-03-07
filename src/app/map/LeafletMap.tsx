@@ -172,7 +172,7 @@ export default function LeafletMap({
 
       const map = L.map(mapRef.current!, {
         center: [20, 10], zoom: 3, zoomControl: false,
-        minZoom: 2, maxZoom: 20, worldCopyJump: false,
+        minZoom: 2, maxZoom: 22, worldCopyJump: false,
         maxBounds: [[-90, -180], [90, 180]], maxBoundsViscosity: 1.0,
         doubleClickZoom: false,   // ← وقف dblclick zoom
       });
@@ -195,7 +195,7 @@ export default function LeafletMap({
 
       labelsLayerRef.current = L.tileLayer(
         "/api/tile/{z}/{x}/{y}?source=labels",
-        { attribution: "", maxZoom: 20, opacity: 0.7, pane: "labelsPane", crossOrigin: true }
+        { attribution: "", maxZoom: 22, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: true }
       ).addTo(map);
 
       // ── Canvas Layer ──────────────────────────────────────────────────────
@@ -259,8 +259,17 @@ export default function LeafletMap({
           return;
         }
         baseTileRef.current = (def.type === "wms"
-          ? (L.tileLayer as any).wms(def.url, { layers: def.layers, format: "image/jpeg", transparent: false, version: "1.1.1", attribution: def.attribution, maxZoom: def.maxZoom, pane: "satellitePane", crossOrigin: true })
-          : L.tileLayer(def.url, { attribution: def.attribution, maxZoom: def.maxZoom, tileSize: 256, pane: "satellitePane", crossOrigin: true })
+          ? (L.tileLayer as any).wms(def.url, {
+              layers: def.layers, format: "image/jpeg", transparent: false, version: "1.1.1",
+              attribution: def.attribution,
+              maxZoom: def.maxZoom, maxNativeZoom: def.maxNativeZoom,
+              pane: "satellitePane", crossOrigin: true,
+            })
+          : L.tileLayer(def.url, {
+              attribution: def.attribution,
+              maxZoom: def.maxZoom, maxNativeZoom: def.maxNativeZoom,
+              tileSize: 256, pane: "satellitePane", crossOrigin: true,
+            })
         ).addTo(map);
       });
 
@@ -270,7 +279,9 @@ export default function LeafletMap({
         const tile = INDEX_TILES[idxKey];
         if (!tile.url) return;
         indexTileRef.current = L.tileLayer(tile.url, {
-          attribution: `${idxKey}`, maxZoom: tile.maxZoom, tileSize: 256, opacity: tile.opacity, pane: "indexPane", crossOrigin: true,
+          attribution: `${idxKey}`,
+          maxZoom: tile.maxZoom, maxNativeZoom: tile.maxNativeZoom,
+          tileSize: 256, opacity: tile.opacity, pane: "indexPane", crossOrigin: true,
         }).addTo(map);
       });
 
