@@ -490,27 +490,7 @@ function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
   const coords = getMidCoords(feature);
   const p      = feature?.properties ?? {};
 
-  const [weather, setWeather] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!coords) return;
-    setLoading(true);
-    setWeather(null);
-    fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${coords[0]}&longitude=${coords[1]}` +
-      `&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,` +
-      `precipitation,cloud_cover,weather_code` +
-      `&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_sum` +
-      `&timezone=auto&forecast_days=5`
-    )
-      .then(r => r.json())
-      .then(d => setWeather(d))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [coords?.[0], coords?.[1]]);
-
-  // ── no feature selected: static placeholder ──
+  // ── no feature selected ──
   if (!feature || !coords) {
     return (
       <div className="space-y-5">
@@ -521,22 +501,21 @@ function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
         </div>
         <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4 space-y-2">
           <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-2">Feature Properties</p>
-          {[80,60,70,50].map((w,i) => <SkRow key={i} w={`w-[${w}%]`} />)}
+          {[80, 60, 70, 50].map((w, i) => <SkRow key={i} w={`w-[${w}%]`} />)}
         </div>
       </div>
     );
   }
-
-  const wmoIcon = (c: number) =>
-    c === 0 ? "☀️" : c <= 3 ? "⛅" : c <= 49 ? "🌫️" : c <= 67 ? "🌧️" : c <= 77 ? "🌨️" : "⛈️";
 
   const contourColor =
     (p.Contour ?? 0) < 100 ? "#22d3ee" :
     (p.Contour ?? 0) < 300 ? "#34d399" :
     (p.Contour ?? 0) < 700 ? "#a3e635" : "#fbbf24";
 
-  const cur   = weather?.current ?? {};
-  const daily = weather?.daily   ?? {};
+  // all extra properties from the API (exclude the known ones already displayed)
+  const extraProps = Object.entries(p).filter(
+    ([k]) => !["Contour", "Id", "OBJECTID", "Shape_Length"].includes(k)
+  );
 
   return (
     <div className="space-y-4">
@@ -557,15 +536,15 @@ function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
         </div>
       </div>
 
-      {/* ── Coordinates ── */}
+      {/* ── Location ── */}
       <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
         <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Location</p>
         <div className="grid grid-cols-2 gap-2">
           {[
-            { label: "Latitude",  value: `${coords[0].toFixed(5)}°`, color: "text-cyan-400"  },
-            { label: "Longitude", value: `${coords[1].toFixed(5)}°`, color: "text-violet-400"},
-            { label: "Geometry",  value: feature.geometry?.type ?? "—", color: "text-slate-200"},
-            { label: "OBJECTID",  value: String(p.OBJECTID ?? "—"),  color: "text-slate-200" },
+            { label: "Latitude",  value: `${coords[0].toFixed(5)}°`, color: "text-cyan-400"   },
+            { label: "Longitude", value: `${coords[1].toFixed(5)}°`, color: "text-violet-400" },
+            { label: "Geometry",  value: feature.geometry?.type ?? "—", color: "text-slate-200" },
+            { label: "OBJECTID",  value: String(p.OBJECTID ?? "—"),  color: "text-slate-200"  },
           ].map(s => (
             <div key={s.label} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2.5">
               <p className={`text-sm font-semibold ${s.color}`}>{s.value}</p>
@@ -575,59 +554,19 @@ function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
         </div>
       </div>
 
-      {/* ── Live Weather ── */}
-      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
-        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Live Weather</p>
-        {loading ? (
-          <div className="space-y-2">{[1,2,3].map(i => <SkRow key={i} />)}</div>
-        ) : weather ? (
-          <>
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <p className="text-2xl font-light text-slate-100">{cur.temperature_2m ?? "—"}°C</p>
-                <p className="text-[0.62rem] text-slate-500">Feels {cur.apparent_temperature ?? "—"}°C</p>
+      {/* ── Extra API fields (only if present) ── */}
+      {extraProps.length > 0 && (
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Additional Data</p>
+          <div className="grid grid-cols-2 gap-2">
+            {extraProps.map(([k, v]) => (
+              <div key={k} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2.5">
+                <p className="text-sm font-semibold text-slate-200 truncate">
+                  {v != null ? String(v).slice(0, 12) : "—"}
+                </p>
+                <p className="text-[0.62rem] text-slate-500 mt-0.5 truncate">{k}</p>
               </div>
-              <span className="text-4xl">{wmoIcon(cur.weather_code ?? 0)}</span>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5">
-              {[
-                { l: "Humidity", v: `${cur.relative_humidity_2m ?? "—"}%`,  ic: "💧" },
-                { l: "Wind",     v: `${cur.wind_speed_10m ?? "—"} km/h`,    ic: "🌬️" },
-                { l: "Cloud",    v: `${cur.cloud_cover ?? "—"}%`,            ic: "☁️" },
-              ].map(w => (
-                <div key={w.l} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2 text-center">
-                  <p className="text-sm">{w.ic}</p>
-                  <p className="text-[0.65rem] font-medium text-slate-200 mt-0.5">{w.v}</p>
-                  <p className="text-[0.55rem] text-slate-500">{w.l}</p>
-                </div>
-              ))}
-            </div>
-          </>
-        ) : (
-          <p className="text-[0.62rem] text-slate-600">Unavailable</p>
-        )}
-      </div>
-
-      {/* ── 5-day forecast ── */}
-      {!loading && daily.time && (
-        <div>
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-2">5-Day Forecast</p>
-          <div className="flex gap-1.5">
-            {(daily.time as string[]).slice(0, 5).map((dateStr: string, i: number) => {
-              const d = new Date(dateStr);
-              const dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-              return (
-                <div key={i} className={`flex-1 border rounded-lg p-2 flex flex-col items-center gap-0.5
-                  ${i === 0 ? "bg-cyan-400/10 border-cyan-400/30" : "bg-white/[0.04] border-white/[0.06]"}`}>
-                  <span className={`text-[0.6rem] ${i === 0 ? "text-cyan-400" : "text-slate-500"}`}>
-                    {i === 0 ? "Now" : dayNames[d.getDay()]}
-                  </span>
-                  <span className="text-base">{wmoIcon(daily.weather_code?.[i] ?? 0)}</span>
-                  <span className="text-[0.65rem] text-slate-200 font-medium">{daily.temperature_2m_max?.[i] ?? "—"}°</span>
-                  <span className="text-[0.58rem] text-slate-600">{daily.temperature_2m_min?.[i] ?? "—"}°</span>
-                </div>
-              );
-            })}
+            ))}
           </div>
         </div>
       )}
