@@ -6,6 +6,7 @@ import AnalysisSidebar from "../_components/AnalysisSidebar/AnalysisSidebar";
 import AnalysisDashboard from "../_components/AnalysisDashboard/AnalysisDashboard";
 import AIAssistant from "../_components/AIAssistant/AIAssistant";
 
+import type { GeoJSON } from "geojson";
 import { DrawTool, SatKey, IdxKey } from "./mapTypes_proxy";
 import MapNavbar from "./MapNavbar";
 import MapToolbar from "./MapToolbar";
@@ -27,7 +28,12 @@ export default function MapPage() {
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(
     null,
   );
-  const [captureUrl, setCaptureUrl] = useState<string | null>(null); // ← URL الصورة المحفوظة
+  const [captureUrl, setCaptureUrl] = useState<string | null>(null);
+  const [selectedLocation, setSelectedLocation] = useState<{ lat: number; lng: number; name?: string } | null>(null);
+  const [selectedFeature, setSelectedFeature] = useState<GeoJSON.Feature | null>(null);
+  const [geoJsonData, setGeoJsonData]   = useState<any>(null);
+  const [geoJsonLoading, setGeoJsonLoading] = useState(false);
+  const [geoJsonError, setGeoJsonError] = useState<string | null>(null);
 
   const flyToRef = useRef<((lat: number, lng: number) => void) | null>(null);
   const clearRef = useRef<(() => void) | null>(null);
@@ -35,6 +41,37 @@ export default function MapPage() {
   const changeIdxRef = useRef<((idx: IdxKey) => void) | null>(null);
 
   const { isRTL } = useLang();
+
+  // ── جلب الـ Contour Lines من الـ API ─────────────────────────────────────
+  useEffect(() => {
+    const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://gis-back-chi.vercel.app";
+    // جيب الـ token من localStorage لو موجود
+    const token = typeof window !== "undefined"
+      ? localStorage.getItem("gis_token") ?? localStorage.getItem("token") ?? ""
+      : "";
+
+    setGeoJsonLoading(true);
+    fetch(`${BASE_URL}/gis/contours`, {
+      headers: {
+        "Accept-Encoding": "gzip, deflate, br",
+        ...(token ? { token } : {}),
+      },
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        setGeoJsonData(data);
+        setGeoJsonError(null);
+        console.log("✅ Contours loaded:", data?.features?.length, "features");
+      })
+      .catch((err) => {
+        console.error("❌ Contours fetch error:", err);
+        setGeoJsonError(err.message);
+      })
+      .finally(() => setGeoJsonLoading(false));
+  }, []);
 
   const handleAreaSelected = useCallback((name: string, area: number) => {
     setSelectedArea({ name, ha: area });
@@ -72,6 +109,14 @@ export default function MapPage() {
     return () => document.removeEventListener("fullscreenchange", h);
   }, []);
 
+  const handleSatChange = useCallback((handler: (sat: SatKey) => void) => {
+    changeSatRef.current = handler;
+  }, []);
+
+  const handleIdxChange = useCallback((handler: (idx: IdxKey) => void) => {
+    changeIdxRef.current = handler;
+  }, []);
+
   const toggleFullscreen = () => {
     if (!isFullscreen)
       document.documentElement.requestFullscreen?.().catch(() => {});
@@ -98,17 +143,49 @@ export default function MapPage() {
         <LeafletMap
           activeTool={activeTool}
           onAreaSelected={handleAreaSelected}
-          onCoordsUpdate={(lat, lng) => setCoords({ lat, lng })}
+          onCoordsUpdate={(lat, lng) => {
+            setCoords({ lat, lng });
+          }}
           onCapture={handleCapture}
           flyToRef={flyToRef}
           clearRef={clearRef}
-          onSatChange={useCallback((handler) => {
-            changeSatRef.current = handler;
-          }, [])}
-          onIdxChange={useCallback((handler) => {
-            changeIdxRef.current = handler;
-          }, [])}
+          onSatChange={handleSatChange}
+          onIdxChange={handleIdxChange}
+          geoJsonData={geoJsonData}
+          geoJsonFitBounds={true}
+          onFeatureClick={(feature) => {
+            setSelectedFeature(feature);
+          }}
         />
+
+        {/* ── GeoJSON loading / error indicator ─────────────────────────── */}
+        {geoJsonLoading && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 bg-[#0a1628]/95 backdrop-blur-md border border-cyan-400/30 rounded-xl px-3 py-2 shadow-lg pointer-events-none animate-fadeUp">
+            <svg className="animate-spin w-3.5 h-3.5 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            </svg>
+            <span className="text-[0.7rem] text-cyan-400">Loading contours…</span>
+          </div>
+        )}
+        {geoJsonError && !geoJsonLoading && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 bg-[#0a1628]/95 backdrop-blur-md border border-red-400/30 rounded-xl px-3 py-2 shadow-lg animate-fadeUp">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+            <span className="text-[0.7rem] text-red-400">Contours: {geoJsonError}</span>
+            <button
+              onClick={() => setGeoJsonError(null)}
+              className="text-slate-600 hover:text-slate-400 ml-1 cursor-pointer">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+        )}
+        {geoJsonData && !geoJsonLoading && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 bg-[#0a1628]/95 backdrop-blur-md border border-emerald-400/30 rounded-xl px-3 py-2 shadow-lg pointer-events-none animate-fadeUp">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-[0.7rem] text-emerald-400">
+              {geoJsonData?.features?.length?.toLocaleString()} contour features loaded
+            </span>
+          </div>
+        )}
 
         {isFullscreen && (
           <button
@@ -137,7 +214,7 @@ export default function MapPage() {
           onClear={handleClear}
         />
 
-        <AnalysisSidebar />
+        <AnalysisSidebar selectedFeature={selectedFeature} />
 
         {coords && (
           <CoordsPopup

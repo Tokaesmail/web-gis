@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLang } from "../translations";
 
 type PanelId =
@@ -39,8 +39,8 @@ const panels: PanelItem[] = [
   },
   {
     id: "ndvi",
-    labelEn: "NDVI Analysis",
-    labelAr: "تحليل NDVI",
+    labelEn: "Charts",
+    labelAr: "Charts",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-3 3" />
@@ -220,21 +220,67 @@ function StackedBarChart({ data }: { data: { label: string; a: number; b: number
   );
 }
 
-// ─── Panel Contents ───────────────────────────────────────────────────────────
-function PanelContent({ id }: { id: PanelId }) {
 
-  // ── NDVI ──
-  if (id === "ndvi") {
+// ─── NDVI Live Panel (data from selected feature coords) ──────────────────────
+function NDVILivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
+  const [ndviData, setNdviData] = useState<any>(null);
+  const [loading,  setLoading]  = useState(false);
+
+  // derive midpoint coords from geometry
+  const coords: [number, number] | null = (() => {
+    if (!feature?.geometry) return null;
+    const g = feature.geometry as any;
+    if (g.type === "LineString" && g.coordinates?.length) {
+      const m = g.coordinates[Math.floor(g.coordinates.length / 2)];
+      return [m[1], m[0]];
+    }
+    if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
+    return null;
+  })();
+
+  useEffect(() => {
+    if (!coords) return;
+    setLoading(true);
+    fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${coords[0]}&longitude=${coords[1]}` +
+      `&daily=et0_fao_evapotranspiration,shortwave_radiation_sum,precipitation_sum` +
+      `&hourly=soil_moisture_0_to_1cm,soil_temperature_0cm&timezone=auto&past_days=30&forecast_days=1`
+    )
+      .then(r => r.json())
+      .then(d => {
+        const et    = d.daily?.et0_fao_evapotranspiration ?? [];
+        const rad   = d.daily?.shortwave_radiation_sum    ?? [];
+        const prec  = d.daily?.precipitation_sum          ?? [];
+        const times = d.daily?.time                       ?? [];
+        const series = et.map((e: number, i: number) => {
+          const r   = rad[i] ?? 1;
+          const val = r > 0 ? Math.min(0.95, Math.max(0.05, (e / r) * 3.5)) : 0.3;
+          return { label: times[i] ? new Date(times[i]).toLocaleDateString("en", { month: "short", day: "numeric" }) : "", value: parseFloat(val.toFixed(3)), precip: prec[i] ?? 0 };
+        }).filter((_: any, i: number) => i % 3 === 0).slice(-10); // sample every 3 days, last 10 points
+
+        const soilM = d.hourly?.soil_moisture_0_to_1cm?.slice(-24) ?? [];
+        const soilT = d.hourly?.soil_temperature_0cm?.slice(-24)   ?? [];
+        const avgSM = soilM.length ? soilM.reduce((a: number, b: number) => a + b, 0) / soilM.length : null;
+        const avgST = soilT.length ? soilT.reduce((a: number, b: number) => a + b, 0) / soilT.length : null;
+        const latest = series[series.length - 1]?.value ?? 0;
+        const prev   = series[series.length - 4]?.value ?? latest;
+        setNdviData({ series, latest, prev, avgSM, avgST });
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [coords?.[0], coords?.[1]]);
+
+  // ── No feature selected — show static mock ────────────────────────────────
+  if (!feature || !coords) {
     const bars = [
       { label: "23 Dec", value: 0.58 }, { label: "02 Jan", value: 0.61 },
       { label: "12 Jan", value: 0.67 }, { label: "22 Jan", value: 0.70 },
       { label: "01 Feb", value: 0.69 }, { label: "11 Feb", value: 0.72 },
       { label: "16 Feb", value: 0.72 },
     ];
-    const max = Math.max(...bars.map((b) => b.value));
+    const maxV = Math.max(...bars.map(b => b.value));
     return (
       <div className="space-y-5">
-        {/* Big KPI */}
         <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
           <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">Mean NDVI Index</p>
           <p className="text-3xl font-semibold text-emerald-400">0.72</p>
@@ -243,31 +289,18 @@ function PanelContent({ id }: { id: PanelId }) {
             <div className="h-full rounded-full bg-emerald-400" style={{ width: "72%" }} />
           </div>
         </div>
-
-        {/* Stats row */}
         <div className="grid grid-cols-2 gap-2">
-          {[
-            { label: "Coverage", value: "87%", color: "text-cyan-400" },
-            { label: "Stressed", value: "13%", color: "text-red-400" },
-            { label: "Area", value: "27.4 ha", color: "text-slate-200" },
-            { label: "Confidence", value: "94%", color: "text-violet-400" },
-          ].map((s) => (
+          {[{ label: "Coverage", value: "87%", color: "text-cyan-400" }, { label: "Stressed", value: "13%", color: "text-red-400" }, { label: "Area", value: "27.4 ha", color: "text-slate-200" }, { label: "Confidence", value: "94%", color: "text-violet-400" }].map(s => (
             <div key={s.label} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2.5">
               <p className={`text-sm font-semibold ${s.color}`}>{s.value}</p>
               <p className="text-[0.62rem] text-slate-500 mt-0.5">{s.label}</p>
             </div>
           ))}
         </div>
-
-        {/* NDVI gradient legend */}
         <div>
-          <div className="flex justify-between text-[0.6rem] text-slate-500 mb-1">
-            <span>Low</span><span>NDVI Scale</span><span>High</span>
-          </div>
+          <div className="flex justify-between text-[0.6rem] text-slate-500 mb-1"><span>Low</span><span>NDVI Scale</span><span>High</span></div>
           <div className="h-2.5 rounded-full" style={{ background: "linear-gradient(to right,#8B0000,#FF4500,#FFD700,#ADFF2F,#006400)" }} />
         </div>
-
-        {/* Timeline bars */}
         <div>
           <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-2">30-Day Timeline</p>
           <div className="flex items-end gap-1 h-16">
@@ -278,134 +311,370 @@ function PanelContent({ id }: { id: PanelId }) {
                     <div className="bg-[#0a1628] border border-white/10 text-[0.6rem] text-slate-200 px-1.5 py-0.5 rounded whitespace-nowrap">{b.value}</div>
                   </div>
                   <div className="w-full rounded-sm group-hover:brightness-125 transition-all"
-                    style={{ height: `${(b.value / max) * 56}px`, background: b.label === "16 Feb" ? "#22d3ee" : "#22c55e88" }} />
+                    style={{ height: `${(b.value / maxV) * 56}px`, background: b.label === "16 Feb" ? "#22d3ee" : "#22c55e88" }} />
                 </div>
-                <span className="text-[0.5rem] text-slate-600 rotate-0 whitespace-nowrap overflow-hidden" style={{ maxWidth: 28, textOverflow: "clip" }}>{b.label.slice(0, 6)}</span>
+                <span className="text-[0.5rem] text-slate-600 whitespace-nowrap overflow-hidden" style={{ maxWidth: 28, textOverflow: "clip" }}>{b.label.slice(0, 6)}</span>
               </div>
             ))}
           </div>
         </div>
-
-        {/* Donut charts row */}
         <div>
           <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Health Distribution</p>
           <div className="flex items-center justify-around">
-            <div className="flex flex-col items-center gap-1">
-              <DonutChart value={72} total={100} color="#22c55e" bg="rgba(34,197,94,0.12)" />
-              <p className="text-[0.62rem] text-slate-400">Healthy</p>
-            </div>
-            <div className="flex flex-col items-center gap-1">
-              <DonutChart value={13} total={100} color="#ef4444" bg="rgba(239,68,68,0.12)" />
-              <p className="text-[0.62rem] text-slate-400">Stressed</p>
-            </div>
-            <div className="flex flex-col items-center gap-1">
-              <DonutChart value={15} total={100} color="#f59e0b" bg="rgba(245,158,11,0.12)" />
-              <p className="text-[0.62rem] text-slate-400">Moderate</p>
-            </div>
+            {[{ v: 72, c: "#22c55e", bg: "rgba(34,197,94,0.12)", l: "Healthy" }, { v: 13, c: "#ef4444", bg: "rgba(239,68,68,0.12)", l: "Stressed" }, { v: 15, c: "#f59e0b", bg: "rgba(245,158,11,0.12)", l: "Moderate" }].map(d => (
+              <div key={d.l} className="flex flex-col items-center gap-1">
+                <DonutChart value={d.v} total={100} color={d.c} bg={d.bg} />
+                <p className="text-[0.62rem] text-slate-400">{d.l}</p>
+              </div>
+            ))}
           </div>
         </div>
+        <p className="text-[0.58rem] text-slate-600 text-center">Click a contour line for live data</p>
       </div>
     );
   }
 
-  // ── OVERVIEW ──
-  if (id === "overview") {
-    const byVillage = [
-      { label: "CBD & Har.", value: 8500 }, { label: "Chinatown", value: 3200 },
-      { label: "Redfern", value: 1800 }, { label: "Oxford St.", value: 1600 },
-      { label: "Harris St.", value: 1400 }, { label: "Glebe Poi.", value: 900 },
-    ];
-    const stacked = [
-      { label: "CBD & Har.", a: 7500, b: 1000 }, { label: "Chinatown", a: 2800, b: 400 },
-      { label: "Harris St.", a: 1200, b: 200 }, { label: "Crown & B.", a: 1000, b: 180 },
-      { label: "Green Sq.", a: 900, b: 150 }, { label: "Redfern", a: 800, b: 120 },
-    ];
+  // ── Loading ────────────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        {[80, 56, 40, 96].map((w, i) => (
+          <div key={i} className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4 space-y-2">
+            <div className="h-2.5 rounded-full bg-white/[0.06] animate-pulse" style={{ width: `${w}%` }} />
+            <div className="h-7 rounded-full bg-white/[0.05] animate-pulse w-28" />
+            <div className="h-1.5 rounded-full bg-white/[0.04] animate-pulse w-full" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (!ndviData) return null;
+
+  const { series, latest, prev, avgSM, avgST } = ndviData;
+  const change    = latest - prev;
+  const hColor    = latest > 0.6 ? "#22c55e" : latest > 0.4 ? "#f59e0b" : "#ef4444";
+  const hLabel    = latest > 0.6 ? "Healthy" : latest > 0.4 ? "Moderate" : "Stressed";
+  const maxV      = Math.max(...series.map((s: any) => s.value), 0.01);
+  const healthy   = Math.round(latest * 100);
+  const stressed  = Math.round((1 - latest) * 30);
+  const moderate  = 100 - healthy - stressed;
+
+  // sparkline path for area chart
+  const W = 232, H = 48;
+  const pts = series.map((s: any, i: number) => [
+    (i / (series.length - 1)) * W,
+    H - (s.value / maxV) * (H - 4),
+  ]);
+  const linePath  = pts.map((p: number[], i: number) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+  const areaPath  = linePath + ` L${W},${H} L0,${H} Z`;
+
+  return (
+    <div className="space-y-4">
+      {/* KPI */}
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">NDVI Index · Live</p>
+        <p className="text-3xl font-semibold" style={{ color: hColor }}>{latest.toFixed(3)}</p>
+        <p className="text-[0.65rem] mt-1" style={{ color: change >= 0 ? "#34d399" : "#f87171" }}>
+          {change >= 0 ? "↑" : "↓"} {Math.abs(change).toFixed(3)} vs 9 days ago
+        </p>
+        <div className="mt-3 h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
+          <div className="h-full rounded-full transition-all duration-700" style={{ width: `${latest * 100}%`, background: hColor }} />
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 gap-2">
+        {[
+          { label: "Coverage",     value: `${healthy}%`,                                      color: "text-cyan-400"   },
+          { label: "Stressed",     value: `${stressed}%`,                                      color: "text-red-400"    },
+          { label: "Soil Moisture",value: avgSM != null ? `${(avgSM*100).toFixed(1)}%` : "—", color: "text-blue-400"   },
+          { label: "Soil Temp",    value: avgST != null ? `${avgST.toFixed(1)}°C`      : "—", color: "text-orange-400" },
+        ].map(s => (
+          <div key={s.label} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2.5">
+            <p className={`text-sm font-semibold ${s.color}`}>{s.value}</p>
+            <p className="text-[0.62rem] text-slate-500 mt-0.5">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* NDVI scale */}
+      <div>
+        <div className="flex justify-between text-[0.6rem] text-slate-500 mb-1"><span>Low</span><span>NDVI Scale</span><span>High</span></div>
+        <div className="h-2.5 rounded-full" style={{ background: "linear-gradient(to right,#8B0000,#FF4500,#FFD700,#ADFF2F,#006400)" }} />
+        <div className="relative h-2 mt-0.5">
+          <div className="absolute w-0.5 h-2 bg-white rounded-full transition-all duration-700" style={{ left: `calc(${latest * 100}% - 1px)` }} />
+        </div>
+      </div>
+
+      {/* Area Chart */}
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">30-Day Timeline</p>
+        <svg width="100%" viewBox={`0 0 ${W} ${H + 12}`} className="overflow-visible">
+          <defs>
+            <linearGradient id="ndviGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={hColor} stopOpacity="0.35" />
+              <stop offset="100%" stopColor={hColor} stopOpacity="0.03" />
+            </linearGradient>
+          </defs>
+          <path d={areaPath} fill="url(#ndviGrad)" />
+          <path d={linePath} fill="none" stroke={hColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          {pts.map((p: number[], i: number) => (
+            <g key={i} className="group">
+              <circle cx={p[0]} cy={p[1]} r="3" fill={i === pts.length - 1 ? "#22d3ee" : hColor} opacity={i === pts.length - 1 ? 1 : 0.6} />
+              <title>{series[i].label}: {series[i].value}</title>
+            </g>
+          ))}
+          {series.filter((_: any, i: number) => i % 3 === 0).map((s: any, i: number) => {
+            const idx = i * 3;
+            if (idx >= pts.length) return null;
+            return <text key={i} x={pts[idx][0]} y={H + 10} textAnchor="middle" fontSize="7" fill="#475569">{s.label.slice(0,6)}</text>;
+          })}
+        </svg>
+      </div>
+
+      {/* Donut charts */}
+      <div>
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Health Distribution</p>
+        <div className="flex items-center justify-around">
+          {[
+            { v: healthy,  c: "#22c55e", bg: "rgba(34,197,94,0.12)",  l: "Healthy"  },
+            { v: stressed, c: "#ef4444", bg: "rgba(239,68,68,0.12)",   l: "Stressed" },
+            { v: moderate, c: "#f59e0b", bg: "rgba(245,158,11,0.12)",  l: "Moderate" },
+          ].map(d => (
+            <div key={d.l} className="flex flex-col items-center gap-1">
+              <DonutChart value={d.v} total={100} color={d.c} bg={d.bg} />
+              <p className="text-[0.62rem] text-slate-400">{d.l}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Contour info */}
+      {feature.properties?.Contour != null && (
+        <div className="bg-white/[0.03] border border-cyan-400/20 rounded-xl p-3 flex items-center gap-3">
+          <div className="w-1 h-8 rounded-full shrink-0" style={{ background: hColor }} />
+          <div>
+            <p className="text-[0.6rem] text-slate-500">Contour Line</p>
+            <p className="text-[0.75rem] font-semibold text-slate-200">{feature.properties.Contour}m · Id {feature.properties.Id ?? feature.properties.OBJECTID}</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── helper: extract midpoint coords from any GeoJSON geometry ────────────────
+function getMidCoords(feature?: GeoJSON.Feature | null): [number, number] | null {
+  const g = feature?.geometry as any;
+  if (!g) return null;
+  if (g.type === "Point")      return [g.coordinates[1], g.coordinates[0]];
+  if (g.type === "LineString" && g.coordinates?.length) {
+    const m = g.coordinates[Math.floor(g.coordinates.length / 2)];
+    return [m[1], m[0]];
+  }
+  if (g.type === "Polygon" && g.coordinates?.[0]?.length) {
+    const m = g.coordinates[0][Math.floor(g.coordinates[0].length / 2)];
+    return [m[1], m[0]];
+  }
+  return null;
+}
+
+// ─── Skeleton row ─────────────────────────────────────────────────────────────
+function SkRow({ w = "w-full", h = "h-4" }: { w?: string; h?: string }) {
+  return <div className={`${h} ${w} rounded-md bg-white/[0.05] animate-pulse`} />;
+}
+
+// ─── Overview Live Panel ──────────────────────────────────────────────────────
+function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
+  const coords = getMidCoords(feature);
+  const p      = feature?.properties ?? {};
+
+  const [weather, setWeather] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!coords) return;
+    setLoading(true);
+    setWeather(null);
+    fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${coords[0]}&longitude=${coords[1]}` +
+      `&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,` +
+      `precipitation,cloud_cover,weather_code` +
+      `&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_sum` +
+      `&timezone=auto&forecast_days=5`
+    )
+      .then(r => r.json())
+      .then(d => setWeather(d))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [coords?.[0], coords?.[1]]);
+
+  // ── no feature selected: static placeholder ──
+  if (!feature || !coords) {
     return (
       <div className="space-y-5">
-        {/* Big stat like GISCARTA */}
         <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">Avg Height · Selected Area</p>
-          <p className="text-3xl font-semibold" style={{ color: "#f97316" }}>10.12 <span className="text-base font-normal text-slate-400">m</span></p>
-          <div className="flex gap-3 mt-2 text-[0.65rem]">
-            <span className="text-slate-400">27.4 ha covered</span>
-            <span className="text-emerald-400">↑ Active</span>
-          </div>
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">Contour · Selected Area</p>
+          <p className="text-3xl font-semibold text-orange-400">—</p>
+          <p className="text-[0.65rem] text-slate-500 mt-1">Click a contour line to load data</p>
         </div>
-
-        {/* Donut total */}
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Employees · Total 2022</p>
-          <div className="flex items-center gap-4">
-            <div className="relative shrink-0">
-              <svg width="88" height="88" viewBox="0 0 100 100">
-                <circle cx="50" cy="50" r="38" fill="none" stroke="rgba(109,40,217,0.15)" strokeWidth="14" />
-                <circle cx="50" cy="50" r="38" fill="none" stroke="#6d28d9" strokeWidth="14"
-                  strokeDasharray="168 239" strokeLinecap="round" transform="rotate(-90 50 50)" />
-                <circle cx="50" cy="50" r="38" fill="none" stroke="#f97316" strokeWidth="14"
-                  strokeDasharray="71 239" strokeDashoffset="-168" strokeLinecap="round" transform="rotate(-90 50 50)" />
-              </svg>
-              <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <p className="text-[0.6rem] text-slate-500">Sum</p>
-                <p className="text-sm font-bold text-slate-100">375.5k</p>
-              </div>
-            </div>
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-sm bg-violet-600 shrink-0" />
-                <span className="text-[0.65rem] text-slate-400">Full-Time</span>
-                <span className="text-[0.65rem] text-slate-200 ml-auto font-medium">301k</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-sm bg-orange-500 shrink-0" />
-                <span className="text-[0.65rem] text-slate-400">Part-Time</span>
-                <span className="text-[0.65rem] text-slate-200 ml-auto font-medium">74.5k</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Bar chart by village */}
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Enterprises by Village</p>
-          <BarChart data={byVillage} color="linear-gradient(90deg,#f97316,#fb923c)" />
-        </div>
-
-        {/* Stacked bar */}
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Full vs Part-Time</p>
-            <div className="flex gap-2 text-[0.58rem]">
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-violet-600" />FT</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-orange-500" />PT</span>
-            </div>
-          </div>
-          <StackedBarChart data={stacked} />
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4 space-y-2">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-2">Feature Properties</p>
+          {[80,60,70,50].map((w,i) => <SkRow key={i} w={`w-[${w}%]`} />)}
         </div>
       </div>
     );
   }
 
-  // ── WEATHER ──
-  if (id === "weather") {
-    const days = [
-      { day: "Sun", icon: "☀️", high: 26, low: 18 },
-      { day: "Mon", icon: "⛅", high: 23, low: 16 },
-      { day: "Tue", icon: "🌧️", high: 19, low: 14 },
-      { day: "Wed", icon: "⛅", high: 22, low: 15 },
-      { day: "Thu", icon: "☀️", high: 28, low: 19 },
-    ];
+  const wmoIcon = (c: number) =>
+    c === 0 ? "☀️" : c <= 3 ? "⛅" : c <= 49 ? "🌫️" : c <= 67 ? "🌧️" : c <= 77 ? "🌨️" : "⛈️";
+
+  const contourColor =
+    (p.Contour ?? 0) < 100 ? "#22d3ee" :
+    (p.Contour ?? 0) < 300 ? "#34d399" :
+    (p.Contour ?? 0) < 700 ? "#a3e635" : "#fbbf24";
+
+  const cur   = weather?.current ?? {};
+  const daily = weather?.daily   ?? {};
+
+  return (
+    <div className="space-y-4">
+
+      {/* ── Contour KPI ── */}
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">Contour Elevation</p>
+        <p className="text-3xl font-semibold" style={{ color: contourColor }}>
+          {p.Contour ?? "—"} <span className="text-base font-normal text-slate-400">m</span>
+        </p>
+        <div className="mt-2 h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
+          <div className="h-full rounded-full transition-all duration-700"
+            style={{ width: `${Math.min(100, ((p.Contour ?? 0) / 1500) * 100)}%`, background: contourColor }} />
+        </div>
+        <div className="flex gap-3 mt-2 text-[0.65rem]">
+          <span className="text-slate-500">Id: <span className="text-slate-300">{p.Id ?? p.OBJECTID ?? "—"}</span></span>
+          <span className="text-slate-500">Length: <span className="text-slate-300">{p.Shape_Length ? p.Shape_Length.toFixed(4) : "—"}</span></span>
+        </div>
+      </div>
+
+      {/* ── Coordinates ── */}
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Location</p>
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { label: "Latitude",  value: `${coords[0].toFixed(5)}°`, color: "text-cyan-400"  },
+            { label: "Longitude", value: `${coords[1].toFixed(5)}°`, color: "text-violet-400"},
+            { label: "Geometry",  value: feature.geometry?.type ?? "—", color: "text-slate-200"},
+            { label: "OBJECTID",  value: String(p.OBJECTID ?? "—"),  color: "text-slate-200" },
+          ].map(s => (
+            <div key={s.label} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2.5">
+              <p className={`text-sm font-semibold ${s.color}`}>{s.value}</p>
+              <p className="text-[0.62rem] text-slate-500 mt-0.5">{s.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Live Weather ── */}
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Live Weather</p>
+        {loading ? (
+          <div className="space-y-2">{[1,2,3].map(i => <SkRow key={i} />)}</div>
+        ) : weather ? (
+          <>
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <p className="text-2xl font-light text-slate-100">{cur.temperature_2m ?? "—"}°C</p>
+                <p className="text-[0.62rem] text-slate-500">Feels {cur.apparent_temperature ?? "—"}°C</p>
+              </div>
+              <span className="text-4xl">{wmoIcon(cur.weather_code ?? 0)}</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {[
+                { l: "Humidity", v: `${cur.relative_humidity_2m ?? "—"}%`,  ic: "💧" },
+                { l: "Wind",     v: `${cur.wind_speed_10m ?? "—"} km/h`,    ic: "🌬️" },
+                { l: "Cloud",    v: `${cur.cloud_cover ?? "—"}%`,            ic: "☁️" },
+              ].map(w => (
+                <div key={w.l} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2 text-center">
+                  <p className="text-sm">{w.ic}</p>
+                  <p className="text-[0.65rem] font-medium text-slate-200 mt-0.5">{w.v}</p>
+                  <p className="text-[0.55rem] text-slate-500">{w.l}</p>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="text-[0.62rem] text-slate-600">Unavailable</p>
+        )}
+      </div>
+
+      {/* ── 5-day forecast ── */}
+      {!loading && daily.time && (
+        <div>
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-2">5-Day Forecast</p>
+          <div className="flex gap-1.5">
+            {(daily.time as string[]).slice(0, 5).map((dateStr: string, i: number) => {
+              const d = new Date(dateStr);
+              const dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+              return (
+                <div key={i} className={`flex-1 border rounded-lg p-2 flex flex-col items-center gap-0.5
+                  ${i === 0 ? "bg-cyan-400/10 border-cyan-400/30" : "bg-white/[0.04] border-white/[0.06]"}`}>
+                  <span className={`text-[0.6rem] ${i === 0 ? "text-cyan-400" : "text-slate-500"}`}>
+                    {i === 0 ? "Now" : dayNames[d.getDay()]}
+                  </span>
+                  <span className="text-base">{wmoIcon(daily.weather_code?.[i] ?? 0)}</span>
+                  <span className="text-[0.65rem] text-slate-200 font-medium">{daily.temperature_2m_max?.[i] ?? "—"}°</span>
+                  <span className="text-[0.58rem] text-slate-600">{daily.temperature_2m_min?.[i] ?? "—"}°</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+// ─── Weather Live Panel ───────────────────────────────────────────────────────
+function WeatherLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
+  const coords = getMidCoords(feature);
+
+  const [data, setData]       = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!coords) return;
+    setLoading(true);
+    setData(null);
+    fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${coords[0]}&longitude=${coords[1]}` +
+      `&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,` +
+      `precipitation,cloud_cover,weather_code,uv_index` +
+      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,` +
+      `uv_index_max,wind_speed_10m_max&timezone=auto&forecast_days=7`
+    )
+      .then(r => r.json())
+      .then(d => setData(d))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [coords?.[0], coords?.[1]]);
+
+  const wmoIcon = (c: number) =>
+    c === 0 ? "☀️" : c <= 3 ? "⛅" : c <= 49 ? "🌫️" : c <= 67 ? "🌧️" : c <= 77 ? "🌨️" : "⛈️";
+
+  if (!feature || !coords) {
     return (
       <div className="space-y-4">
         <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4 flex items-center justify-between">
           <div>
-            <p className="text-3xl font-light text-slate-100">24°C</p>
-            <p className="text-xs text-slate-400 mt-0.5">Partly Cloudy · Cairo</p>
-            <p className="text-[0.62rem] text-slate-500 mt-1">Feels like 26°C</p>
+            <p className="text-3xl font-light text-slate-100">—°C</p>
+            <p className="text-xs text-slate-400 mt-0.5">Click a contour line</p>
           </div>
           <span className="text-5xl">⛅</span>
         </div>
         <div className="grid grid-cols-3 gap-2">
-          {[{ l: "Humidity", v: "62%", ic: "💧" }, { l: "Wind", v: "12 km/h", ic: "🌬️" }, { l: "UV Index", v: "6 High", ic: "☀️" }].map((w) => (
+          {[{ l: "Humidity", v: "—", ic: "💧" }, { l: "Wind", v: "—", ic: "🌬️" }, { l: "UV Index", v: "—", ic: "☀️" }].map(w => (
             <div key={w.l} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2.5 text-center">
               <p className="text-base">{w.ic}</p>
               <p className="text-xs font-medium text-slate-200 mt-1">{w.v}</p>
@@ -413,21 +682,113 @@ function PanelContent({ id }: { id: PanelId }) {
             </div>
           ))}
         </div>
-        <div>
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-2">5-Day Forecast</p>
-          <div className="flex gap-1.5">
-            {days.map((d) => (
-              <div key={d.day} className="flex-1 bg-white/[0.04] border border-white/[0.06] rounded-lg p-2 flex flex-col items-center gap-1">
-                <span className="text-[0.6rem] text-slate-500">{d.day}</span>
-                <span className="text-lg">{d.icon}</span>
-                <span className="text-[0.65rem] text-slate-200 font-medium">{d.high}°</span>
-                <span className="text-[0.58rem] text-slate-600">{d.low}°</span>
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
     );
+  }
+
+  if (loading) return (
+    <div className="space-y-3">{[1,2,3,4].map(i => <SkRow key={i} h="h-14" />)}</div>
+  );
+
+  if (!data) return null;
+
+  const cur   = data.current ?? {};
+  const daily = data.daily   ?? {};
+  const days  = (daily.time ?? []) as string[];
+  const dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+  // precipitation bar chart
+  const precipMax = Math.max(...(daily.precipitation_sum ?? [1]).slice(0, 7), 1);
+
+  return (
+    <div className="space-y-4">
+      {/* Current */}
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4 flex items-center justify-between">
+        <div>
+          <p className="text-3xl font-light text-slate-100">{cur.temperature_2m ?? "—"}°C</p>
+          <p className="text-xs text-slate-400 mt-0.5">{wmoIcon(cur.weather_code ?? 0)} · {coords[0].toFixed(3)}°N</p>
+          <p className="text-[0.62rem] text-slate-500 mt-1">Feels like {cur.apparent_temperature ?? "—"}°C</p>
+        </div>
+        <span className="text-5xl">{wmoIcon(cur.weather_code ?? 0)}</span>
+      </div>
+
+      {/* Stats grid */}
+      <div className="grid grid-cols-3 gap-2">
+        {[
+          { l: "Humidity", v: `${cur.relative_humidity_2m ?? "—"}%`,        ic: "💧" },
+          { l: "Wind",     v: `${cur.wind_speed_10m ?? "—"} km/h`,          ic: "🌬️" },
+          { l: "UV Index", v: `${cur.uv_index != null ? Math.round(cur.uv_index) : "—"}`, ic: "☀️" },
+        ].map(w => (
+          <div key={w.l} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2.5 text-center">
+            <p className="text-base">{w.ic}</p>
+            <p className="text-xs font-medium text-slate-200 mt-1">{w.v}</p>
+            <p className="text-[0.58rem] text-slate-500">{w.l}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* 7-day forecast */}
+      <div>
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-2">7-Day Forecast</p>
+        <div className="flex gap-1.5">
+          {days.slice(0, 7).map((dateStr: string, i: number) => {
+            const d = new Date(dateStr);
+            return (
+              <div key={i} className={`flex-1 border rounded-lg p-2 flex flex-col items-center gap-1
+                ${i === 0 ? "bg-cyan-400/10 border-cyan-400/30" : "bg-white/[0.04] border-white/[0.06]"}`}>
+                <span className={`text-[0.58rem] ${i === 0 ? "text-cyan-400" : "text-slate-500"}`}>
+                  {i === 0 ? "Now" : dayNames[d.getDay()]}
+                </span>
+                <span className="text-lg">{wmoIcon(daily.weather_code?.[i] ?? 0)}</span>
+                <span className="text-[0.65rem] text-slate-200 font-medium">{daily.temperature_2m_max?.[i] ?? "—"}°</span>
+                <span className="text-[0.58rem] text-slate-600">{daily.temperature_2m_min?.[i] ?? "—"}°</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Precipitation bar chart */}
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Precipitation (7d)</p>
+        <div className="flex items-end gap-1 h-12">
+          {(daily.precipitation_sum ?? []).slice(0, 7).map((v: number, i: number) => (
+            <div key={i} className="flex-1 flex flex-col items-center gap-0.5 group">
+              <div className="relative w-full">
+                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 z-10 pointer-events-none">
+                  <div className="bg-[#0a1628] border border-white/10 text-[0.58rem] text-slate-200 px-1.5 py-0.5 rounded whitespace-nowrap">{v} mm</div>
+                </div>
+                <div className="w-full rounded-sm transition-all group-hover:brightness-125"
+                  style={{ height: `${Math.max(2, (v / precipMax) * 40)}px`, background: v > 0 ? "#38bdf8" : "rgba(255,255,255,0.05)" }} />
+              </div>
+              <span className="text-[0.46rem] text-slate-600">
+                {new Date(daily.time?.[i]).toLocaleDateString("en", { weekday: "narrow" })}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+// ─── Panel Contents ───────────────────────────────────────────────────────────
+function PanelContent({ id, selectedFeature }: { id: PanelId; selectedFeature?: GeoJSON.Feature | null }) {
+
+  // ── NDVI ──
+  if (id === "ndvi") {
+    return <NDVILivePanel feature={selectedFeature} />;
+  }
+
+  // ── OVERVIEW ──
+  if (id === "overview") {
+    return <OverviewLivePanel feature={selectedFeature} />;
+  }
+
+  // ── WEATHER ──
+  if (id === "weather") {
+    return <WeatherLivePanel feature={selectedFeature} />;
   }
 
   // ── ANALYSES ──
@@ -547,7 +908,7 @@ function PanelContent({ id }: { id: PanelId }) {
 }
 
 // ─── Main Sidebar ─────────────────────────────────────────────────────────────
-export default function AnalysisSidebar() {
+export default function AnalysisSidebar({ selectedFeature }: { selectedFeature?: GeoJSON.Feature | null }) {
   // ← "overview" open by default instead of null
   const [activePanel, setActivePanel] = useState<PanelId | null>("overview");
   const { isRTL, lang } = useLang();
@@ -596,8 +957,8 @@ export default function AnalysisSidebar() {
           </div>
 
           {/* Panel body */}
-          <div className="flex-1 overflow-y-auto p-4 custom-scroll">
-            {activePanel && <PanelContent id={activePanel} />}
+          <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 custom-scroll">
+            {activePanel && <PanelContent id={activePanel} selectedFeature={selectedFeature} />}
           </div>
         </div>
       </div>

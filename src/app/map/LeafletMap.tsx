@@ -14,6 +14,15 @@ import {
   SatKey, IdxKey, LatLngPoint, CaptureMetadata,
 } from "./mapTypes_proxy";
 
+interface GeoJSONStyle {
+  color?:       string;
+  weight?:      number;
+  opacity?:     number;
+  fillColor?:   string;
+  fillOpacity?: number;
+  dashArray?:   string;
+}
+
 interface Props {
   activeTool:     DrawTool;
   onAreaSelected: (name: string, area: number) => void;
@@ -23,6 +32,14 @@ interface Props {
   onSatChange:    (handler: (sat: SatKey) => void) => void;
   onIdxChange:    (handler: (idx: IdxKey) => void) => void;
   onCapture?:     (url: string) => void;
+  /** callback لما يضغط على GeoJSON feature */
+  onFeatureClick?: (feature: GeoJSON.Feature) => void;
+  /** GeoJSON data لعرضها على الخريطة */
+  geoJsonData?:   GeoJSON.FeatureCollection | GeoJSON.Feature | null;
+  /** تنسيق مخصص للـ GeoJSON layer */
+  geoJsonStyle?:  GeoJSONStyle;
+  /** هل نزوم على الـ GeoJSON بعد التحميل؟ */
+  geoJsonFitBounds?: boolean;
 }
 
 // ── ألوان كل أداة — للعرض فقط، مش بتتبعت للباك ──────────────────────────────
@@ -34,9 +51,20 @@ const TOOL_COLORS = {
   marker:    { stroke: "#f97316", fill: "rgba(249,115,22,0.85)" },
 };
 
+// ── ألوان contour ────────────────────────────────────────────────────────────
+function getContourColor(value: number): string {
+  if (value < 50)   return "#38bdf8";
+  if (value < 100)  return "#22d3ee";
+  if (value < 200)  return "#34d399";
+  if (value < 500)  return "#a3e635";
+  if (value < 1000) return "#fbbf24";
+  return "#f87171";
+}
+
 export default function LeafletMap({
   activeTool, onAreaSelected, onCoordsUpdate,
   flyToRef, clearRef, onSatChange, onIdxChange, onCapture,
+  geoJsonData, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
 }: Props) {
 
   const mapRef         = useRef<HTMLDivElement>(null);
@@ -55,6 +83,7 @@ export default function LeafletMap({
   // نحتاج refs للـ map و L عشان نستخدمهم في finishPolygon من الـ button
   const mapObjRef      = useRef<any>(null);
   const LRef           = useRef<any>(null);
+  const geoJsonLayerRef = useRef<any>(null);
 
   const {
     drawPolygon, drawRect, drawCircle, drawMeasure, drawMarker,
@@ -62,6 +91,78 @@ export default function LeafletMap({
   } = useMapCanvas();
 
   useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
+
+  // ── GeoJSON layer useEffect ───────────────────────────────────────────────
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const L   = LRef.current;
+    if (!map || !L || !geoJsonData) return;
+
+    // امسح الـ layer القديمة
+    if (geoJsonLayerRef.current) {
+      map.removeLayer(geoJsonLayerRef.current);
+      geoJsonLayerRef.current = null;
+    }
+
+    const layer = L.geoJSON(geoJsonData, {
+      style: (feature: any) => {
+        const v = feature?.properties?.Contour ?? 0;
+        const c = getContourColor(v);
+        return {
+          color:       geoJsonStyle?.color       ?? c,
+          weight:      geoJsonStyle?.weight      ?? 1.5,
+          opacity:     geoJsonStyle?.opacity     ?? 0.85,
+          fillColor:   geoJsonStyle?.fillColor   ?? c,
+          fillOpacity: geoJsonStyle?.fillOpacity ?? 0.08,
+          dashArray:   geoJsonStyle?.dashArray,
+        };
+      },
+      pointToLayer: (_: any, latlng: any) =>
+        L.circleMarker(latlng, {
+          radius: 4, color: "#22d3ee",
+          fillColor: "#22d3ee", fillOpacity: 0.8, weight: 2,
+        }),
+      onEachFeature: (feature: any, lyr: any) => {
+        if (!feature.properties) return;
+        const p = feature.properties;
+        const contour = p.Contour;
+        // tooltip on hover
+        lyr.bindTooltip(
+          `<span style="color:#22d3ee;font-weight:600;font-size:.72rem">Contour: ${contour}m</span>`,
+          { sticky: true, className: "ndvi-tooltip" }
+        );
+        // click → send feature to sidebar (no popup)
+        lyr.on("click", (e: any) => {
+          L.DomEvent.stopPropagation(e);
+          if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
+          // highlight clicked layer
+          if (geoJsonLayerRef.current) {
+            geoJsonLayerRef.current.resetStyle();
+          }
+          lyr.setStyle({ weight: 3, opacity: 1, color: "#22d3ee", fillOpacity: 0.25 });
+        });
+      },
+    });
+
+    layer.addTo(map);
+    geoJsonLayerRef.current = layer;
+
+    if (geoJsonFitBounds) {
+      try {
+        const bounds = layer.getBounds();
+        if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+      } catch {}
+    }
+
+    console.log("✅ GeoJSON layer added");
+
+    return () => {
+      if (geoJsonLayerRef.current) {
+        map.removeLayer(geoJsonLayerRef.current);
+        geoJsonLayerRef.current = null;
+      }
+    };
+  }, [geoJsonData]);
 
   const redrawCurrent = (canvas: HTMLCanvasElement, map: any, L: any) => {
     const coords = lastCoordsRef.current;
@@ -172,30 +273,30 @@ export default function LeafletMap({
 
       const map = L.map(mapRef.current!, {
         center: [20, 10], zoom: 3, zoomControl: false,
-        minZoom: 2, maxZoom: 22, worldCopyJump: false,
+        minZoom: 2, maxZoom: 18, worldCopyJump: false,
         maxBounds: [[-90, -180], [90, 180]], maxBoundsViscosity: 1.0,
         doubleClickZoom: false,   // ← وقف dblclick zoom
       });
       mapInstanceRef.current = map;
       mapObjRef.current      = map;
 
-      map.createPane("satellitePane"); map.getPane("satellitePane")!.style.zIndex = "200";
-      map.createPane("indexPane");     map.getPane("indexPane")!.style.zIndex     = "250";
+      map.createPane("satellitePane"); map.getPane("satellitePane")!.style.zIndex = "201";
+      map.createPane("indexPane");     map.getPane("indexPane")!.style.zIndex     = "202";
       map.createPane("labelsPane");
-      Object.assign(map.getPane("labelsPane")!.style, { zIndex: "450", pointerEvents: "none" });
+      Object.assign(map.getPane("labelsPane")!.style, { zIndex: "203", pointerEvents: "none" });
 
-      // ① Esri WorldImagery — maxNativeZoom:19 عشان لو زاد الزوم يعمل stretch بدل "not available"
+      // ① Esri WorldImagery عبر الـ proxy — maxNativeZoom:19 عشان stretch بدل "not available"
       baseTileRef.current = L.tileLayer(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+        "/api/tile/{z}/{x}/{y}?source=satellite", {
         attribution: "Tiles © Esri",
-        maxZoom: 22,          // اليوزر يقدر يزوم لـ 22
-        maxNativeZoom: 19,    // التايل بتيتجيب لحد 19 بس، وبعدها بتتـstretch تلقائياً
-        pane: "satellitePane", crossOrigin: true,
+        maxZoom: 18,
+        maxNativeZoom: 18,
+        pane: "satellitePane", crossOrigin: "anonymous",
       }).addTo(map);
 
       labelsLayerRef.current = L.tileLayer(
         "/api/tile/{z}/{x}/{y}?source=labels",
-        { attribution: "", maxZoom: 22, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: true }
+        { attribution: "", maxZoom: 22, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: "anonymous" }
       ).addTo(map);
 
       // ── Canvas Layer ──────────────────────────────────────────────────────
@@ -249,28 +350,14 @@ export default function LeafletMap({
         if (baseTileRef.current)  map.removeLayer(baseTileRef.current);
         if (indexTileRef.current) { map.removeLayer(indexTileRef.current); indexTileRef.current = null; }
 
-        if (satKey === "Default") {
-          baseTileRef.current = L.tileLayer(
-            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-            attribution: "Tiles © Esri",
-            maxZoom: 22, maxNativeZoom: 19,
-            pane: "satellitePane", crossOrigin: true,
-          }).addTo(map);
-          return;
-        }
-        baseTileRef.current = (def.type === "wms"
-          ? (L.tileLayer as any).wms(def.url, {
-              layers: def.layers, format: "image/jpeg", transparent: false, version: "1.1.1",
-              attribution: def.attribution,
-              maxZoom: def.maxZoom, maxNativeZoom: def.maxNativeZoom,
-              pane: "satellitePane", crossOrigin: true,
-            })
-          : L.tileLayer(def.url, {
-              attribution: def.attribution,
-              maxZoom: def.maxZoom, maxNativeZoom: def.maxNativeZoom,
-              tileSize: 256, pane: "satellitePane", crossOrigin: true,
-            })
-        ).addTo(map);
+        baseTileRef.current = L.tileLayer(def.url, {
+          attribution:   def.attribution,
+          maxZoom:       def.maxZoom,
+          maxNativeZoom: def.maxNativeZoom,
+          tileSize:      256,
+          pane:          "satellitePane",
+          crossOrigin:   "anonymous",
+        }).addTo(map);
       });
 
       onIdxChange((idxKey: IdxKey) => {
@@ -281,7 +368,7 @@ export default function LeafletMap({
         indexTileRef.current = L.tileLayer(tile.url, {
           attribution: `${idxKey}`,
           maxZoom: tile.maxZoom, maxNativeZoom: tile.maxNativeZoom,
-          tileSize: 256, opacity: tile.opacity, pane: "indexPane", crossOrigin: true,
+          tileSize: 256, opacity: tile.opacity, pane: "indexPane", crossOrigin: "anonymous",
         }).addTo(map);
       });
 
@@ -466,8 +553,8 @@ export default function LeafletMap({
     <>
       <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
       <style>{`
-        .leaflet-container{background:radial-gradient(ellipse at center,#0a1628 0%,#040d1a 60%,#000 100%)!important}
-        .leaflet-container::before{content:'';position:absolute;inset:0;background-image:radial-gradient(1px 1px at 10% 20%,rgba(255,255,255,.6) 0%,transparent 100%),radial-gradient(1px 1px at 30% 60%,rgba(255,255,255,.4) 0%,transparent 100%),radial-gradient(1px 1px at 50% 10%,rgba(255,255,255,.5) 0%,transparent 100%),radial-gradient(1px 1px at 70% 80%,rgba(255,255,255,.3) 0%,transparent 100%),radial-gradient(1px 1px at 85% 35%,rgba(255,255,255,.5) 0%,transparent 100%),radial-gradient(1px 1px at 20% 85%,rgba(255,255,255,.4) 0%,transparent 100%),radial-gradient(1px 1px at 60% 45%,rgba(255,255,255,.3) 0%,transparent 100%),radial-gradient(1px 1px at 90% 65%,rgba(255,255,255,.5) 0%,transparent 100%),radial-gradient(1px 1px at 40% 30%,rgba(255,255,255,.4) 0%,transparent 100%),radial-gradient(1px 1px at 75% 15%,rgba(255,255,255,.6) 0%,transparent 100%);pointer-events:none;z-index:0}
+        .leaflet-container{background:#040d1a!important}
+        .leaflet-container::before{content:'';position:absolute;inset:0;background-image:radial-gradient(1px 1px at 10% 20%,rgba(255,255,255,.6) 0%,transparent 100%),radial-gradient(1px 1px at 30% 60%,rgba(255,255,255,.4) 0%,transparent 100%),radial-gradient(1px 1px at 50% 10%,rgba(255,255,255,.5) 0%,transparent 100%),radial-gradient(1px 1px at 70% 80%,rgba(255,255,255,.3) 0%,transparent 100%),radial-gradient(1px 1px at 85% 35%,rgba(255,255,255,.5) 0%,transparent 100%),radial-gradient(1px 1px at 20% 85%,rgba(255,255,255,.4) 0%,transparent 100%),radial-gradient(1px 1px at 60% 45%,rgba(255,255,255,.3) 0%,transparent 100%),radial-gradient(1px 1px at 90% 65%,rgba(255,255,255,.5) 0%,transparent 100%),radial-gradient(1px 1px at 40% 30%,rgba(255,255,255,.4) 0%,transparent 100%),radial-gradient(1px 1px at 75% 15%,rgba(255,255,255,.6) 0%,transparent 100%);pointer-events:none;z-index:-1}
         .ndvi-tooltip{background:#0a1628!important;border:1px solid rgba(0,212,255,.3)!important;color:#e2e8f0!important;font-size:.72rem!important;border-radius:6px!important}
         .ndvi-tooltip::before{border-top-color:rgba(0,212,255,.3)!important}
         .leaflet-popup-content-wrapper{background:#0a1628!important;border:1px solid rgba(255,255,255,.1)!important;color:#e2e8f0!important;border-radius:10px!important;box-shadow:0 8px 32px rgba(0,0,0,.6)!important;font-size:.82rem!important}
