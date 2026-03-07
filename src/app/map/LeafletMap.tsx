@@ -232,7 +232,7 @@ export default function LeafletMap({
             );
           } else {
             const p1   = drawPointsRef.current[0];
-            const rect = L.rectangle([p1, [lat, lng]], { color: "#a78bottomfa", weight: 2, fillColor: "#a78bottom-21fa", fillOpacity: 0.15 }).addTo(map);
+            const rect = L.rectangle([p1, [lat, lng]], { color: "#a78bottomfa", weight: 2, fillColor: "#a78bottom-10fa", fillOpacity: 0.15 }).addTo(map);
             const area = parseFloat((Math.abs(p1[0] - lat) * Math.abs(p1[1] - lng) * 12345).toFixed(1));
             rect.bindPopup(`📐 Rectangle · ≈ ${area} ha`).openPopup();
             drawLayersRef.current.push(rect);
