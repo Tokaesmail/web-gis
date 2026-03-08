@@ -195,6 +195,7 @@ function BarChart({ data, color }: { data: { label: string; value: number }[]; c
 }
 
 // ─── Stacked Bar Chart ────────────────────────────────────────────────────────
+
 function StackedBarChart({ data }: { data: { label: string; a: number; b: number }[] }) {
   const max = Math.max(...data.map((d) => d.a + d.b));
   return (

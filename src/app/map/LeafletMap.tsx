@@ -7,7 +7,7 @@
 // ③ Double-click zoom متوقف تماماً
 // ④ الألوان للعرض بس — مش بتتبعت للباك
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMapCanvas }      from "./useMapCanvas";
 import {
   DrawTool, SAT_LAYERS, INDEX_TILES,
@@ -36,6 +36,8 @@ interface Props {
   onFeatureClick?: (feature: GeoJSON.Feature) => void;
   /** GeoJSON data لعرضها على الخريطة */
   geoJsonData?:   GeoJSON.FeatureCollection | GeoJSON.Feature | null;
+  /** GeoJSON إضافي (مثلاً شيكات الجامعات) يُعرض فوق الـ layer الأول */
+  extraGeoJsonData?: GeoJSON.FeatureCollection | GeoJSON.Feature | null;
   /** تنسيق مخصص للـ GeoJSON layer */
   geoJsonStyle?:  GeoJSONStyle;
   /** هل نزوم على الـ GeoJSON بعد التحميل؟ */
@@ -61,10 +63,18 @@ function getContourColor(value: number): string {
   return "#f87171";
 }
 
+// ── ألوان نطاقات الجامعات (service area breaks) ──────────────────────────────
+// أخضر = 0-5 دق (الأقرب) | برتقالي = 5-10 | أحمر = 10-15 (الأبعد)
+function getUniversityColor(from: number, to: number): { fill: string; stroke: string } {
+  if (to <= 5)  return { fill: "#22c55e", stroke: "#16a34a" };
+  if (to <= 10) return { fill: "#f59e0b", stroke: "#d97706" };
+  return           { fill: "#ef4444", stroke: "#dc2626" };
+}
+
 export default function LeafletMap({
   activeTool, onAreaSelected, onCoordsUpdate,
   flyToRef, clearRef, onSatChange, onIdxChange, onCapture,
-  geoJsonData, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
+  geoJsonData, extraGeoJsonData, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
 }: Props) {
 
   const mapRef         = useRef<HTMLDivElement>(null);
@@ -83,7 +93,9 @@ export default function LeafletMap({
   // نحتاج refs للـ map و L عشان نستخدمهم في finishPolygon من الـ button
   const mapObjRef      = useRef<any>(null);
   const LRef           = useRef<any>(null);
-  const geoJsonLayerRef = useRef<any>(null);
+  const geoJsonLayerRef     = useRef<any>(null);
+  const extraGeoJsonLayerRef = useRef<any>(null);
+  const [mapReady, setMapReady] = useState(false);
 
   const {
     drawPolygon, drawRect, drawCircle, drawMeasure, drawMarker,
@@ -106,8 +118,25 @@ export default function LeafletMap({
 
     const layer = L.geoJSON(geoJsonData, {
       style: (feature: any) => {
-        const v = feature?.properties?.Contour ?? 0;
-        const c = getContourColor(v);
+        const p = feature?.properties ?? {};
+
+        // ── University service-area polygons ─────────────────────────────────
+        if (p._layerType === "university" || p.FromBreak !== undefined) {
+          const uc = p._fillColor
+            ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
+            : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
+          return {
+            color:       geoJsonStyle?.color       ?? uc.stroke,
+            weight:      geoJsonStyle?.weight      ?? 1.5,
+            opacity:     geoJsonStyle?.opacity     ?? 0.9,
+            fillColor:   geoJsonStyle?.fillColor   ?? uc.fill,
+            fillOpacity: geoJsonStyle?.fillOpacity ?? 0.25,
+            dashArray:   geoJsonStyle?.dashArray,
+          };
+        }
+
+        // ── Contour lines (الافتراضي) ─────────────────────────────────────────
+        const c = getContourColor(p.Contour ?? 0);
         return {
           color:       geoJsonStyle?.color       ?? c,
           weight:      geoJsonStyle?.weight      ?? 1.5,
@@ -125,20 +154,42 @@ export default function LeafletMap({
       onEachFeature: (feature: any, lyr: any) => {
         if (!feature.properties) return;
         const p = feature.properties;
+
+        // ── University tooltip ────────────────────────────────────────────────
+        if (p._layerType === "university" || p.FromBreak !== undefined) {
+          const uc = p._fillColor
+            ? { fill: p._fillColor }
+            : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
+          const rangeLabel =
+            p.ToBreak <= 5  ? "0 – 5 دقائق  (الأقرب)" :
+            p.ToBreak <= 10 ? "5 – 10 دقائق" :
+                              "10 – 15 دقيقة (الأبعد)";
+          lyr.bindTooltip(
+            `<div style="font-size:.75rem;line-height:1.5;direction:rtl">
+              <span style="color:${uc.fill};font-weight:700">${p.Name?.split(" : ")[0] ?? ""}</span><br/>
+              <span style="color:#cbd5e1">${rangeLabel}</span>
+            </div>`,
+            { sticky: true, className: "ndvi-tooltip" }
+          );
+          lyr.on("click", (e: any) => {
+            L.DomEvent.stopPropagation(e);
+            if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
+            if (geoJsonLayerRef.current) geoJsonLayerRef.current.resetStyle();
+            lyr.setStyle({ weight: 3, opacity: 1, fillOpacity: 0.45 });
+          });
+          return;
+        }
+
+        // ── Contour tooltip ───────────────────────────────────────────────────
         const contour = p.Contour;
-        // tooltip on hover
         lyr.bindTooltip(
           `<span style="color:#22d3ee;font-weight:600;font-size:.72rem">Contour: ${contour}m</span>`,
           { sticky: true, className: "ndvi-tooltip" }
         );
-        // click → send feature to sidebar (no popup)
         lyr.on("click", (e: any) => {
           L.DomEvent.stopPropagation(e);
           if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
-          // highlight clicked layer
-          if (geoJsonLayerRef.current) {
-            geoJsonLayerRef.current.resetStyle();
-          }
+          if (geoJsonLayerRef.current) geoJsonLayerRef.current.resetStyle();
           lyr.setStyle({ weight: 3, opacity: 1, color: "#22d3ee", fillOpacity: 0.25 });
         });
       },
@@ -147,12 +198,7 @@ export default function LeafletMap({
     layer.addTo(map);
     geoJsonLayerRef.current = layer;
 
-    if (geoJsonFitBounds) {
-      try {
-        const bounds = layer.getBounds();
-        if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
-      } catch {}
-    }
+    // fitBounds disabled — map starts on Jeddah
 
     console.log("✅ GeoJSON layer added");
 
@@ -162,7 +208,72 @@ export default function LeafletMap({
         geoJsonLayerRef.current = null;
       }
     };
-  }, [geoJsonData]);
+  }, [geoJsonData, mapReady]);
+
+  // ── Extra GeoJSON layer (شيكات الجامعات) ─────────────────────────────────
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const L   = LRef.current;
+    if (!map || !L) return;
+
+    // امسح القديمة
+    if (extraGeoJsonLayerRef.current) {
+      map.removeLayer(extraGeoJsonLayerRef.current);
+      extraGeoJsonLayerRef.current = null;
+    }
+    if (!extraGeoJsonData) return;
+
+    const layer = L.geoJSON(extraGeoJsonData, {
+      style: (feature: any) => {
+        const p   = feature?.properties ?? {};
+        const uc  = p._fillColor
+          ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
+          : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
+        return {
+          color:       uc.stroke,
+          weight:      1.8,
+          opacity:     0.9,
+          fillColor:   uc.fill,
+          fillOpacity: 0.22,
+        };
+      },
+      onEachFeature: (feature: any, lyr: any) => {
+        const p = feature?.properties ?? {};
+        const uc = p._fillColor
+          ? { fill: p._fillColor }
+          : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
+        const uniName   = (p.Name ?? "").split(" : ")[0];
+        const rangeLabel =
+          p.ToBreak <= 5  ? "0 – 5 دقائق  🟢" :
+          p.ToBreak <= 10 ? "5 – 10 دقائق 🟡" :
+                            "10 – 15 دقيقة 🔴";
+        lyr.bindTooltip(
+          `<div style="font-size:.75rem;line-height:1.6;direction:rtl;padding:2px 4px">
+            <strong style="color:${uc.fill}">${uniName}</strong><br/>
+            <span style="color:#cbd5e1">${rangeLabel}</span>
+          </div>`,
+          { sticky: true, className: "ndvi-tooltip" }
+        );
+        lyr.on("click", (e: any) => {
+          L.DomEvent.stopPropagation(e);
+          if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
+          if (extraGeoJsonLayerRef.current) extraGeoJsonLayerRef.current.resetStyle();
+          lyr.setStyle({ weight: 3, fillOpacity: 0.45 });
+        });
+      },
+    });
+
+    layer.addTo(map);
+    extraGeoJsonLayerRef.current = layer;
+    console.log("✅ University polygons layer added");
+
+    return () => {
+      if (extraGeoJsonLayerRef.current) {
+        map.removeLayer(extraGeoJsonLayerRef.current);
+        extraGeoJsonLayerRef.current = null;
+      }
+    };
+  }, [extraGeoJsonData, mapReady]);
 
   const redrawCurrent = (canvas: HTMLCanvasElement, map: any, L: any) => {
     const coords = lastCoordsRef.current;
@@ -272,13 +383,14 @@ export default function LeafletMap({
       });
 
       const map = L.map(mapRef.current!, {
-        center: [20, 10], zoom: 3, zoomControl: false,
+        center: [21.54, 39.19], zoom: 11, zoomControl: false,
         minZoom: 2, maxZoom: 18, worldCopyJump: false,
         maxBounds: [[-90, -180], [90, 180]], maxBoundsViscosity: 1.0,
         doubleClickZoom: false,   // ← وقف dblclick zoom
       });
       mapInstanceRef.current = map;
       mapObjRef.current      = map;
+      setMapReady(true);
 
       map.createPane("satellitePane"); map.getPane("satellitePane")!.style.zIndex = "201";
       map.createPane("indexPane");     map.getPane("indexPane")!.style.zIndex     = "202";
