@@ -80,10 +80,15 @@ export default function JSONUploadModal({ onClose, onUpload }: JSONUploadModalPr
     if (!token) { setUploadStatus("error"); setUploadMsg("You must be signed in to upload files."); return; }
     setUploadStatus("uploading"); setUploadMsg("");
 
-    // Convert parsed geojson back to a File blob for the FormData
-    const blob = new Blob([JSON.stringify(parsed.raw)], { type: "application/json" });
-    const file = new File([blob], parsed.fileName, { type: "application/json" });
-    const form = new FormData(); form.append("file", file);
+    // Defer heavy JSON.stringify off the main thread so UI stays responsive
+    const form = await new Promise<FormData>((resolve) => {
+      setTimeout(() => {
+        const blob = new Blob([JSON.stringify(parsed.raw)], { type: "application/json" });
+        const file = new File([blob], parsed.fileName, { type: "application/json" });
+        const fd = new FormData(); fd.append("file", file);
+        resolve(fd);
+      }, 0);
+    });
 
     try {
       const res  = await fetch(`${BASE_URL}/gis/upload-geojson`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form });
@@ -91,7 +96,6 @@ export default function JSONUploadModal({ onClose, onUpload }: JSONUploadModalPr
       if (res.status === 401) { setUploadStatus("error"); setUploadMsg("Session expired — please sign in again."); return; }
       if (!res.ok || data.success === false) { setUploadStatus("error"); setUploadMsg(data.message ?? "Upload failed."); return; }
       setUploadStatus("success"); setUploadMsg("File uploaded successfully!");
-      // Also show on map then close after a short delay
       onUpload(parsed.geojson);
       setTimeout(() => onClose(), 1200);
     } catch { setUploadStatus("error"); setUploadMsg("Network error — please try again."); }
