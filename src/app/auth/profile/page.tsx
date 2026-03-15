@@ -45,8 +45,7 @@ export default async function ProfilePage() {
           {[
             { label: "User ID", value: user.id?.slice(0, 8) + "..." },
             { label: "Status", value: user.is_active ? "Active" : "Inactive" },
-            { label: "Member since", value: new Date(user.created_at??'').toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) },
-            { label: "Role", value: user.role ?? "User" },
+            { label: "Member since", value: user.created_at ? new Date(user.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—" },            { label: "Role", value: user.role ?? "User" },
           ].map((d) => (
             <div key={d.label} className="bg-white/[0.02] rounded-xl p-3">
               <p className="text-[0.62rem] text-slate-600 uppercase tracking-wide">{d.label}</p>
