@@ -95,6 +95,8 @@ export default function LeafletMap({
   const LRef           = useRef<any>(null);
   const geoJsonLayerRef     = useRef<any>(null);
   const extraGeoJsonLayerRef = useRef<any>(null);
+  const rafRef              = useRef<number | null>(null);
+  const lastMoveRef         = useRef<any>(null);
   const [mapReady, setMapReady] = useState(false);
 
   const {
@@ -506,7 +508,8 @@ export default function LeafletMap({
       map.on("click", async (e: any) => {
         const tool = activeToolRef.current;
         const { lat, lng } = e.latlng;
-        onCoordsUpdate(lat, lng);
+        // throttle setState to avoid React re-renders on every click
+        requestAnimationFrame(() => onCoordsUpdate(lat, lng));
         if (tool === "pointer") return;
 
         // ── Marker ──────────────────────────────────────────────────────────
@@ -632,25 +635,35 @@ export default function LeafletMap({
         // doubleClickZoom: false → مش بيزوم في أي حالة
       });
 
-      // ── Mousemove ─────────────────────────────────────────────────────────
+      // ── Mousemove (throttled via rAF) ────────────────────────────────────
       map.on("mousemove", (e: any) => {
-        const tool = activeToolRef.current, pts = drawPointsRef.current;
-        if (tool === "pointer" || !pts.length) return;
-        if (tempLayerRef.current) map.removeLayer(tempLayerRef.current);
-        const cur: [number, number] = [e.latlng.lat, e.latlng.lng];
-        const cp = TOOL_COLORS;
-        if (tool === "polygon" || tool === "measure")
-          tempLayerRef.current = L.polyline([...pts, cur], { color: cp[tool].stroke, weight: 1.5, dashArray: "4 4", opacity: 0.7 }).addTo(map);
-        if (tool === "rectangle")
-          tempLayerRef.current = L.rectangle([pts[0], cur], { color: cp.rectangle.stroke, weight: 1.5, dashArray: "4 4", fillOpacity: 0.08 }).addTo(map);
-        if (tool === "circle") {
-          const r = map.distance(pts[0], cur);
-          tempLayerRef.current = L.circle(pts[0], { radius: r, color: cp.circle.stroke, weight: 1.5, dashArray: "4 4", fillOpacity: 0.07 }).addTo(map);
-        }
+        lastMoveRef.current = e;
+        if (rafRef.current !== null) return;
+        rafRef.current = requestAnimationFrame(() => {
+          rafRef.current = null;
+          const ev   = lastMoveRef.current;
+          if (!ev) return;
+          const tool = activeToolRef.current, pts = drawPointsRef.current;
+          if (tool === "pointer" || !pts.length) return;
+          if (tempLayerRef.current) map.removeLayer(tempLayerRef.current);
+          const cur: [number, number] = [ev.latlng.lat, ev.latlng.lng];
+          const cp = TOOL_COLORS;
+          if (tool === "polygon" || tool === "measure")
+            tempLayerRef.current = L.polyline([...pts, cur], { color: cp[tool].stroke, weight: 1.5, dashArray: "4 4", opacity: 0.7 }).addTo(map);
+          if (tool === "rectangle")
+            tempLayerRef.current = L.rectangle([pts[0], cur], { color: cp.rectangle.stroke, weight: 1.5, dashArray: "4 4", fillOpacity: 0.08 }).addTo(map);
+          if (tool === "circle") {
+            const r = map.distance(pts[0], cur);
+            tempLayerRef.current = L.circle(pts[0], { radius: r, color: cp.circle.stroke, weight: 1.5, dashArray: "4 4", fillOpacity: 0.07 }).addTo(map);
+          }
+        });
       });
     });
 
-    return () => { if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; } };
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; }
+    };
   }, []);
 
   useEffect(() => {
