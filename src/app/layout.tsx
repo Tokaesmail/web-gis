@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { LangProvider } from "./_components/translations";
 import "./globals.css";
 import { SessionProvider } from "next-auth/react"
+import Providers from "./providers";
 
 export const metadata: Metadata = {
   title: "GeoSense AI",
@@ -17,7 +18,7 @@ export default function RootLayout({
     <html suppressHydrationWarning>
       <body>
         <LangProvider>
-          {children}
+          <Providers>{children}</Providers>
 
         </LangProvider>
       </body>

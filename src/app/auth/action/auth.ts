@@ -1,56 +1,45 @@
 "use server";
 
-import { signIn, signOut, auth } from "@/src/auth";
-import { isRedirectError } from "next/dist/client/components/redirect-error";
-import { RegisterValues, schema } from "@/src/app/Schema/schema";
+import { getServerSession } from "next-auth";
+import { authOptions } from "../../../authoptions";
+import { redirect } from "next/navigation";
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000";
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://gis-back-chi.vercel.app";
 
-// ─── Helper ────────────────────────────────────────
+// ─── Helper ────────────────────────────────────────────────────────────────────
 async function getAccessToken(): Promise<string | null> {
-  const session = await auth();
-  return session?.user?.accessToken ?? null;
+  const session = await getServerSession(authOptions);
+  return (session?.user as any)?.accessToken ?? null;
 }
 
-// ─── Register  POST /auth/register ───────────────────────────────────────────
-export async function registerAction(values: RegisterValues) {
-  const validated = schema.safeParse(values);
-  if (!validated.success) return { error: "Invalid data" };
-
-  try {
-    const res = await fetch(`${BASE_URL}/auth/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(values),
-    });
-
-    const data = await res.json();
-    if (!res.ok) return { error: data.message || "Registration failed" };
-
-    return { success: true };
-  } catch {
-    return { error: "Server communication error" };
-  }
+// ─── Get Current User ──────────────────────────────────────────────────────────
+export async function getCurrentUser() {
+  const session = await getServerSession(authOptions);
+  return session?.user ?? null;
 }
 
-// ─── Login ─────────────────────────────────────────────────────
+// ─── Login ─────────────────────────────────────────────────────────────────────
+// ONLY validates inputs — the API call happens in authOptions.authorize()
 export async function loginAction(_: unknown, formData: FormData) {
-  try {
-    await signIn("credentials", {
-      email: formData.get("email"),
-      password: formData.get("password"),
-      redirectTo: "/map",
-    });
-  } catch (error: any) {
-    if (isRedirectError(error)) throw error; // ← مهم جداً
-    if (error?.type === "CredentialsSignin") {
-      return { error: "Invalid email or password" };
-    }
-    return { error: "Something went wrong" };
+  const email = formData.get("email") as string;
+  const password = formData.get("password") as string;
+
+  if (!email || !password) {
+    return { error: "Email and password are required" };
   }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { error: "Enter a valid email address" };
+  }
+
+  if (password.length < 6) {
+    return { error: "Password is too short" };
+  }
+
+  return { error: null };
 }
 
-// ─── Logout ───────────────────────────────────────────────────────────────────
+// ─── Logout ────────────────────────────────────────────────────────────────────
 export async function logoutAction() {
   const token = await getAccessToken();
   if (token) {
@@ -59,11 +48,10 @@ export async function logoutAction() {
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => {});
   }
-
-  await signOut({ redirectTo: "/auth/login" });
+  redirect("/auth/login");
 }
 
-// ─── Logout All ───────────────────────────────────────────────────────────────
+// ─── Logout All ────────────────────────────────────────────────────────────────
 export async function logoutAllAction() {
   const token = await getAccessToken();
   if (token) {
@@ -72,11 +60,10 @@ export async function logoutAllAction() {
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => {});
   }
-
-  await signOut({ redirectTo: "/auth/login" });
+  redirect("/auth/login");
 }
 
-// ─── Change Password ──────────────────────────────────────────────────────────
+// ─── Change Password ───────────────────────────────────────────────────────────
 export async function changePasswordAction(_: unknown, formData: FormData) {
   const token = await getAccessToken();
 
@@ -100,13 +87,7 @@ export async function changePasswordAction(_: unknown, formData: FormData) {
   return { success: true };
 }
 
-// ─── Get Current User من الـ Session ─────────────────────────────────────────
-export async function getCurrentUser() {
-  const session = await auth();
-  return session?.user ?? null;
-}
-
-// ─── Get Sessions ─────────────────────────────────────────────────────────────
+// ─── Get Sessions ──────────────────────────────────────────────────────────────
 export async function getSessions() {
   const token = await getAccessToken();
 
@@ -123,7 +104,7 @@ export async function getSessions() {
   return data.data?.sessions ?? data.sessions ?? [];
 }
 
-// ─── Revoke Session ───────────────────────────────────────────────────────────
+// ─── Revoke Session ────────────────────────────────────────────────────────────
 export async function revokeSessionAction(formData: FormData) {
   const sessionId = formData.get("sessionId");
   if (!sessionId) return { error: "Session ID is required" };
@@ -143,7 +124,29 @@ export async function revokeSessionAction(formData: FormData) {
   return { success: true };
 }
 
-// ─── Refresh Token ────────────────────────────────────────────────────────────
+// ─── Register ──────────────────────────────────────────────────────────────────
+export async function registerAction(_: unknown, formData: FormData) {
+  const body = {
+    username: formData.get("username"),
+    email: formData.get("email"),
+    password: formData.get("password"),
+  };
+
+  const res = await fetch(`${BASE_URL}/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    return { error: data.message ?? "Registration failed" };
+  }
+
+  redirect("/auth/login?registered=1");
+}
+
+// ─── Refresh Token ─────────────────────────────────────────────────────────────
 export async function refreshTokenAction() {
   const token = await getAccessToken();
 

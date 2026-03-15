@@ -29,7 +29,7 @@ export default async function LoginPage({ searchParams }: Props) {
         </p>
       </div>
 
-      {/* Success banner بعد الريجيستر */}
+      {/* Success banner */}
       {params.registered && (
         <div className="flex items-center gap-3 bg-emerald-400/8 border border-emerald-400/20 rounded-xl px-4 py-3">
           <svg
@@ -48,7 +48,7 @@ export default async function LoginPage({ searchParams }: Props) {
         </div>
       )}
 
-      {/* Error من الـ middleware */}
+      {/* Error*/}
       {params.error && (
         <div className="flex items-center gap-3 bg-red-500/8 border border-red-500/20 rounded-xl px-4 py-3">
           <svg
