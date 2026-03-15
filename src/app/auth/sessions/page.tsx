@@ -76,7 +76,7 @@ export default async function SessionsPage() {
 
                 {/* Revoke button */}
                 {!isCurrentDevice && (
-                  <form action={(data) => revokeSessionAction(data)}>
+                  <form action={async (data) => { await revokeSessionAction(data); }}>
                     <input type="hidden" name="sessionId" value={session._id ?? session.id} />
                     <button type="submit" className="text-[0.68rem] text-red-400 hover:text-red-300 bg-red-500/8 hover:bg-red-500/15 border border-red-500/15 hover:border-red-500/25 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer whitespace-nowrap">
                         Revoke
