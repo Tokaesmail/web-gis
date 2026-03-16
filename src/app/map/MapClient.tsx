@@ -39,6 +39,7 @@ export default function MapPage() {
   const [uniData, setUniData]       = useState<any>(null);
   const [uniLoading, setUniLoading] = useState(false);
   const [uniError, setUniError]     = useState<string | null>(null);
+  const [uploadedGeoJson, setUploadedGeoJson] = useState<any>(null);
 
   const flyToRef = useRef<((lat: number, lng: number) => void) | null>(null);
   const clearRef = useRef<(() => void) | null>(null);
@@ -177,7 +178,11 @@ export default function MapPage() {
           onSatChange={handleSatChange}
           onIdxChange={handleIdxChange}
           geoJsonData={geoJsonData}
-          extraGeoJsonData={uniData}
+          extraGeoJsonData={
+            uniData && uploadedGeoJson
+              ? { type: "FeatureCollection", features: [...(uniData.features ?? []), ...(uploadedGeoJson.features ?? [])] }
+              : uploadedGeoJson ?? uniData
+          }
           geoJsonFitBounds={true}
           onFeatureClick={(feature) => {
             setSelectedFeature(feature);
@@ -267,7 +272,11 @@ export default function MapPage() {
           onClear={handleClear}
         />
 
-        <AnalysisSidebar selectedFeature={selectedFeature} />
+        <AnalysisSidebar
+          selectedFeature={selectedFeature}
+          onGeoJSONUpload={setUploadedGeoJson}
+          onFlyTo={(lat, lng) => flyToRef.current?.(lat, lng)}
+        />
 
         {coords && (
           <CoordsPopup

@@ -1,29 +1,39 @@
 // src/types/next-auth.d.ts
+import type { DefaultSession, DefaultUser } from "next-auth";
+import type { DefaultJWT } from "next-auth/jwt";
 
-// Define the structure of user data from your API
-interface UserData {
-  role: string;
-  name: string;
-  email: string;
-}
-
-// Extend NextAuth's User type
-declare module 'next-auth' {
-  interface User {
-    id: string;
-    token: string;
-    user: UserData;
-  }
-
+declare module "next-auth" {
   interface Session {
-    user: UserData;
+    user: {
+      id: string;
+      username: string;
+      email: string;
+      role: string;
+      is_verified: boolean;
+      is_active: boolean;
+      created_at: string;
+      accessToken: string;
+    } & DefaultSession["user"];
+  }
+
+  interface User extends DefaultUser {
+    username?: string;
+    role?: string;
+    is_verified?: boolean;
+    is_active?: boolean;
+    created_at?: string;
+    accessToken?: string;
   }
 }
 
-// Extend NextAuth's JWT type
-declare module 'next-auth/jwt' {
-  interface JWT {
-    user: UserData;
-    token: string;
+declare module "next-auth/jwt" {
+  interface JWT extends DefaultJWT {
+    id?: string;
+    username?: string;
+    role?: string;
+    is_verified?: boolean;
+    is_active?: boolean;
+    created_at?: string;
+    accessToken?: string;
   }
 }
