@@ -112,7 +112,6 @@ export default function LeafletMap({
     const L   = LRef.current;
     if (!map || !L || !geoJsonData) return;
 
-    // امسح الـ layer القديمة
     if (geoJsonLayerRef.current) {
       map.removeLayer(geoJsonLayerRef.current);
       geoJsonLayerRef.current = null;
