@@ -1,4 +1,3 @@
-// src/app/auth/change-password/page.tsx
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getCurrentUser } from "../action/auth";

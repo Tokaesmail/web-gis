@@ -13,10 +13,12 @@ type ParsedFile =
 export interface JSONUploadModalProps {
   onClose: () => void;
   onUpload: (geojson: GeoJSON.FeatureCollection) => void;
+  /** يُستدعى فوراً بعد قراءة الفايل — يعرض الداتا على الخريطة بدون انتظار الـ API */
+  onDisplay?: (geojson: GeoJSON.FeatureCollection) => void;
 }
 
 // ─── JSONUploadModal ──────────────────────────────────────────────────────────
-export default function JSONUploadModal({ onClose, onUpload }: JSONUploadModalProps) {
+export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUploadModalProps) {
   const { data: session } = useSession();
   const token = (session?.user as any)?.accessToken as string | undefined;
 
@@ -64,7 +66,11 @@ export default function JSONUploadModal({ onClose, onUpload }: JSONUploadModalPr
       try {
         const raw = JSON.parse(e.target?.result as string);
         const geojson = tryGeoJSON(raw);
-        if (geojson && geojson.features.length > 0) setParsed({ kind: "geojson", fileName: file.name, geojson, raw });
+        if (geojson && geojson.features.length > 0) {
+          setParsed({ kind: "geojson", fileName: file.name, geojson, raw });
+          // ── عرض فوري على الخريطة بدون انتظار الـ upload ─────────────────
+          onDisplay?.(geojson);
+        }
         else setParsed({ kind: "generic", fileName: file.name, raw });
       } catch { setError("Could not read file — make sure it is valid JSON"); }
     };

@@ -15,6 +15,7 @@ import MapLayerBar from "./MapLayerBar";
 import LeafletMap from "./LeafletMap";
 import CoordsPopup from "./CoordsPopup";
 import AITriggerButton from "./AITriggerButton";
+import Mapbox3DView from "./Mapbox3DView";
 
 export default function MapPage() {
   const [aiOpen, setAiOpen] = useState(false);
@@ -31,6 +32,7 @@ export default function MapPage() {
   const [captureUrl, setCaptureUrl] = useState<string | null>(null);
   const [selectedLocation, setSelectedLocation] = useState<{ lat: number; lng: number; name?: string } | null>(null);
   const [selectedFeature, setSelectedFeature] = useState<GeoJSON.Feature | null>(null);
+  const [view3D, setView3D] = useState<{ lat: number; lng: number; name?: string } | null>(null);
   const [geoJsonData, setGeoJsonData]   = useState<any>(null);
   const [geoJsonLoading, setGeoJsonLoading] = useState(false);
   const [geoJsonError, setGeoJsonError] = useState<string | null>(null);
@@ -186,6 +188,31 @@ export default function MapPage() {
           geoJsonFitBounds={true}
           onFeatureClick={(feature) => {
             setSelectedFeature(feature);
+            /* ── فتح الـ 3D View لو الـ Feature عنده إحداثيات ─────────── */
+            if (feature.geometry.type === "Point") {
+              const [lng, lat] = (feature.geometry as GeoJSON.Point).coordinates;
+              const name =
+                feature.properties?.name ??
+                feature.properties?.NAME ??
+                feature.properties?.title ??
+                undefined;
+              setView3D({ lat, lng, name });
+            } else if (
+              feature.geometry.type === "Polygon" ||
+              feature.geometry.type === "MultiPolygon"
+            ) {
+              /* استخدم أول نقطة من الـ Polygon كمركز تقريبي */
+              const coords =
+                feature.geometry.type === "Polygon"
+                  ? (feature.geometry as GeoJSON.Polygon).coordinates[0][0]
+                  : (feature.geometry as GeoJSON.MultiPolygon).coordinates[0][0][0];
+              const name =
+                feature.properties?.name ??
+                feature.properties?.NAME ??
+                feature.properties?.title ??
+                undefined;
+              setView3D({ lat: coords[1], lng: coords[0], name });
+            }
           }}
         />
 
@@ -334,6 +361,16 @@ export default function MapPage() {
 
         <AIAssistant open={aiOpen} onClose={() => setAiOpen(false)} />
       </div>
+
+      {/* ── 3D Terrain Full Screen View ─────────────────────────────────── */}
+      {view3D && (
+        <Mapbox3DView
+          lat={view3D.lat}
+          lng={view3D.lng}
+          featureName={view3D.name}
+          onClose={() => setView3D(null)}
+        />
+      )}
     </div>
   );
 }

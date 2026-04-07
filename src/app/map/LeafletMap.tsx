@@ -199,7 +199,15 @@ export default function LeafletMap({
     layer.addTo(map);
     geoJsonLayerRef.current = layer;
 
-    // fitBounds disabled — map starts on Jeddah
+    // ── Fly to GeoJSON bounds after load ─────────────────────────────────────
+    if (geoJsonFitBounds) {
+      try {
+        const bounds = layer.getBounds();
+        if (bounds.isValid()) {
+          map.flyToBounds(bounds, { padding: [40, 40], maxZoom: 16, duration: 1.2 });
+        }
+      } catch (_) {}
+    }
 
     console.log("✅ GeoJSON layer added");
 
@@ -227,34 +235,75 @@ export default function LeafletMap({
     const layer = L.geoJSON(extraGeoJsonData, {
       style: (feature: any) => {
         const p   = feature?.properties ?? {};
-        const uc  = p._fillColor
-          ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
-          : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
+
+        // ── University service areas ───────────────────────────────────────────
+        if (p._layerType === "university" || p.FromBreak !== undefined) {
+          const uc  = p._fillColor
+            ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
+            : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
+          return { color: uc.stroke, weight: 1.8, opacity: 0.9, fillColor: uc.fill, fillOpacity: 0.22 };
+        }
+
+        // ── GeoJSON مرفوع من اليوزر — لون افتراضي سيان ────────────────────────
+        const customColor = p._color ?? p.color ?? p.stroke ?? "#00c8ff";
+        const customFill  = p._fillColor ?? p.fillColor ?? p.fill ?? "#00c8ff";
         return {
-          color:       uc.stroke,
-          weight:      1.8,
+          color:       customColor,
+          weight:      2,
           opacity:     0.9,
-          fillColor:   uc.fill,
-          fillOpacity: 0.22,
+          fillColor:   customFill,
+          fillOpacity: 0.2,
         };
       },
       onEachFeature: (feature: any, lyr: any) => {
         const p = feature?.properties ?? {};
-        const uc = p._fillColor
-          ? { fill: p._fillColor }
-          : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
-        const uniName   = (p.Name ?? "").split(" : ")[0];
-        const rangeLabel =
-          p.ToBreak <= 5  ? "0 – 5 دقائق  🟢" :
-          p.ToBreak <= 10 ? "5 – 10 دقائق 🟡" :
-                            "10 – 15 دقيقة 🔴";
-        lyr.bindTooltip(
-          `<div style="font-size:.75rem;line-height:1.6;direction:rtl;padding:2px 4px">
-            <strong style="color:${uc.fill}">${uniName}</strong><br/>
-            <span style="color:#cbd5e1">${rangeLabel}</span>
-          </div>`,
-          { sticky: true, className: "ndvi-tooltip" }
-        );
+
+        // ── إذا كانت داتا جامعات — tooltip مخصص ──────────────────────────────
+        if (p._layerType === "university" || p.FromBreak !== undefined) {
+          const uc = p._fillColor
+            ? { fill: p._fillColor }
+            : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
+          const uniName   = (p.Name ?? "").split(" : ")[0];
+          const rangeLabel =
+            p.ToBreak <= 5  ? "0 – 5 دقائق  🟢" :
+            p.ToBreak <= 10 ? "5 – 10 دقائق 🟡" :
+                              "10 – 15 دقيقة 🔴";
+          lyr.bindTooltip(
+            `<div style="font-size:.75rem;line-height:1.6;direction:rtl;padding:2px 4px">
+              <strong style="color:${uc.fill}">${uniName}</strong><br/>
+              <span style="color:#cbd5e1">${rangeLabel}</span>
+            </div>`,
+            { sticky: true, className: "ndvi-tooltip" }
+          );
+          lyr.on("click", (e: any) => {
+            L.DomEvent.stopPropagation(e);
+            if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
+            if (extraGeoJsonLayerRef.current) extraGeoJsonLayerRef.current.resetStyle();
+            lyr.setStyle({ weight: 3, fillOpacity: 0.45 });
+          });
+          return;
+        }
+
+        // ── داتا مرفوعة (GeoJSON عادي) — اعرض كل الـ properties ───────────────
+        const propKeys = Object.keys(p).filter(k => !k.startsWith("_"));
+        if (propKeys.length > 0) {
+          // Tooltip: أول 3 fields بس
+          const preview = propKeys.slice(0, 3)
+            .map(k => `<span style="color:#94a3b8">${k}:</span> <span style="color:#e2e8f0">${p[k]}</span>`)
+            .join("<br/>");
+          lyr.bindTooltip(
+            `<div style="font-size:.72rem;line-height:1.6;padding:2px 4px">${preview}</div>`,
+            { sticky: true, className: "ndvi-tooltip" }
+          );
+          // Popup: كل الـ properties عند الكليك
+          const allProps = propKeys
+            .map(k => `<tr><td style="color:#64748b;padding:2px 6px 2px 0;font-size:.68rem">${k}</td><td style="color:#e2e8f0;font-size:.68rem">${p[k] ?? "—"}</td></tr>`)
+            .join("");
+          lyr.bindPopup(
+            `<div style="min-width:180px"><table style="border-collapse:collapse;width:100%">${allProps}</table></div>`,
+            { maxWidth: 280 }
+          );
+        }
         lyr.on("click", (e: any) => {
           L.DomEvent.stopPropagation(e);
           if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
@@ -266,6 +315,15 @@ export default function LeafletMap({
 
     layer.addTo(map);
     extraGeoJsonLayerRef.current = layer;
+
+    // ── Fly to uploaded GeoJSON bounds ────────────────────────────────────────
+    try {
+      const bounds = layer.getBounds();
+      if (bounds.isValid()) {
+        map.flyToBounds(bounds, { padding: [50, 50], maxZoom: 16, duration: 1.2 });
+      }
+    } catch (_) {}
+
     console.log("✅ University polygons layer added");
 
     return () => {

@@ -836,6 +836,7 @@ export default function AnalysisSidebar({
       {uploadOpen && (
         <JSONUploadModal
           onClose={() => setUploadOpen(false)}
+          onDisplay={(geojson) => { onGeoJSONUpload?.(geojson); }}
           onUpload={(geojson) => { onGeoJSONUpload?.(geojson); }}
         />
       )}
