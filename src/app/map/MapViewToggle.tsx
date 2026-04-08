@@ -19,7 +19,7 @@
 import { useState, useRef } from "react";
 import LeafletMap     from "./LeafletMap";
 import Mapbox3DView   from "./Mapbox3DView";
-import AnalysisSidebar from "./AnalysisSidebar";
+import AnalysisSidebar from "../_components/AnalysisSidebar/AnalysisSidebar";
 
 // ── أي props مشتركة بين الاتنين ──────────────────────────────────────────────
 import type { DrawTool, SatKey, IdxKey } from "./mapTypes_proxy";
