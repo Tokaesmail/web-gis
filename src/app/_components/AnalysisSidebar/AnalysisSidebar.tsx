@@ -818,7 +818,8 @@ export default function AnalysisSidebar({
   onStartImageOverlay,
   onExtrusionConfig,
   onFlyTo,
-  onClose,
+    onClose,
+
 }: {
   selectedFeature?: GeoJSON.Feature | null;
   onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection) => void;
@@ -826,6 +827,7 @@ export default function AnalysisSidebar({
   onExtrusionConfig?: (cfg: { enabled: boolean; heightProperty?: string; defaultHeightM?: number }) => void;
   onFlyTo?: (lat: number, lng: number) => void;
   onClose?: () => void;
+
 }) {
   const [activePanel, setActivePanel] = useState<PanelId | null>("overview");
   const [uploadOpen, setUploadOpen]   = useState(false);
@@ -842,7 +844,7 @@ export default function AnalysisSidebar({
       {uploadOpen && (
         <JSONUploadModal
           onClose={() => setUploadOpen(false)}
-          onDisplay={(geojson) => { onGeoJSONUpload?.(geojson); onClose?.(); }}
+          onDisplay={(geojson) => { onGeoJSONUpload?.(geojson); }}
           onUpload={(geojson) => { onGeoJSONUpload?.(geojson); }}
           onAddImageOverlay={(file) => { onStartImageOverlay?.(file); }}
           onExtrusionConfig={(cfg) => { onExtrusionConfig?.(cfg); }}
