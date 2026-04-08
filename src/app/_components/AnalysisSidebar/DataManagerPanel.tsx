@@ -8,6 +8,7 @@ const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://gis-back-chi.vercel
 // ─── Types ────────────────────────────────────────────────────────────────────
 type ParsedFile =
   | { kind: "geojson"; fileName: string; geojson: GeoJSON.FeatureCollection; raw: any }
+  | { kind: "image"; fileName: string; file: File; url: string }
   | { kind: "generic"; fileName: string; raw: any };
 
 export interface JSONUploadModalProps {
@@ -15,10 +16,20 @@ export interface JSONUploadModalProps {
   onUpload: (geojson: GeoJSON.FeatureCollection) => void;
   /** يُستدعى فوراً بعد قراءة الفايل — يعرض الداتا على الخريطة بدون انتظار الـ API */
   onDisplay?: (geojson: GeoJSON.FeatureCollection) => void;
+  /** Add local image overlay workflow (placed by 2 clicks on map) */
+  onAddImageOverlay?: (file: File) => void;
+  /** Optional: enable pseudo-3D extrusion for the displayed GeoJSON */
+  onExtrusionConfig?: (cfg: { enabled: boolean; heightProperty?: string; defaultHeightM?: number }) => void;
 }
 
 // ─── JSONUploadModal ──────────────────────────────────────────────────────────
-export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUploadModalProps) {
+export default function JSONUploadModal({
+  onClose,
+  onUpload,
+  onDisplay,
+  onAddImageOverlay,
+  onExtrusionConfig,
+}: JSONUploadModalProps) {
   const { data: session } = useSession();
   const token = (session?.user as any)?.accessToken as string | undefined;
 
@@ -27,8 +38,24 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
   const [parsed,        setParsed]        = useState<ParsedFile | null>(null);
   const [uploadStatus,  setUploadStatus]  = useState<"idle" | "uploading" | "success" | "error">("idle");
   const [uploadMsg,     setUploadMsg]     = useState<string>("");
+  const [savedData, setSavedData] = useState<any>(null);
+  const [extrudeEnabled, setExtrudeEnabled] = useState(false);
+  const [heightProp, setHeightProp] = useState("height");
+  const [defaultHeightM, setDefaultHeightM] = useState(30);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
+
+  const resetModalState = () => {
+    // cleanup any object URLs we created for previews
+    if (parsed?.kind === "image") {
+      try { URL.revokeObjectURL(parsed.url); } catch (_) {}
+    }
+    setParsed(null);
+    setError(null);
+    setUploadStatus("idle");
+    setUploadMsg("");
+    setSavedData(null);
+  };
 
   // ── Auto-detect if raw JSON is / can be converted to GeoJSON ────────────────
   const tryGeoJSON = (raw: any): GeoJSON.FeatureCollection | null => {
@@ -58,9 +85,129 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
     return null;
   };
 
-  const parseFile = (file: File) => {
-    setError(null); setParsed(null); setUploadStatus("idle"); setUploadMsg("");
-    if (!file.name.match(/\.(json|geojson)$/i)) { setError("File must be .json or .geojson format"); return; }
+  const parseFile = async (file: File) => {
+    resetModalState();
+    // images
+    if (file.name.match(/\.(png|jpg|jpeg|webp|gif)$/i) || file.type.startsWith("image/")) {
+      const url = URL.createObjectURL(file);
+      setParsed({ kind: "image", fileName: file.name, file, url });
+      // reset extrusion when image chosen
+      setExtrudeEnabled(false);
+      onExtrusionConfig?.({ enabled: false, heightProperty: heightProp, defaultHeightM });
+      return;
+    }
+
+    // GeoTIFF (.tif/.tiff) → convert locally to a PNG data URL so Leaflet can overlay it
+    if (file.name.match(/\.(tif|tiff)$/i) || file.type === "image/tiff") {
+      setUploadStatus("uploading");
+      setUploadMsg("Converting GeoTIFF…");
+      try {
+        let GeoTIFF: any;
+        try {
+          GeoTIFF = await import("geotiff");
+        } catch (e) {
+          setUploadStatus("error");
+          return;
+        }
+
+        const ab = await file.arrayBuffer();
+        const tiff = await (GeoTIFF as any).fromArrayBuffer(ab);
+        const img = await tiff.getImage();
+
+        const width0 = img.getWidth();
+        const height0 = img.getHeight();
+        const samplesPerPixel = img.getSamplesPerPixel?.() ?? 1;
+
+        // Downscale big rasters to avoid memory/time crashes in browser
+        const MAX_DIM = 2048;
+        const scale = Math.min(1, MAX_DIM / Math.max(width0, height0));
+        const width = Math.max(1, Math.round(width0 * scale));
+        const height = Math.max(1, Math.round(height0 * scale));
+
+        // Read only first 3 samples for RGB, or 1 sample for grayscale
+        const readSamples = samplesPerPixel >= 3 ? [0, 1, 2] : [0];
+        const rasters = await img.readRasters({
+          interleave: true,
+          samples: readSamples,
+          width,
+          height,
+          resampleMethod: "bilinear",
+        });
+
+        // Build RGBA ImageData
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Canvas not available");
+        const out = ctx.createImageData(width, height);
+        const dst = out.data;
+
+        const toByte = (v: number) => {
+          if (!Number.isFinite(v)) return 0;
+          return Math.max(0, Math.min(255, Math.round(v)));
+        };
+
+        if (samplesPerPixel >= 3) {
+          // Assume RGB (ignore extra bands)
+          // rasters now interleaved as RGBRGB...
+          for (let i = 0, j = 0; i < width * height; i++, j += 3) {
+            const di = i * 4;
+            dst[di + 0] = toByte((rasters as any)[j + 0]);
+            dst[di + 1] = toByte((rasters as any)[j + 1]);
+            dst[di + 2] = toByte((rasters as any)[j + 2]);
+            dst[di + 3] = 255;
+          }
+        } else {
+          // Single band → normalize min/max to 0..255
+          let min = Infinity, max = -Infinity;
+          for (let i = 0; i < (rasters as any).length; i++) {
+            const v = (rasters as any)[i];
+            if (!Number.isFinite(v)) continue;
+            min = Math.min(min, v);
+            max = Math.max(max, v);
+          }
+          const span = max > min ? (max - min) : 1;
+          for (let i = 0; i < width * height; i++) {
+            const v = (rasters as any)[i];
+            const n = Number.isFinite(v) ? ((v - min) / span) * 255 : 0;
+            const b = toByte(n);
+            const di = i * 4;
+            dst[di + 0] = b;
+            dst[di + 1] = b;
+            dst[di + 2] = b;
+            dst[di + 3] = 255;
+          }
+        }
+
+        ctx.putImageData(out, 0, 0);
+        const blob: Blob = await new Promise((resolve, reject) => {
+          canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png");
+        });
+
+        const pngFile = new File([blob], file.name.replace(/\.(tif|tiff)$/i, ".png"), { type: "image/png" });
+        const url = URL.createObjectURL(pngFile);
+        setParsed({ kind: "image", fileName: pngFile.name, file: pngFile, url });
+
+        setUploadStatus("idle");
+        setUploadMsg("");
+        return;
+      } catch (e: any) {
+        setUploadStatus("error");
+        const msg =
+          (e?.message ? String(e.message) : "") ||
+          (typeof e === "string" ? e : "") ||
+          "GeoTIFF conversion failed.";
+        setUploadMsg(`${msg}  (Try exporting RGB GeoTIFF or smaller size)`);
+        return;
+      }
+    }
+
+    // json / geojson
+    if (!file.name.match(/\.(json|geojson)$/i)) {
+      setError("File must be .json/.geojson or an image (.png/.jpg/.tif)");
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
@@ -70,12 +217,20 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
           setParsed({ kind: "geojson", fileName: file.name, geojson, raw });
           // ── عرض فوري على الخريطة بدون انتظار الـ upload ─────────────────
           onDisplay?.(geojson);
+          // keep extrusion state, but re-emit config for new data
+          onExtrusionConfig?.({ enabled: extrudeEnabled, heightProperty: heightProp, defaultHeightM });
         }
         else setParsed({ kind: "generic", fileName: file.name, raw });
       } catch { setError("Could not read file — make sure it is valid JSON"); }
     };
     reader.readAsText(file);
   };
+
+  // emit extrusion config changes (when a geojson is selected)
+  React.useEffect(() => {
+    if (parsed?.kind !== "geojson") return;
+    onExtrusionConfig?.({ enabled: extrudeEnabled, heightProperty: heightProp, defaultHeightM });
+  }, [parsed?.kind, extrudeEnabled, heightProp, defaultHeightM, onExtrusionConfig]);
 
   const onDrop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); const file = e.dataTransfer.files?.[0]; if (file) parseFile(file); };
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) parseFile(file); e.target.value = ""; };
@@ -107,6 +262,27 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
     } catch { setUploadStatus("error"); setUploadMsg("Network error — please try again."); }
   }
 
+  async function handleFetchMySavedData() {
+    setUploadStatus("uploading");
+    setUploadMsg("Loading saved data…");
+    setSavedData(null);
+    try {
+      const res = await fetch("/api/gis/my-data", { cache: "no-store" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setUploadStatus("error");
+        setUploadMsg(data?.message ?? "Failed to load saved data.");
+        return;
+      }
+      setSavedData(data);
+      setUploadStatus("success");
+      setUploadMsg("Saved data loaded.");
+    } catch (e: any) {
+      setUploadStatus("error");
+      setUploadMsg(e?.message ?? "Network error while loading saved data.");
+    }
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────────────
   const geomCounts = (fc: GeoJSON.FeatureCollection) => { const c: Record<string, number> = {}; fc.features.forEach((f) => { const t = f.geometry?.type ?? "Unknown"; c[t] = (c[t] ?? 0) + 1; }); return c; };
   const bbox = (fc: GeoJSON.FeatureCollection): string => {
@@ -124,9 +300,14 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div
-      className="fixed inset-0 z-[2000] flex items-center justify-center"
+      className="fixed inset-0 z-[3500] flex items-center justify-center"
       style={{ pointerEvents: "all" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          resetModalState();
+          onClose();
+        }
+      }}
     >
       <div className="absolute inset-0 bg-black/55 backdrop-blur-sm" />
 
@@ -147,13 +328,32 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
               <p className="text-[0.62rem] text-slate-500">GeoJSON · Arrays · Objects · Any structure</p>
             </div>
           </div>
-          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/[0.07] rounded-lg transition-all cursor-pointer">
+          <button
+            onClick={() => {
+              resetModalState();
+              onClose();
+            }}
+            className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/[0.07] rounded-lg transition-all cursor-pointer"
+          >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
           </button>
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4 custom-scroll">
+
+          
+
+          {savedData && (
+            <details className="bg-white/[0.02] border border-white/[0.06] rounded-2xl px-4 py-3">
+              <summary className="cursor-pointer text-[0.7rem] text-slate-300 select-none">
+                View saved data
+              </summary>
+              <pre className="mt-2 text-[0.58rem] text-slate-400 bg-black/30 border border-white/[0.06] rounded-lg p-3 overflow-x-auto leading-relaxed font-mono max-h-56">
+                {JSON.stringify(savedData, null, 2)}
+              </pre>
+            </details>
+          )}
 
           {/* Drop zone */}
           {!parsed && (
@@ -177,9 +377,9 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
                   {dragOver ? "Drop the file here ✦" : "Drag a JSON file here"}
                 </p>
                 <p className="text-[0.68rem] text-slate-500 mt-1">or click to choose a file from your device</p>
-                <p className="text-[0.6rem] text-slate-600 mt-2">GeoJSON · Arrays · Objects · lat/lng · Any structure</p>
+                <p className="text-[0.6rem] text-slate-600 mt-2">GeoJSON · JSON · Images (PNG/JPG/TIF) · lat/lng · Any structure</p>
               </div>
-              <input ref={inputRef} type="file" accept=".json,.geojson,application/json" className="hidden" onChange={onFileChange} />
+              <input ref={inputRef} type="file" accept=".json,.geojson,.tif,.tiff,application/json,image/*,image/tiff" className="hidden" onChange={onFileChange} />
             </div>
           )}
 
@@ -231,7 +431,7 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
                     <p className="text-[0.72rem] font-medium text-emerald-300 truncate">{parsed.fileName}</p>
                     <p className="text-[0.6rem] text-slate-500">Detected as GeoJSON ✓</p>
                   </div>
-                  <button onClick={() => { setParsed(null); setError(null); setUploadStatus("idle"); setUploadMsg(""); }} className="text-slate-500 hover:text-red-400 transition-colors cursor-pointer p-1">
+                  <button onClick={resetModalState} className="text-slate-500 hover:text-red-400 transition-colors cursor-pointer p-1">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
                   </button>
                 </div>
@@ -295,9 +495,100 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
                     {JSON.stringify(parsed.geojson.features[0], null, 2)}
                   </pre>
                 </details>
+
+                {/* ── Simple 3D extrusion options (local) ── */}
+                <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl px-3.5 py-3 space-y-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">3D Extrusion (local)</p>
+                      <p className="text-[0.65rem] text-slate-400 mt-0.5">Pseudo‑3D فوق نفس خريطة 2D (بدون سيرفر)</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const next = !extrudeEnabled;
+                        setExtrudeEnabled(next);
+                      }}
+                      className={`w-12 h-6 rounded-full border transition-all cursor-pointer relative shrink-0
+                        ${extrudeEnabled ? "bg-cyan-400/20 border-cyan-400/30" : "bg-white/[0.03] border-white/[0.08]"}`}
+                      aria-pressed={extrudeEnabled}
+                    >
+                      <span
+                        className={`absolute top-0.5 w-5 h-5 rounded-full transition-all
+                          ${extrudeEnabled ? "left-6 bg-cyan-400" : "left-0.5 bg-slate-600"}`}
+                      />
+                    </button>
+                  </div>
+
+                  {extrudeEnabled && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="bg-black/20 border border-white/[0.06] rounded-lg p-2.5">
+                        <p className="text-[0.58rem] text-slate-500 mb-1">Height property</p>
+                        <input
+                          value={heightProp}
+                          onChange={(e) => setHeightProp(e.target.value)}
+                          placeholder="height"
+                          className="w-full bg-transparent border border-white/[0.08] rounded-md px-2 py-1 text-[0.68rem] text-slate-200 outline-none focus:border-cyan-400/40"
+                        />
+                        <p className="text-[0.55rem] text-slate-600 mt-1">مثلاً: height / H / elev</p>
+                      </div>
+                      <div className="bg-black/20 border border-white/[0.06] rounded-lg p-2.5">
+                        <p className="text-[0.58rem] text-slate-500 mb-1">Default height (m)</p>
+                        <input
+                          type="number"
+                          min={1}
+                          max={5000}
+                          value={defaultHeightM}
+                          onChange={(e) => setDefaultHeightM(Number(e.target.value))}
+                          className="w-full bg-transparent border border-white/[0.08] rounded-md px-2 py-1 text-[0.68rem] text-slate-200 outline-none focus:border-cyan-400/40"
+                        />
+                        <p className="text-[0.55rem] text-slate-600 mt-1">لو الـ property مش موجود</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })()}
+
+          {/* ── Image preview ── */}
+          {parsed?.kind === "image" && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2.5 bg-cyan-400/[0.07] border border-cyan-400/20 rounded-xl px-3.5 py-2.5">
+                <div className="w-7 h-7 rounded-lg bg-cyan-400/15 flex items-center justify-center shrink-0">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" strokeWidth="2">
+                    <rect x="3" y="5" width="18" height="14" rx="2" />
+                    <path d="M8 13l2-2 3 3 3-4 3 5" />
+                    <circle cx="9" cy="10" r="1" />
+                  </svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[0.72rem] font-medium text-cyan-300 truncate">{parsed.fileName}</p>
+                  <p className="text-[0.6rem] text-slate-500">Image overlay (place by 2 clicks on map)</p>
+                </div>
+                <button
+                  onClick={() => {
+                    resetModalState();
+                  }}
+                  className="text-slate-500 hover:text-red-400 transition-colors cursor-pointer p-1"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+              </div>
+
+              <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 overflow-hidden">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={parsed.url}
+                  alt={parsed.fileName}
+                  className="w-full max-h-56 object-contain rounded-lg border border-white/[0.06] bg-black/30"
+                />
+                <div className="mt-2 flex items-center justify-between">
+                  <p className="text-[0.6rem] text-slate-600">Place corners</p>
+                  <span className="text-[0.58rem] text-slate-500 font-mono">{Math.round(parsed.file.size / 1024)} KB</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ── Generic JSON Preview ── */}
           {parsed?.kind === "generic" && (() => {
@@ -319,7 +610,7 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
                     <p className="text-[0.72rem] font-medium text-amber-300 truncate">{parsed.fileName}</p>
                     <p className="text-[0.6rem] text-slate-500">Generic JSON — no coordinates detected</p>
                   </div>
-                  <button onClick={() => { setParsed(null); setError(null); }} className="text-slate-500 hover:text-red-400 transition-colors cursor-pointer p-1">
+                  <button onClick={resetModalState} className="text-slate-500 hover:text-red-400 transition-colors cursor-pointer p-1">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
                   </button>
                 </div>
@@ -379,7 +670,7 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
           {parsed ? (
             <>
               <button
-                onClick={() => { setParsed(null); setError(null); setUploadStatus("idle"); setUploadMsg(""); }}
+                onClick={resetModalState}
                 className="flex-1 py-2 text-xs text-slate-400 hover:text-slate-200 bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.08] rounded-xl transition-all cursor-pointer"
               >
                 Upload another file
@@ -397,6 +688,28 @@ export default function JSONUploadModal({ onClose, onUpload, onDisplay }: JSONUp
                   ) : (
                     <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="9"/><polyline points="9 12 11 14 15 10"/></svg>Upload & Add to Map</>
                   )}
+                </button>
+              ) : parsed.kind === "image" ? (
+                <button
+                  onClick={() => {
+                    // trigger placement on map, and close the modal shortly after
+                    try {
+                      onAddImageOverlay?.(parsed.file);
+                      setUploadStatus("success");
+                      setUploadMsg("Image ready — click 2 corners on the map.");
+                      setTimeout(() => { resetModalState(); onClose(); }, 700);
+                    } catch {
+                      setUploadStatus("error");
+                      setUploadMsg("Could not start image placement.");
+                    }
+                  }}
+                  disabled={!onAddImageOverlay}
+                  className="flex-1 py-2 text-xs font-semibold text-[#040d1a] bg-cyan-400 hover:bg-cyan-300 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                  Add Image Overlay
                 </button>
               ) : (
                 <button disabled className="flex-1 py-2 text-xs text-slate-600 bg-white/[0.03] border border-white/[0.06] rounded-xl cursor-not-allowed">

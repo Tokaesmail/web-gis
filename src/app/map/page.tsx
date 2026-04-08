@@ -1,4 +1,4 @@
-import MapPageClient from "./MapClient";
+import MapPage from "./MapClient";
 export default function Page() {
-  return <MapPageClient />;
+  return <MapPage />;
 }

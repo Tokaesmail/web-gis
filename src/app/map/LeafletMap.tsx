@@ -14,6 +14,16 @@ import {
   SatKey, IdxKey, LatLngPoint, CaptureMetadata,
 } from "./mapTypes_proxy";
 
+type ExtrusionConfig = {
+  enabled: boolean;
+  /** property name in feature.properties containing height in meters */
+  heightProperty?: string;
+  /** fallback height (meters) if property missing */
+  defaultHeightM?: number;
+  color?: string;
+  opacity?: number;
+};
+
 interface GeoJSONStyle {
   color?:       string;
   weight?:      number;
@@ -31,6 +41,8 @@ interface Props {
   clearRef:       React.MutableRefObject<(() => void) | null>;
   onSatChange:    (handler: (sat: SatKey) => void) => void;
   onIdxChange:    (handler: (idx: IdxKey) => void) => void;
+  /** register an image placement workflow (2 clicks to place image) */
+  onImagePlacerRegister?: (handler: (file: File) => void) => void;
   onCapture?:     (url: string) => void;
   /** callback لما يضغط على GeoJSON feature */
   onFeatureClick?: (feature: GeoJSON.Feature) => void;
@@ -38,6 +50,9 @@ interface Props {
   geoJsonData?:   GeoJSON.FeatureCollection | GeoJSON.Feature | null;
   /** GeoJSON إضافي (مثلاً شيكات الجامعات) يُعرض فوق الـ layer الأول */
   extraGeoJsonData?: GeoJSON.FeatureCollection | GeoJSON.Feature | null;
+  /** optionally render pseudo-3D extrusion for a GeoJSON FeatureCollection */
+  extrusionGeoJson?: GeoJSON.FeatureCollection | null;
+  extrusionConfig?: ExtrusionConfig;
   /** تنسيق مخصص للـ GeoJSON layer */
   geoJsonStyle?:  GeoJSONStyle;
   /** هل نزوم على الـ GeoJSON بعد التحميل؟ */
@@ -75,7 +90,12 @@ export default function LeafletMap({
   activeTool, onAreaSelected, onCoordsUpdate,
   flyToRef, clearRef, onSatChange, onIdxChange, onCapture,
   geoJsonData, extraGeoJsonData, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
+  onImagePlacerRegister,
+  extrusionGeoJson,
+  extrusionConfig,
 }: Props) {
+
+  const IMAGE_OVERLAYS_STORAGE_KEY = "leaflet_image_overlays_v1";
 
   const mapRef         = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -87,6 +107,7 @@ export default function LeafletMap({
   const labelsLayerRef = useRef<any>(null);
   const indexTileRef   = useRef<any>(null);
   const canvasRef      = useRef<HTMLCanvasElement | null>(null);
+  const extrudeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastCoordsRef  = useRef<LatLngPoint[]>([]);
   const lastToolRef    = useRef<DrawTool>("pointer");
   const closeBtnRef    = useRef<HTMLButtonElement | null>(null);
@@ -98,6 +119,16 @@ export default function LeafletMap({
   const rafRef              = useRef<number | null>(null);
   const lastMoveRef         = useRef<any>(null);
   const [mapReady, setMapReady] = useState(false);
+  const imagePaneReadyRef = useRef(false);
+  const imageOverlaysRef = useRef<{ id: string; name: string; src: string; bounds: [[number, number], [number, number]]; layer: any }[]>([]);
+  const placingImageRef = useRef<{
+    file: File;
+    src: string; // data URL (persistent across refresh)
+    ready: boolean;
+    clicks: { lat: number; lng: number }[];
+    hintEl?: HTMLDivElement | null;
+  } | null>(null);
+  const overlaysUiRef = useRef<HTMLDivElement | null>(null);
 
   const {
     drawPolygon, drawRect, drawCircle, drawMeasure, drawMarker,
@@ -105,6 +136,253 @@ export default function LeafletMap({
   } = useMapCanvas();
 
   useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
+
+  const clearImagePlacementHint = () => {
+    const st = placingImageRef.current;
+    if (st?.hintEl) {
+      st.hintEl.remove();
+      st.hintEl = null;
+    }
+  };
+
+  const stopImagePlacement = () => {
+    const st = placingImageRef.current;
+    if (!st) return;
+    clearImagePlacementHint();
+    placingImageRef.current = null;
+  };
+
+  const persistImageOverlays = () => {
+    try {
+      const payload = imageOverlaysRef.current.map((o) => ({
+        id: o.id,
+        name: o.name,
+        src: o.src,
+        bounds: o.bounds,
+      }));
+      localStorage.setItem(IMAGE_OVERLAYS_STORAGE_KEY, JSON.stringify(payload));
+    } catch (_) {}
+  };
+
+  const restoreImageOverlays = () => {
+    const map = mapInstanceRef.current;
+    const L = LRef.current;
+    if (!map || !L) return;
+    try {
+      const raw = localStorage.getItem(IMAGE_OVERLAYS_STORAGE_KEY);
+      if (!raw) return;
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return;
+
+      for (const it of arr) {
+        if (!it?.src || !it?.bounds) continue;
+        const b = it.bounds as [[number, number], [number, number]];
+        const bounds = L.latLngBounds([b[0][0], b[0][1]], [b[1][0], b[1][1]]);
+        const layer = L.imageOverlay(it.src, bounds, { opacity: 0.85, pane: "imagePane" }).addTo(map);
+        imageOverlaysRef.current.push({
+          id: String(it.id ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+          name: String(it.name ?? "overlay"),
+          src: it.src,
+          bounds: b,
+          layer,
+        });
+      }
+      refreshOverlaysUi();
+    } catch (_) {}
+  };
+
+  const refreshOverlaysUi = () => {
+    const root = overlaysUiRef.current;
+    if (!root) return;
+    const list = imageOverlaysRef.current;
+
+    root.innerHTML = "";
+    if (!list.length) {
+      root.style.display = "none";
+      return;
+    }
+
+    root.style.display = "block";
+    const title = document.createElement("div");
+    title.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;";
+    title.innerHTML = `<span style="color:#94a3b8;font-size:11px;letter-spacing:.12em;text-transform:uppercase">Image overlays</span>`;
+
+    const clearBtn = document.createElement("button");
+    clearBtn.textContent = "Clear";
+    clearBtn.style.cssText = "background:transparent;border:1px solid rgba(255,255,255,0.12);color:#e2e8f0;font-size:11px;padding:4px 8px;border-radius:10px;cursor:pointer";
+    clearBtn.onclick = () => {
+      const map = mapInstanceRef.current;
+      if (!map) return;
+      imageOverlaysRef.current.forEach((ov) => {
+        try { map.removeLayer(ov.layer); } catch (_) {}
+      });
+      imageOverlaysRef.current = [];
+      try { localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY); } catch (_) {}
+      refreshOverlaysUi();
+    };
+    title.appendChild(clearBtn);
+    root.appendChild(title);
+
+    for (const ov of list) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);padding:8px 10px;border-radius:12px;margin-bottom:6px;";
+      const name = document.createElement("div");
+      name.textContent = ov.name;
+      name.style.cssText = "flex:1;min-width:0;color:#e2e8f0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+      const del = document.createElement("button");
+      del.textContent = "Delete";
+      del.style.cssText = "background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.22);color:#f87171;font-size:11px;padding:5px 8px;border-radius:10px;cursor:pointer";
+      del.onclick = () => {
+        const map = mapInstanceRef.current;
+        if (!map) return;
+        try { map.removeLayer(ov.layer); } catch (_) {}
+        imageOverlaysRef.current = imageOverlaysRef.current.filter((x) => x.id !== ov.id);
+        persistImageOverlays();
+        refreshOverlaysUi();
+      };
+      row.appendChild(name);
+      row.appendChild(del);
+      root.appendChild(row);
+    }
+  };
+
+  const startImagePlacement = (file: File) => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    // cancel any ongoing placement
+    stopImagePlacement();
+
+    const hint = document.createElement("div");
+    hint.style.cssText = `
+      position:absolute;top:14px;left:50%;transform:translateX(-50%);
+      z-index:1200;pointer-events:none;
+      background:rgba(10,22,40,0.92);backdrop-filter:blur(10px);
+      border:1px solid rgba(0,212,255,0.25);color:#e2e8f0;
+      padding:8px 12px;border-radius:999px;
+      font-family:DM Sans, sans-serif;font-size:12px;
+      box-shadow:0 10px 28px rgba(0,0,0,0.45);
+    `;
+    hint.textContent = `Preparing image…`;
+    mapRef.current?.appendChild(hint);
+
+    // set placement state immediately so clicks are captured (but blocked until ready)
+    placingImageRef.current = { file, src: "", ready: false, clicks: [], hintEl: hint };
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const src = String(reader.result || "");
+      if (!src.startsWith("data:")) return;
+      const st = placingImageRef.current;
+      if (!st) return;
+      st.src = src;
+      st.ready = true;
+      if (st.hintEl) st.hintEl.textContent = `Place image: click TOP-LEFT corner ثم click BOTTOM-RIGHT (Esc لإلغاء)`;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Register image placer handler for external UI (upload modal)
+  useEffect(() => {
+    if (!onImagePlacerRegister) return;
+    onImagePlacerRegister((file: File) => startImagePlacement(file));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onImagePlacerRegister, mapReady]);
+
+  // Escape cancels image placement
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && placingImageRef.current) stopImagePlacement();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const drawExtrusions = () => {
+    const map = mapInstanceRef.current;
+    const L = LRef.current;
+    const canvas = extrudeCanvasRef.current;
+    const fc = extrusionGeoJson;
+    const cfg = extrusionConfig;
+    if (!map || !L || !canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    // clear
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!cfg?.enabled || !fc?.features?.length) return;
+
+    const heightProp = cfg.heightProperty ?? "height";
+    const fallbackH = cfg.defaultHeightM ?? 30;
+    const color = cfg.color ?? "#22d3ee";
+    const opacity = cfg.opacity ?? 0.55;
+
+    // approximate meters-per-pixel at current latitude for extrusion scaling
+    const center = map.getCenter();
+    const lat = center?.lat ?? 0;
+    const zoom = map.getZoom();
+    const mpp = 156543.03392 * Math.cos((lat * Math.PI) / 180) / Math.pow(2, zoom);
+
+    const toPx = (latlng: any) => map.latLngToContainerPoint(latlng);
+    const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
+
+    const walkRings = (coords: any): any[] => {
+      // returns array of rings (each ring is array of [lng,lat])
+      if (!coords) return [];
+      // Polygon: [ring[]]
+      if (Array.isArray(coords) && Array.isArray(coords[0]) && typeof coords[0][0] === "number") return [coords];
+      // MultiPolygon: [[ring[]], ...]
+      if (Array.isArray(coords) && Array.isArray(coords[0]) && Array.isArray(coords[0][0])) return coords.flatMap((poly: any) => poly);
+      return [];
+    };
+
+    for (const f of fc.features) {
+      const g: any = f.geometry as any;
+      if (!g) continue;
+      if (g.type !== "Polygon" && g.type !== "MultiPolygon") continue;
+
+      const rawH = (f.properties as any)?.[heightProp];
+      const hM = Number.isFinite(Number(rawH)) ? Number(rawH) : fallbackH;
+      const hPx = clamp(hM / Math.max(mpp, 0.0001), 6, 90); // keep it readable
+      const dx = 0.7 * hPx;
+      const dy = 1.0 * hPx;
+
+      const rings = walkRings(g.coordinates);
+      for (const ring of rings) {
+        // ring: array of [lng,lat]
+        const pts = ring.map((c: any) => toPx(L.latLng(c[1], c[0])));
+        if (pts.length < 3) continue;
+
+        // top polygon
+        ctx.save();
+        ctx.globalAlpha = opacity;
+        ctx.fillStyle = color;
+        ctx.strokeStyle = "rgba(255,255,255,0.18)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x - dx, pts[0].y - dy);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x - dx, pts[i].y - dy);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // side walls (simple quads per edge)
+        ctx.globalAlpha = Math.max(0.18, opacity - 0.18);
+        ctx.fillStyle = "rgba(0,0,0,0.22)";
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = pts[i], b = pts[i + 1];
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.lineTo(b.x - dx, b.y - dy);
+          ctx.lineTo(a.x - dx, a.y - dy);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+  };
 
   // ── GeoJSON layer useEffect ───────────────────────────────────────────────
   useEffect(() => {
@@ -334,6 +612,25 @@ export default function LeafletMap({
     };
   }, [extraGeoJsonData, mapReady]);
 
+  // ── Extrusion canvas redraw on map moves ──────────────────────────────────
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    const redraw = () => {
+      const canvas = extrudeCanvasRef.current;
+      if (!canvas) return;
+      const size = map.getSize();
+      canvas.width = size.x;
+      canvas.height = size.y;
+      drawExtrusions();
+    };
+    redraw();
+    map.on("moveend zoomend viewreset resize", redraw);
+    return () => {
+      map.off("moveend zoomend viewreset resize", redraw);
+    };
+  }, [mapReady, extrusionGeoJson, extrusionConfig?.enabled, extrusionConfig?.heightProperty, extrusionConfig?.defaultHeightM, extrusionConfig?.color, extrusionConfig?.opacity]);
+
   const redrawCurrent = (canvas: HTMLCanvasElement, map: any, L: any) => {
     const coords = lastCoordsRef.current;
     const tool   = lastToolRef.current;
@@ -455,6 +752,9 @@ export default function LeafletMap({
       map.createPane("indexPane");     map.getPane("indexPane")!.style.zIndex     = "202";
       map.createPane("labelsPane");
       Object.assign(map.getPane("labelsPane")!.style, { zIndex: "203", pointerEvents: "none" });
+      map.createPane("imagePane");
+      Object.assign(map.getPane("imagePane")!.style, { zIndex: "350" });
+      imagePaneReadyRef.current = true;
 
       // ① Esri WorldImagery عبر الـ proxy — maxNativeZoom:19 عشان stretch بدل "not available"
       baseTileRef.current = L.tileLayer(
@@ -493,6 +793,30 @@ export default function LeafletMap({
       });
       new CanvasLayer().addTo(map);
 
+      // ── Extrusion Canvas (separate from capture canvas) ───────────────────
+      const ExtrudeCanvasLayer = (L.Layer as any).extend({
+        onAdd(this: any, lmap: any) {
+          const canvas = document.createElement("canvas");
+          Object.assign(canvas.style, { position: "absolute", top: "0", left: "0", pointerEvents: "none", zIndex: "345" });
+          lmap.getPane("overlayPane")!.appendChild(canvas);
+          this._canvas = canvas; extrudeCanvasRef.current = canvas;
+          lmap.on("moveend zoomend viewreset resize", this._update, this);
+          this._update();
+        },
+        onRemove(this: any, lmap: any) {
+          this._canvas?.remove(); extrudeCanvasRef.current = null;
+          lmap.off("moveend zoomend viewreset resize", this._update, this);
+        },
+        _update(this: any) {
+          const lmap = this._map, size = lmap.getSize();
+          L.DomUtil.setPosition(this._canvas, lmap.containerPointToLayerPoint([0, 0]));
+          this._canvas.width = size.x; this._canvas.height = size.y;
+          // draw extrusions after resizing
+          drawExtrusions();
+        },
+      });
+      new ExtrudeCanvasLayer().addTo(map);
+
       // ── Close Shape button ────────────────────────────────────────────────
       const closeBtn = document.createElement("button");
       closeBtnRef.current = closeBtn;
@@ -514,6 +838,22 @@ export default function LeafletMap({
         if (tool === "measure") finishMeasure(map, L);
       });
       mapRef.current!.appendChild(closeBtn);
+
+      // ── Image overlays manager UI ─────────────────────────────────────────
+      const overlaysUi = document.createElement("div");
+      overlaysUiRef.current = overlaysUi;
+      overlaysUi.style.cssText = `
+        display:none; position:absolute; top:64px; left:14px; z-index:1200;
+        width:240px; max-height:220px; overflow:auto;
+        background:rgba(10,22,40,0.92); backdrop-filter:blur(12px);
+        border:1px solid rgba(255,255,255,0.10); border-radius:16px;
+        padding:10px; box-shadow:0 18px 56px rgba(0,0,0,0.55);
+        pointer-events:auto;
+        font-family:DM Sans, sans-serif;
+      `;
+      mapRef.current!.appendChild(overlaysUi);
+      // restore persisted overlays once map is ready
+      restoreImageOverlays();
 
       // ── Sat / Index ───────────────────────────────────────────────────────
       onSatChange((satKey: SatKey) => {
@@ -559,6 +899,15 @@ export default function LeafletMap({
         if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
         if (canvasRef.current) clearCanvas(canvasRef.current);
         if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
+
+        // clear image overlays
+        imageOverlaysRef.current.forEach((ov) => {
+          try { map.removeLayer(ov.layer); } catch (_) {}
+        });
+        imageOverlaysRef.current = [];
+        try { localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY); } catch (_) {}
+        refreshOverlaysUi();
+        stopImagePlacement();
       };
 
       // ── Click ─────────────────────────────────────────────────────────────
@@ -567,6 +916,69 @@ export default function LeafletMap({
         const { lat, lng } = e.latlng;
         // throttle setState to avoid React re-renders on every click
         requestAnimationFrame(() => onCoordsUpdate(lat, lng));
+
+        // ── Image placement mode (always takes precedence) ───────────────────
+        if (placingImageRef.current) {
+          const st = placingImageRef.current;
+          if (!st.ready) {
+            // image still preparing
+            if (st.hintEl) st.hintEl.textContent = `Preparing image… please wait`;
+            return;
+          }
+          st.clicks.push({ lat, lng });
+          if (st.clicks.length === 1) {
+            clearImagePlacementHint();
+            const hint = document.createElement("div");
+            hint.style.cssText = `
+              position:absolute;top:14px;left:50%;transform:translateX(-50%);
+              z-index:1200;pointer-events:none;
+              background:rgba(10,22,40,0.92);backdrop-filter:blur(10px);
+              border:1px solid rgba(167,139,250,0.25);color:#e2e8f0;
+              padding:8px 12px;border-radius:999px;
+              font-family:DM Sans, sans-serif;font-size:12px;
+              box-shadow:0 10px 28px rgba(0,0,0,0.45);
+            `;
+            hint.textContent = `Now click BOTTOM-RIGHT corner`;
+            mapRef.current?.appendChild(hint);
+            st.hintEl = hint;
+            return;
+          }
+          if (st.clicks.length >= 2) {
+            const a = st.clicks[0];
+            const b = st.clicks[1];
+            const north = Math.max(a.lat, b.lat);
+            const south = Math.min(a.lat, b.lat);
+            const east = Math.max(a.lng, b.lng);
+            const west = Math.min(a.lng, b.lng);
+            // ensure bounds not too tiny (otherwise image may appear invisible)
+            const minDelta = 0.00015; // ~15-20m
+            const n2 = north === south ? north + minDelta : north;
+            const s2 = north === south ? south - minDelta : south;
+            const e2 = east === west ? east + minDelta : east;
+            const w2 = east === west ? west - minDelta : west;
+            try {
+              const bounds = L.latLngBounds([s2, w2], [n2, e2]);
+              const ov = L.imageOverlay(st.src, bounds, { opacity: 0.85, pane: "imagePane" }).addTo(map);
+              imageOverlaysRef.current.push({
+                id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                name: st.file.name,
+                src: st.src,
+                bounds: [[s2, w2], [n2, e2]],
+                layer: ov,
+              });
+              persistImageOverlays();
+              refreshOverlaysUi();
+              map.flyToBounds(bounds, { padding: [40, 40], maxZoom: 16, duration: 0.8 });
+              clearImagePlacementHint();
+              placingImageRef.current = null;
+            } catch (err) {
+              console.error("❌ imageOverlay failed:", err);
+              stopImagePlacement();
+            }
+          }
+          return;
+        }
+
         if (tool === "pointer") return;
 
         // ── Marker ──────────────────────────────────────────────────────────
@@ -719,6 +1131,10 @@ export default function LeafletMap({
 
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      if (overlaysUiRef.current) {
+        overlaysUiRef.current.remove();
+        overlaysUiRef.current = null;
+      }
       if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; }
     };
   }, []);

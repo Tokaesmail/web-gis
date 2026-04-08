@@ -48,6 +48,8 @@ export default function AuthForm({
     setPending(true);
 
     const formData = new FormData(e.currentTarget);
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
 
     try {
       // Step 1: validate via server action (hits the API)
@@ -61,8 +63,8 @@ export default function AuthForm({
 
       // Step 2: create the next-auth session
       const res = await signIn("credentials", {
-        email: formData.get("email") as string,
-        password: formData.get("password") as string,
+        email,
+        password,
         redirect: false,
       });
 
