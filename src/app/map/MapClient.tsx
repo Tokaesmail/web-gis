@@ -36,7 +36,8 @@ export default function MapPage() {
   const [uniData,         setUniData]         = useState<any>(null);
   const [uniLoading,      setUniLoading]      = useState(false);
   const [uniError,        setUniError]        = useState<string | null>(null);
-  const [uploadedGeoJson, setUploadedGeoJson] = useState<any>(null);
+  const [uploadedGeoJsonMap, setUploadedGeoJsonMap] = useState<Record<string, any>>({});
+  const [latestGeoJson,   setLatestGeoJson]   = useState<any>(null);
   const [extrusionCfg,    setExtrusionCfg]    = useState<any>(null);
 
   const flyToRef               = useRef<((lat: number, lng: number) => void) | null>(null);
@@ -54,8 +55,16 @@ export default function MapPage() {
   // ── 1. localStorage restore ───────────────────────────────────────────────
   useEffect(() => {
     try {
-      const raw    = localStorage.getItem(UPLOADED_GEOJSON_STORAGE_KEY);
-      if (raw)    setUploadedGeoJson(JSON.parse(raw));
+      const raw = localStorage.getItem(UPLOADED_GEOJSON_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        // Migration: if the stored data is a FeatureCollection, convert to Map format
+        if (parsed && parsed.type === "FeatureCollection") {
+          setUploadedGeoJsonMap({ "imported_legacy.json": parsed });
+        } else {
+          setUploadedGeoJsonMap(parsed || {});
+        }
+      }
       const rawCfg = localStorage.getItem(EXTRUSION_CFG_STORAGE_KEY);
       if (rawCfg) setExtrusionCfg(JSON.parse(rawCfg));
     } catch (e) { console.error("Storage error", e); }
@@ -95,19 +104,41 @@ export default function MapPage() {
   }, []);
 
   // ── 4. Combined GeoJSON ───────────────────────────────────────────────────
+  const mergedUploadedGeoJson = useMemo(() => {
+    const features = Object.values(uploadedGeoJsonMap).flatMap(
+      (gj: any) => gj?.features ?? []
+    );
+    return { type: "FeatureCollection", features } as any;
+  }, [uploadedGeoJsonMap]);
+
   const combinedGeoJson = useMemo(() => {
     const features = [
-      ...(uniData?.features        ?? []),
-      ...(uploadedGeoJson?.features ?? []),
+      ...(uniData?.features ?? []),
+      ...(mergedUploadedGeoJson?.features ?? []),
     ];
     return { type: "FeatureCollection", features } as any;
-  }, [uniData, uploadedGeoJson]);
+  }, [uniData, mergedUploadedGeoJson]);
 
   // ── Stable callbacks ──────────────────────────────────────────────────────
-  const handleGeoJSONUpload = useCallback((geojson: any) => {
-    setUploadedGeoJson(geojson);
-    localStorage.setItem(UPLOADED_GEOJSON_STORAGE_KEY, JSON.stringify(geojson));
+  const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json") => {
+    setUploadedGeoJsonMap((prev) => ({ ...prev, [fileName]: geojson }));
+    setLatestGeoJson(geojson);
   }, []);
+
+  const handleDeleteGeoJSON = useCallback((fileName: string) => {
+    setUploadedGeoJsonMap((prev) => {
+      const next = { ...prev };
+      delete next[fileName];
+      localStorage.setItem(UPLOADED_GEOJSON_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  // Sync uploadedGeoJsonMap to localStorage
+  useEffect(() => {
+    if (Object.keys(uploadedGeoJsonMap).length === 0) return;
+    localStorage.setItem(UPLOADED_GEOJSON_STORAGE_KEY, JSON.stringify(uploadedGeoJsonMap));
+  }, [uploadedGeoJsonMap]);
 
   const handleExtrusionConfig = useCallback((cfg: any) => {
     setExtrusionCfg(cfg);
@@ -131,7 +162,7 @@ export default function MapPage() {
     setCaptureUrl(null);
     localStorage.removeItem(UPLOADED_GEOJSON_STORAGE_KEY);
     localStorage.removeItem(EXTRUSION_CFG_STORAGE_KEY);
-    setUploadedGeoJson(null);
+    setUploadedGeoJsonMap({});
     setExtrusionCfg(null);
   }, []);
 
@@ -143,7 +174,9 @@ export default function MapPage() {
   const sharedSidebar = useMemo(() => (
     <AnalysisSidebar
       selectedFeature={selectedFeature}
+      uploadedGeoJsonMap={uploadedGeoJsonMap}
       onGeoJSONUpload={handleGeoJSONUpload}
+      onDeleteGeoJSON={handleDeleteGeoJSON}
       onStartImageOverlay={handleStartImageOverlay}
       onExtrusionConfig={handleExtrusionConfig}
       onFlyTo={handleFlyTo}
@@ -151,7 +184,9 @@ export default function MapPage() {
     />
   ), [
     selectedFeature,
+    uploadedGeoJsonMap,
     handleGeoJSONUpload,
+    handleDeleteGeoJSON,
     handleStartImageOverlay,
     handleExtrusionConfig,
     handleFlyTo,
@@ -220,6 +255,7 @@ export default function MapPage() {
             onImagePlacerRegister={(h) => { startImagePlacementRef.current = h; }}
             geoJsonData={geoJsonData}
             extraGeoJsonData={combinedGeoJson}
+            latestGeoJson={latestGeoJson}
             extrusionConfig={extrusionCfg || { enabled: false }}
             onFeatureClick={setSelectedFeature}
           />
@@ -271,7 +307,7 @@ export default function MapPage() {
             onClose={handleClose3D}
             toggleButton={toggle2DButton}
             sidebarSlot={sharedSidebar}
-            uploadedGeoJson={uploadedGeoJson}
+            uploadedGeoJson={mergedUploadedGeoJson}
           />
         )}
 

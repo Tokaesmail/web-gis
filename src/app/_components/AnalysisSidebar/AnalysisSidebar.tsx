@@ -13,7 +13,8 @@ type PanelId =
   | "fieldManager"
   | "notifications"
   | "settings"
-  | "analyses";
+  | "analyses"
+  | "layers";
 
 interface PanelItem {
   id: PanelId;
@@ -24,6 +25,18 @@ interface PanelItem {
 }
 
 const panels: PanelItem[] = [
+  {
+    id: "layers",
+    labelEn: "Layers",
+    labelAr: "الطبقات",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.27a1 1 0 0 0 0 1.83l8.57 4.09a2 2 0 0 0 1.66 0l8.57-4.09a1 1 0 0 0 0-1.83Z" />
+        <path d="m22 17.64-8.57 4.09a2 2 0 0 1-1.66 0L2 17.64" />
+        <path d="m22 12.64-8.57 4.09a2 2 0 0 1-1.66 0L2 12.64" />
+      </svg>
+    ),
+  },
   {
     id: "analyses",
     labelEn: "Analyses",
@@ -692,10 +705,14 @@ function WeatherLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
 function PanelContent({
   id,
   selectedFeature,
+  uploadedGeoJsonMap,
+  onDeleteGeoJSON,
   onFlyTo,
 }: {
   id: PanelId;
   selectedFeature?: GeoJSON.Feature | null;
+  uploadedGeoJsonMap?: Record<string, any>;
+  onDeleteGeoJSON?: (fileName: string) => void;
   onFlyTo?: (lat: number, lng: number) => void;
 }) {
 
@@ -712,6 +729,60 @@ function PanelContent({
   // ── WEATHER ──
   if (id === "weather") {
     return <WeatherLivePanel feature={selectedFeature} />;
+  }
+
+  // ── LAYERS ──
+  if (id === "layers") {
+    const files = Object.keys(uploadedGeoJsonMap || {});
+    return (
+      <div className="space-y-3">
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-2">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Uploaded Layers</p>
+          <p className="text-xs text-slate-300">Manage your uploaded GeoJSON files</p>
+        </div>
+
+        {files.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 opacity-40">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <p className="text-[0.65rem]">No files uploaded yet</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {files.map((fileName) => {
+              const geojson = uploadedGeoJsonMap![fileName];
+              const count = geojson?.features?.length ?? 0;
+              return (
+                <div key={fileName} className="group bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.15] rounded-xl p-3 transition-all">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                        <polyline points="2 17 12 22 22 17" />
+                        <polyline points="2 12 12 17 22 12" />
+                      </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[0.72rem] font-medium text-slate-200 truncate">{fileName}</p>
+                      <p className="text-[0.6rem] text-slate-500">{count} features</p>
+                    </div>
+                    <button
+                      onClick={() => onDeleteGeoJSON?.(fileName)}
+                      className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all cursor-pointer opacity-0 group-hover:opacity-100"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
   }
 
   // ── ANALYSES ──
@@ -814,7 +885,9 @@ function PanelContent({
 // ─── Main Sidebar ─────────────────────────────────────────────────────────────
 export default function AnalysisSidebar({
   selectedFeature,
+  uploadedGeoJsonMap,
   onGeoJSONUpload,
+  onDeleteGeoJSON,
   onStartImageOverlay,
   onExtrusionConfig,
   onFlyTo,
@@ -822,7 +895,9 @@ export default function AnalysisSidebar({
 
 }: {
   selectedFeature?: GeoJSON.Feature | null;
-  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection) => void;
+  uploadedGeoJsonMap?: Record<string, any>;
+  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string) => void;
+  onDeleteGeoJSON?: (fileName: string) => void;
   onStartImageOverlay?: (file: File) => void;
   onExtrusionConfig?: (cfg: { enabled: boolean; heightProperty?: string; defaultHeightM?: number }) => void;
   onFlyTo?: (lat: number, lng: number) => void;
@@ -844,8 +919,8 @@ export default function AnalysisSidebar({
       {uploadOpen && (
         <JSONUploadModal
           onClose={() => setUploadOpen(false)}
-          onDisplay={(geojson) => { onGeoJSONUpload?.(geojson); }}
-          onUpload={(geojson) => { onGeoJSONUpload?.(geojson); }}
+          onDisplay={(geojson, fileName) => { onGeoJSONUpload?.(geojson, fileName); }}
+          onUpload={(geojson, fileName) => { onGeoJSONUpload?.(geojson, fileName); }}
           onAddImageOverlay={(file) => { onStartImageOverlay?.(file); }}
           onExtrusionConfig={(cfg) => { onExtrusionConfig?.(cfg); }}
         />
@@ -888,7 +963,15 @@ export default function AnalysisSidebar({
 
             {/* Panel body */}
             <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 custom-scroll">
-              {activePanel && <PanelContent id={activePanel} selectedFeature={selectedFeature} onFlyTo={onFlyTo} />}
+              {activePanel && (
+                <PanelContent
+                  id={activePanel}
+                  selectedFeature={selectedFeature}
+                  uploadedGeoJsonMap={uploadedGeoJsonMap}
+                  onDeleteGeoJSON={onDeleteGeoJSON}
+                  onFlyTo={onFlyTo}
+                />
+              )}
             </div>
           </div>
         </div>
