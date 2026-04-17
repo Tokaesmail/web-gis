@@ -37,6 +37,7 @@ export default function MapPage() {
   const [uniLoading,      setUniLoading]      = useState(false);
   const [uniError,        setUniError]        = useState<string | null>(null);
   const [uploadedGeoJsonMap, setUploadedGeoJsonMap] = useState<Record<string, any>>({});
+  const [latestGeoJson,   setLatestGeoJson]   = useState<any>(null);
   const [extrusionCfg,    setExtrusionCfg]    = useState<any>(null);
 
   const flyToRef               = useRef<((lat: number, lng: number) => void) | null>(null);
@@ -121,6 +122,7 @@ export default function MapPage() {
   // ── Stable callbacks ──────────────────────────────────────────────────────
   const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json") => {
     setUploadedGeoJsonMap((prev) => ({ ...prev, [fileName]: geojson }));
+    setLatestGeoJson(geojson);
   }, []);
 
   // Sync uploadedGeoJsonMap to localStorage
@@ -240,6 +242,7 @@ export default function MapPage() {
             onImagePlacerRegister={(h) => { startImagePlacementRef.current = h; }}
             geoJsonData={geoJsonData}
             extraGeoJsonData={combinedGeoJson}
+            latestGeoJson={latestGeoJson}
             extrusionConfig={extrusionCfg || { enabled: false }}
             onFeatureClick={setSelectedFeature}
           />

@@ -50,6 +50,8 @@ interface Props {
   geoJsonData?:   GeoJSON.FeatureCollection | GeoJSON.Feature | null;
   /** GeoJSON إضافي (مثلاً شيكات الجامعات) يُعرض فوق الـ layer الأول */
   extraGeoJsonData?: GeoJSON.FeatureCollection | GeoJSON.Feature | null;
+  /** Newly added GeoJSON to fly to */
+  latestGeoJson?: GeoJSON.FeatureCollection | GeoJSON.Feature | null;
   /** optionally render pseudo-3D extrusion for a GeoJSON FeatureCollection */
   extrusionGeoJson?: GeoJSON.FeatureCollection | null;
   extrusionConfig?: ExtrusionConfig;
@@ -89,7 +91,7 @@ function getUniversityColor(from: number, to: number): { fill: string; stroke: s
 export default function LeafletMap({
   activeTool, onAreaSelected, onCoordsUpdate,
   flyToRef, clearRef, onSatChange, onIdxChange, onCapture,
-  geoJsonData, extraGeoJsonData, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
+  geoJsonData, extraGeoJsonData, latestGeoJson, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
   onImagePlacerRegister,
   extrusionGeoJson,
   extrusionConfig,
@@ -503,6 +505,8 @@ export default function LeafletMap({
     const L   = LRef.current;
     if (!map || !L) return;
 
+    const isFirstLoad = !extraGeoJsonLayerRef.current;
+
     // امسح القديمة
     if (extraGeoJsonLayerRef.current) {
       map.removeLayer(extraGeoJsonLayerRef.current);
@@ -594,13 +598,15 @@ export default function LeafletMap({
     layer.addTo(map);
     extraGeoJsonLayerRef.current = layer;
 
-    // ── Fly to uploaded GeoJSON bounds ────────────────────────────────────────
-    try {
-      const bounds = layer.getBounds();
-      if (bounds.isValid()) {
-        map.flyToBounds(bounds, { padding: [50, 50], maxZoom: 16, duration: 1.2 });
-      }
-    } catch (_) {}
+    // ── Fly to uploaded GeoJSON bounds ONLY on first load (for restored data) ──
+    if (isFirstLoad) {
+      try {
+        const bounds = layer.getBounds();
+        if (bounds.isValid()) {
+          map.flyToBounds(bounds, { padding: [50, 50], maxZoom: 16, duration: 1.2 });
+        }
+      } catch (_) {}
+    }
 
     console.log("✅ University polygons layer added");
 
@@ -611,6 +617,23 @@ export default function LeafletMap({
       }
     };
   }, [extraGeoJsonData, mapReady]);
+
+  // ── 🆕 Fly to latestGeoJson when it's uploaded ──────────────────────────
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const L   = LRef.current;
+    if (!map || !L || !latestGeoJson) return;
+
+    try {
+      const tempLayer = L.geoJSON(latestGeoJson);
+      const bounds = tempLayer.getBounds();
+      if (bounds.isValid()) {
+        map.flyToBounds(bounds, { padding: [50, 50], maxZoom: 16, duration: 1.2 });
+      }
+    } catch (err) {
+      console.error("Fly to latestGeoJson failed:", err);
+    }
+  }, [latestGeoJson]);
 
   // ── Extrusion canvas redraw on map moves ──────────────────────────────────
   useEffect(() => {
