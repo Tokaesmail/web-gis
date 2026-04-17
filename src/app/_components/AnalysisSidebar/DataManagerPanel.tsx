@@ -13,9 +13,9 @@ type ParsedFile =
 
 export interface JSONUploadModalProps {
   onClose: () => void;
-  onUpload: (geojson: GeoJSON.FeatureCollection) => void;
+  onUpload: (geojson: GeoJSON.FeatureCollection, fileName: string) => void;
   /** يُستدعى فوراً بعد قراءة الفايل — يعرض الداتا على الخريطة بدون انتظار الـ API */
-  onDisplay?: (geojson: GeoJSON.FeatureCollection) => void;
+  onDisplay?: (geojson: GeoJSON.FeatureCollection, fileName: string) => void;
   /** Add local image overlay workflow (placed by 2 clicks on map) */
   onAddImageOverlay?: (file: File) => void;
   /** Optional: enable pseudo-3D extrusion for the displayed GeoJSON */
@@ -216,7 +216,7 @@ export default function JSONUploadModal({
         if (geojson && geojson.features.length > 0) {
           setParsed({ kind: "geojson", fileName: file.name, geojson, raw });
           // ── عرض فوري على الخريطة بدون انتظار الـ upload ─────────────────
-          onDisplay?.(geojson);
+          onDisplay?.(geojson, file.name);
           // keep extrusion state, but re-emit config for new data
           onExtrusionConfig?.({ enabled: extrudeEnabled, heightProperty: heightProp, defaultHeightM });
         }
@@ -257,7 +257,7 @@ export default function JSONUploadModal({
       if (res.status === 401) { setUploadStatus("error"); setUploadMsg("Session expired — please sign in again."); return; }
       if (!res.ok || data.success === false) { setUploadStatus("error"); setUploadMsg(data.message ?? "Upload failed."); return; }
       setUploadStatus("success"); setUploadMsg("File uploaded successfully!");
-      onUpload(parsed.geojson);
+      onUpload(parsed.geojson, parsed.fileName);
       setTimeout(() => onClose(), 1200);
     } catch { setUploadStatus("error"); setUploadMsg("Network error — please try again."); }
   }

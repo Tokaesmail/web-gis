@@ -822,7 +822,7 @@ export default function AnalysisSidebar({
 
 }: {
   selectedFeature?: GeoJSON.Feature | null;
-  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection) => void;
+  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string) => void;
   onStartImageOverlay?: (file: File) => void;
   onExtrusionConfig?: (cfg: { enabled: boolean; heightProperty?: string; defaultHeightM?: number }) => void;
   onFlyTo?: (lat: number, lng: number) => void;
@@ -844,8 +844,8 @@ export default function AnalysisSidebar({
       {uploadOpen && (
         <JSONUploadModal
           onClose={() => setUploadOpen(false)}
-          onDisplay={(geojson) => { onGeoJSONUpload?.(geojson); }}
-          onUpload={(geojson) => { onGeoJSONUpload?.(geojson); }}
+          onDisplay={(geojson, fileName) => { onGeoJSONUpload?.(geojson, fileName); }}
+          onUpload={(geojson, fileName) => { onGeoJSONUpload?.(geojson, fileName); }}
           onAddImageOverlay={(file) => { onStartImageOverlay?.(file); }}
           onExtrusionConfig={(cfg) => { onExtrusionConfig?.(cfg); }}
         />
