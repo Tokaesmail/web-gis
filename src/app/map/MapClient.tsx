@@ -132,9 +132,30 @@ export default function MapPage() {
     });
   }, []);
 
+  const handleOpen3D = useCallback((fileName: string) => {
+    const geojson = uploadedGeoJsonMap[fileName];
+    if (!geojson?.features?.[0]?.geometry) return;
+
+    // Find a coordinate to focus on
+    const feat = geojson.features[0];
+    const coords: any = (feat.geometry as any).coordinates;
+    let lat = 21.54, lng = 39.19;
+
+    if (feat.geometry.type === "Point") {
+      [lng, lat] = coords;
+    } else if (feat.geometry.type === "LineString" || feat.geometry.type === "Polygon") {
+      const ring = feat.geometry.type === "Polygon" ? coords[0] : coords;
+      if (ring?.length) {
+        const mid = ring[Math.floor(ring.length / 2)];
+        [lng, lat] = mid;
+      }
+    }
+
+    setView3D({ lat, lng, name: fileName });
+  }, [uploadedGeoJsonMap]);
+
   // Sync uploadedGeoJsonMap to localStorage
   useEffect(() => {
-    if (Object.keys(uploadedGeoJsonMap).length === 0) return;
     localStorage.setItem(UPLOADED_GEOJSON_STORAGE_KEY, JSON.stringify(uploadedGeoJsonMap));
   }, [uploadedGeoJsonMap]);
 
@@ -174,6 +195,7 @@ export default function MapPage() {
       uploadedGeoJsonMap={uploadedGeoJsonMap}
       onGeoJSONUpload={handleGeoJSONUpload}
       onDeleteGeoJSON={handleDeleteGeoJSON}
+      onOpen3D={handleOpen3D}
       onStartImageOverlay={handleStartImageOverlay}
       onExtrusionConfig={handleExtrusionConfig}
       onFlyTo={handleFlyTo}
@@ -184,6 +206,7 @@ export default function MapPage() {
     uploadedGeoJsonMap,
     handleGeoJSONUpload,
     handleDeleteGeoJSON,
+    handleOpen3D,
     handleStartImageOverlay,
     handleExtrusionConfig,
     handleFlyTo,
