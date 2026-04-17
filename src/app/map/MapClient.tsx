@@ -125,6 +125,15 @@ export default function MapPage() {
     setLatestGeoJson(geojson);
   }, []);
 
+  const handleDeleteGeoJSON = useCallback((fileName: string) => {
+    setUploadedGeoJsonMap((prev) => {
+      const next = { ...prev };
+      delete next[fileName];
+      localStorage.setItem(UPLOADED_GEOJSON_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   // Sync uploadedGeoJsonMap to localStorage
   useEffect(() => {
     if (Object.keys(uploadedGeoJsonMap).length === 0) return;
@@ -165,7 +174,9 @@ export default function MapPage() {
   const sharedSidebar = useMemo(() => (
     <AnalysisSidebar
       selectedFeature={selectedFeature}
+      uploadedGeoJsonMap={uploadedGeoJsonMap}
       onGeoJSONUpload={handleGeoJSONUpload}
+      onDeleteGeoJSON={handleDeleteGeoJSON}
       onStartImageOverlay={handleStartImageOverlay}
       onExtrusionConfig={handleExtrusionConfig}
       onFlyTo={handleFlyTo}
@@ -173,7 +184,9 @@ export default function MapPage() {
     />
   ), [
     selectedFeature,
+    uploadedGeoJsonMap,
     handleGeoJSONUpload,
+    handleDeleteGeoJSON,
     handleStartImageOverlay,
     handleExtrusionConfig,
     handleFlyTo,
