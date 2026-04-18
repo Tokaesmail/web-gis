@@ -119,7 +119,34 @@ export default function MapPage() {
 
   // ── Stable callbacks ──────────────────────────────────────────────────────
   const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json") => {
-    setUploadedGeoJsonMap((prev) => ({ ...prev, [fileName]: geojson }));
+    setUploadedGeoJsonMap((prev) => {
+      // Check if this file name already exists AND if it has the same geometry roughly
+      // (to avoid duplicating during the onDisplay -> onUpload cycle)
+      const existing = prev[fileName];
+      if (existing) {
+        const oldFeat = existing.features?.[0]?.geometry?.coordinates;
+        const newFeat = geojson.features?.[0]?.geometry?.coordinates;
+        // Simple heuristic: if first feature's first coordinate is the same, assume it's the same file
+        if (JSON.stringify(oldFeat) === JSON.stringify(newFeat)) {
+          return { ...prev, [fileName]: geojson };
+        }
+      }
+
+      let uniqueName = fileName;
+      let counter = 1;
+      while (prev[uniqueName]) {
+        const dotIndex = fileName.lastIndexOf('.');
+        if (dotIndex !== -1) {
+          const name = fileName.substring(0, dotIndex);
+          const ext = fileName.substring(dotIndex);
+          uniqueName = `${name} (${counter})${ext}`;
+        } else {
+          uniqueName = `${fileName} (${counter})`;
+        }
+        counter++;
+      }
+      return { ...prev, [uniqueName]: geojson };
+    });
     setLatestGeoJson(geojson);
   }, []);
 
@@ -134,24 +161,50 @@ export default function MapPage() {
 
   const handleOpen3D = useCallback((fileName: string) => {
     const geojson = uploadedGeoJsonMap[fileName];
-    if (!geojson?.features?.[0]?.geometry) return;
+    if (!geojson?.features) return;
 
-    // Find a coordinate to focus on
-    const feat = geojson.features[0];
-    const coords: any = (feat.geometry as any).coordinates;
-    let lat = 21.54, lng = 39.19;
+    // Find the first feature with valid geometry
+    const feat = geojson.features.find((f: any) => f.geometry);
+    if (!feat) return;
 
-    if (feat.geometry.type === "Point") {
-      [lng, lat] = coords;
-    } else if (feat.geometry.type === "LineString" || feat.geometry.type === "Polygon") {
-      const ring = feat.geometry.type === "Polygon" ? coords[0] : coords;
-      if (ring?.length) {
-        const mid = ring[Math.floor(ring.length / 2)];
-        [lng, lat] = mid;
-      }
+    const getCenter = (g: any): [number, number] | null => {
+      if (!g?.coordinates) return null;
+      try {
+        if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
+        if (g.type === "LineString" || g.type === "MultiPoint") {
+          const mid = g.coordinates[Math.floor(g.coordinates.length / 2)];
+          return [mid[1], mid[0]];
+        }
+        if (g.type === "Polygon" || g.type === "MultiLineString") {
+          const first = g.coordinates[0];
+          const mid = first[Math.floor(first.length / 2)];
+          return [mid[1], mid[0]];
+        }
+        if (g.type === "MultiPolygon") {
+          const firstPoly = g.coordinates[0];
+          const firstRing = firstPoly[0];
+          const mid = firstRing[Math.floor(firstRing.length / 2)];
+          return [mid[1], mid[0]];
+        }
+        // Fallback: try to find any numbers
+        const findFirst = (c: any): [number, number] | null => {
+          if (Array.isArray(c) && typeof c[0] === "number") return [c[1], c[0]];
+          if (Array.isArray(c)) {
+            for (const sub of c) {
+              const res = findFirst(sub);
+              if (res) return res;
+            }
+          }
+          return null;
+        };
+        return findFirst(g.coordinates);
+      } catch (e) { return null; }
+    };
+
+    const center = getCenter(feat.geometry);
+    if (center) {
+      setView3D({ lat: center[0], lng: center[1], name: fileName });
     }
-
-    setView3D({ lat, lng, name: fileName });
   }, [uploadedGeoJsonMap]);
 
   // Sync uploadedGeoJsonMap to localStorage

@@ -457,17 +457,37 @@ function NDVILivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
 // ─── helper: extract midpoint coords from any GeoJSON geometry ────────────────
 function getMidCoords(feature?: GeoJSON.Feature | null): [number, number] | null {
   const g = feature?.geometry as any;
-  if (!g) return null;
-  if (g.type === "Point")      return [g.coordinates[1], g.coordinates[0]];
-  if (g.type === "LineString" && g.coordinates?.length) {
-    const m = g.coordinates[Math.floor(g.coordinates.length / 2)];
-    return [m[1], m[0]];
-  }
-  if (g.type === "Polygon" && g.coordinates?.[0]?.length) {
-    const m = g.coordinates[0][Math.floor(g.coordinates[0].length / 2)];
-    return [m[1], m[0]];
-  }
-  return null;
+  if (!g?.coordinates) return null;
+  try {
+    if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
+    if (g.type === "LineString" || g.type === "MultiPoint") {
+      const mid = g.coordinates[Math.floor(g.coordinates.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    if (g.type === "Polygon" || g.type === "MultiLineString") {
+      const first = g.coordinates[0];
+      const mid = first[Math.floor(first.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    if (g.type === "MultiPolygon") {
+      const firstPoly = g.coordinates[0];
+      const firstRing = firstPoly[0];
+      const mid = firstRing[Math.floor(firstRing.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    // Deep fallback
+    const findFirst = (c: any): [number, number] | null => {
+      if (Array.isArray(c) && typeof c[0] === "number") return [c[1], c[0]];
+      if (Array.isArray(c)) {
+        for (const sub of c) {
+          const res = findFirst(sub);
+          if (res) return res;
+        }
+      }
+      return null;
+    };
+    return findFirst(g.coordinates);
+  } catch (e) { return null; }
 }
 
 // ─── Skeleton row ─────────────────────────────────────────────────────────────
