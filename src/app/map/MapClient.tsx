@@ -3,7 +3,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLang } from "../_components/translations";
 import AnalysisSidebar from "../_components/AnalysisSidebar/AnalysisSidebar";
-import AnalysisDashboard from "../_components/AnalysisDashboard/AnalysisDashboard";
 import AIAssistant from "../_components/AIAssistant/AIAssistant";
 
 import { DrawTool, SatKey, IdxKey } from "./mapTypes_proxy";
@@ -23,7 +22,6 @@ export default function MapPage() {
   const [aiOpen,           setAiOpen]           = useState(false);
   const [isFullscreen,     setIsFullscreen]      = useState(false);
   const [activeTool,       setActiveTool]        = useState<DrawTool>("pointer");
-  const [dashboardVisible, setDashboardVisible]  = useState(false);
   const [selectedArea,     setSelectedArea]      = useState({ name: "Selected Area", ha: 0 });
   const [coords,           setCoords]            = useState<{ lat: number; lng: number } | null>(null);
   const [captureUrl,       setCaptureUrl]        = useState<string | null>(null);
@@ -134,9 +132,30 @@ export default function MapPage() {
     });
   }, []);
 
+  const handleOpen3D = useCallback((fileName: string) => {
+    const geojson = uploadedGeoJsonMap[fileName];
+    if (!geojson?.features?.[0]?.geometry) return;
+    
+    // Find a coordinate to focus on
+    const feat = geojson.features[0];
+    const coords: any = (feat.geometry as any).coordinates;
+    let lat = 21.54, lng = 39.19;
+
+    if (feat.geometry.type === "Point") {
+      [lng, lat] = coords;
+    } else if (feat.geometry.type === "LineString" || feat.geometry.type === "Polygon") {
+      const ring = feat.geometry.type === "Polygon" ? coords[0] : coords;
+      if (ring?.length) {
+        const mid = ring[Math.floor(ring.length / 2)];
+        [lng, lat] = mid;
+      }
+    }
+
+    setView3D({ lat, lng, name: fileName });
+  }, [uploadedGeoJsonMap]);
+
   // Sync uploadedGeoJsonMap to localStorage
   useEffect(() => {
-    if (Object.keys(uploadedGeoJsonMap).length === 0) return;
     localStorage.setItem(UPLOADED_GEOJSON_STORAGE_KEY, JSON.stringify(uploadedGeoJsonMap));
   }, [uploadedGeoJsonMap]);
 
@@ -157,7 +176,6 @@ export default function MapPage() {
 
   const handleClear = useCallback(() => {
     clearRef.current?.();
-    setDashboardVisible(false);
     setCoords(null);
     setCaptureUrl(null);
     localStorage.removeItem(UPLOADED_GEOJSON_STORAGE_KEY);
@@ -177,6 +195,7 @@ export default function MapPage() {
       uploadedGeoJsonMap={uploadedGeoJsonMap}
       onGeoJSONUpload={handleGeoJSONUpload}
       onDeleteGeoJSON={handleDeleteGeoJSON}
+      onOpen3D={handleOpen3D}
       onStartImageOverlay={handleStartImageOverlay}
       onExtrusionConfig={handleExtrusionConfig}
       onFlyTo={handleFlyTo}
@@ -187,6 +206,7 @@ export default function MapPage() {
     uploadedGeoJsonMap,
     handleGeoJSONUpload,
     handleDeleteGeoJSON,
+    handleOpen3D,
     handleStartImageOverlay,
     handleExtrusionConfig,
     handleFlyTo,
@@ -241,7 +261,6 @@ export default function MapPage() {
             activeTool={activeTool}
             onAreaSelected={(name, area) => {
               setSelectedArea({ name, ha: area });
-              setDashboardVisible(true);
             }}
             onCoordsUpdate={(lat, lng) => {
               lastCoordsRef.current = { lat, lng };
@@ -287,12 +306,6 @@ export default function MapPage() {
               <CoordsPopup lat={coords.lat} lng={coords.lng} onClose={() => setCoords(null)} />
             )}
             <AITriggerButton onClick={() => setAiOpen(!aiOpen)} active={aiOpen} />
-            <AnalysisDashboard
-              visible={dashboardVisible}
-              onClose={() => setDashboardVisible(false)}
-              areaName={selectedArea.name}
-              areaSizeHa={selectedArea.ha}
-            />
             <AIAssistant open={aiOpen} onClose={() => setAiOpen(false)} />
             {sharedSidebar}
           </>

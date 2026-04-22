@@ -20,6 +20,10 @@ const LAYER_LINE_ID     = "uploaded-geojson-line-3d";
 const LAYER_POINT_ID    = "uploaded-geojson-point-3d";
 
 function addGeoJsonLayers(map: any, geojson: GeoJSON.FeatureCollection) {
+  if (map.getSource(GEOJSON_SOURCE_ID)) {
+    (map.getSource(GEOJSON_SOURCE_ID) as any).setData(geojson);
+    return;
+  }
   map.addSource(GEOJSON_SOURCE_ID, { type: "geojson", data: geojson });
 
   map.addLayer({
@@ -60,6 +64,7 @@ export default function Mapbox3DView({
 }: Mapbox3DViewProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef          = useRef<any>(null);
+  const markerRef       = useRef<any>(null);
   const mapReadyRef     = useRef(false);
 
   const [loading,      setLoading]      = useState(true);
@@ -77,10 +82,11 @@ export default function Mapbox3DView({
     }
 
     let cancelled = false;
+    let maplibregl: any;
 
     const loadMap = async () => {
       try {
-        const maplibregl = (await import("maplibre-gl")).default;
+        maplibregl = (await import("maplibre-gl")).default;
 
         if (!document.getElementById("maplibre-css")) {
           const link = document.createElement("link");
@@ -91,7 +97,6 @@ export default function Mapbox3DView({
 
         if (cancelled || !mapContainerRef.current) return;
 
-        // ✅ Fix TypeScript error: cast options as `any` to allow antialias
         const mapOptions: any = {
           container: mapContainerRef.current,
           style:     `https://api.maptiler.com/maps/hybrid/style.json?key=${MAPTILER_KEY}`,
@@ -105,7 +110,6 @@ export default function Mapbox3DView({
         const map = new maplibregl.Map(mapOptions);
         mapRef.current = map;
 
-        // ✅ Zoom + compass — بيضيف +/- وبوصلة
         map.addControl(
           new maplibregl.NavigationControl({ visualizePitch: true } as any),
           "top-right"
@@ -137,7 +141,8 @@ export default function Mapbox3DView({
             background:#00d4ff;border:3px solid #fff;
             box-shadow:0 0 12px #00d4ff88;
           `;
-          new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(map);
+          const marker = new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(map);
+          markerRef.current = marker;
 
           mapReadyRef.current = true;
           if (uploadedGeoJson) {
@@ -145,6 +150,12 @@ export default function Mapbox3DView({
           }
 
           setLoading(false);
+        });
+
+        map.on("styledata", () => {
+          if (uploadedGeoJson && !map.getSource(GEOJSON_SOURCE_ID)) {
+            addGeoJsonLayers(map, uploadedGeoJson);
+          }
         });
 
         map.on("error", (e: any) => {
@@ -167,14 +178,28 @@ export default function Mapbox3DView({
       mapRef.current?.remove();
       mapRef.current = null;
     };
-  }, [lat, lng]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // Only once on mount
+
+  // ── تحديث الإحداثيات والماركر لو اتغيروا ───────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReadyRef.current) return;
+    map.jumpTo({ center: [lng, lat] });
+    
+    if (markerRef.current) {
+      markerRef.current.setLngLat([lng, lat]);
+    }
+  }, [lat, lng]);
 
   // ── تحديث الـ GeoJSON لو اتغير ────────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReadyRef.current) return;
-    removeGeoJsonLayers(map);
-    if (uploadedGeoJson) addGeoJsonLayers(map, uploadedGeoJson);
+    if (uploadedGeoJson) {
+      addGeoJsonLayers(map, uploadedGeoJson);
+    } else {
+      removeGeoJsonLayers(map);
+    }
   }, [uploadedGeoJson]);
 
   useEffect(() => { mapRef.current?.setPitch(pitch); },     [pitch]);

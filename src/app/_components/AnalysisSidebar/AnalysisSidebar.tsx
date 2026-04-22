@@ -707,12 +707,14 @@ function PanelContent({
   selectedFeature,
   uploadedGeoJsonMap,
   onDeleteGeoJSON,
+  onOpen3D,
   onFlyTo,
 }: {
   id: PanelId;
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
   onDeleteGeoJSON?: (fileName: string) => void;
+  onOpen3D?: (fileName: string) => void;
   onFlyTo?: (lat: number, lng: number) => void;
 }) {
 
@@ -767,14 +769,42 @@ function PanelContent({
                       <p className="text-[0.72rem] font-medium text-slate-200 truncate">{fileName}</p>
                       <p className="text-[0.6rem] text-slate-500">{count} features</p>
                     </div>
-                    <button
-                      onClick={() => onDeleteGeoJSON?.(fileName)}
-                      className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all cursor-pointer opacity-0 group-hover:opacity-100"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
-                      </svg>
-                    </button>
+                    
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                      <button
+                        onClick={() => {
+                          if (!geojson?.features?.[0]?.geometry) return;
+                          const coords = getMidCoords(geojson.features[0]);
+                          if (coords) onFlyTo?.(coords[0], coords[1]);
+                        }}
+                        title="Fly to"
+                        className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-cyan-400 hover:bg-cyan-400/10 rounded-lg transition-all cursor-pointer"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2m8-10h2M2 12h2"/>
+                        </svg>
+                      </button>
+                      
+                      <button
+                        onClick={() => onOpen3D?.(fileName)}
+                        title="View in 3D"
+                        className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-orange-400 hover:bg-orange-400/10 rounded-lg transition-all cursor-pointer"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="m21 8-9-4-9 4 9 4 9-4z"/><path d="m21 12-9 4-9-4"/><path d="m21 16-9 4-9-4"/>
+                        </svg>
+                      </button>
+
+                      <button
+                        onClick={() => onDeleteGeoJSON?.(fileName)}
+                        title="Delete"
+                        className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all cursor-pointer"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 </div>
               );
@@ -888,6 +918,7 @@ export default function AnalysisSidebar({
   uploadedGeoJsonMap,
   onGeoJSONUpload,
   onDeleteGeoJSON,
+  onOpen3D,
   onStartImageOverlay,
   onExtrusionConfig,
   onFlyTo,
@@ -898,6 +929,7 @@ export default function AnalysisSidebar({
   uploadedGeoJsonMap?: Record<string, any>;
   onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string) => void;
   onDeleteGeoJSON?: (fileName: string) => void;
+  onOpen3D?: (fileName: string) => void;
   onStartImageOverlay?: (file: File) => void;
   onExtrusionConfig?: (cfg: { enabled: boolean; heightProperty?: string; defaultHeightM?: number }) => void;
   onFlyTo?: (lat: number, lng: number) => void;
@@ -969,6 +1001,7 @@ export default function AnalysisSidebar({
                   selectedFeature={selectedFeature}
                   uploadedGeoJsonMap={uploadedGeoJsonMap}
                   onDeleteGeoJSON={onDeleteGeoJSON}
+                  onOpen3D={onOpen3D}
                   onFlyTo={onFlyTo}
                 />
               )}
