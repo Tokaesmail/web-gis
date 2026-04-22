@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useLang } from "../translations";
 import JSONUploadModal from "./DataManagerPanel";
+import { useMapDB } from "../../map/useMapDB";
 
 type PanelId =
   | "ndvi"
@@ -14,7 +15,8 @@ type PanelId =
   | "notifications"
   | "settings"
   | "analyses"
-  | "layers";
+  | "layers"
+  | "captures";
 
 interface PanelItem {
   id: PanelId;
@@ -25,6 +27,17 @@ interface PanelItem {
 }
 
 const panels: PanelItem[] = [
+  {
+    id: "captures",
+    labelEn: "Captures",
+    labelAr: "اللقطات",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+        <circle cx="12" cy="13" r="4" />
+      </svg>
+    ),
+  },
   {
     id: "layers",
     labelEn: "Layers",
@@ -495,6 +508,70 @@ function SkRow({ w = "w-full", h = "h-4" }: { w?: string; h?: string }) {
   return <div className={`${h} ${w} rounded-md bg-white/[0.05] animate-pulse`} />;
 }
 
+// ─── Captures Panel ───────────────────────────────────────────────────────────
+function CapturesPanel() {
+  const { getAllCaptures, deleteCapture, blobToUrl } = useMapDB();
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const data = await getAllCaptures();
+    setItems(data.reverse()); // latest first
+    setLoading(false);
+  }, [getAllCaptures]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div className="py-10 text-center opacity-40">Loading captures...</div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-2">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Local Captures</p>
+        <p className="text-xs text-slate-300">Recently saved area screenshots</p>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="py-10 text-center opacity-40 text-[0.7rem]">No captures found. Draw a polygon to save.</div>
+      ) : (
+        <div className="space-y-4">
+          {items.map((it) => {
+            const smallUrl = blobToUrl(it.smallBlob);
+            const largeUrl = blobToUrl(it.largeBlob);
+            return (
+              <div key={it.id} className="group bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
+                <div className="relative aspect-video bg-black/40">
+                  <img src={smallUrl} alt="Small Capture" className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2 gap-2">
+                    <a href={largeUrl} target="_blank" className="px-2 py-1 bg-cyan-500 text-black text-[0.6rem] rounded font-bold">Large View</a>
+                    <button
+                      onClick={async () => { await deleteCapture(it.id); load(); }}
+                      className="px-2 py-1 bg-red-500/80 text-white text-[0.6rem] rounded"
+                    >Delete</button>
+                  </div>
+                </div>
+                <div className="p-2.5 space-y-1">
+                  <p className="text-[0.65rem] text-slate-200 font-medium truncate">{it.metadata?.areaName || "Unnamed Area"}</p>
+                  <p className="text-[0.55rem] text-slate-500 font-mono italic">
+                    {new Date(it.createdAt).toLocaleString()}
+                  </p>
+                  <details className="mt-1">
+                    <summary className="text-[0.5rem] text-cyan-400/70 cursor-pointer hover:text-cyan-400">View Coordinates</summary>
+                    <pre className="mt-1 text-[0.5rem] bg-black/40 p-1 rounded max-h-24 overflow-auto text-slate-400 leading-tight">
+                      {JSON.stringify(it.coordinates, null, 2)}
+                    </pre>
+                  </details>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Overview Live Panel ──────────────────────────────────────────────────────
 function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
   const coords = getMidCoords(feature);
@@ -751,6 +828,12 @@ function PanelContent({
   // ── WEATHER ──
   if (id === "weather") {
     return <WeatherLivePanel feature={selectedFeature} />;
+  }
+
+  // ── CAPTURES ──
+  if (id === "captures") {
+    // Note: AnalysisSidebar needs access to useMapDB to show local captures
+    return <CapturesPanel />;
   }
 
   // ── LAYERS ──

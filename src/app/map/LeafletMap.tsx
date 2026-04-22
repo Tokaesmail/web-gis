@@ -674,11 +674,11 @@ export default function LeafletMap({
     coordinates: LatLngPoint[], metadata: CaptureMetadata
   ) => {
     try {
-      const { id, url, blob } = await capture(canvas, map, L, coordinates, metadata);
+      const { id, smallUrl, smallBlob, largeBlob } = await capture(canvas, map, L, coordinates, metadata);
       console.log("✅ IndexedDB id:", id);
-      onCapture?.(url);
+      onCapture?.(smallUrl);
       // بنبعت coordinates و metadata للباك — مفيش ألوان
-      const res = await sendToBackend(blob, coordinates, metadata);
+      const res = await sendToBackend(smallBlob, largeBlob, coordinates, metadata);
       if (res.ok) console.log("✅ Backend:", await res.json());
     } catch (err) {
       console.error("❌ Capture error:", err);
@@ -1107,10 +1107,10 @@ export default function LeafletMap({
               lastCoordsRef.current = [centerCoord, { lat, lng }];
               lastToolRef.current   = "circle";
               const metadata: CaptureMetadata = { areaName: "Drawn Circle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
-              const { id, url, blob } = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata);
+              const { id, smallUrl, smallBlob, largeBlob } = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata);
               console.log("✅ IndexedDB id:", id);
-              onCapture?.(url);
-              const res = await sendToBackend(blob, [centerCoord, { lat, lng }], metadata);
+              onCapture?.(smallUrl);
+              const res = await sendToBackend(smallBlob, largeBlob, [centerCoord, { lat, lng }], metadata);
               if (res.ok) console.log("✅ Backend:", await res.json());
             }
             drawPointsRef.current = [];

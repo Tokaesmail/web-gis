@@ -81,7 +81,7 @@ export function useMapCanvas() {
     L:             any,
     coordinates:   LatLngPoint[],
     metadata:      CaptureMetadata
-  ): Promise<{ id: number; url: string; blob: Blob }> => {
+  ): Promise<{ id: number; smallUrl: string; largeUrl: string; smallBlob: Blob; largeBlob: Blob }> => {
 
     const size     = mapInstance.getSize();
     const combined = document.createElement("canvas");
@@ -110,6 +110,11 @@ export function useMapCanvas() {
     // ② ارسم الـ overlay (البولجون/الشكل) فوق التايلز
     ctx.drawImage(overlayCanvas, 0, 0);
 
+    // Capture the large (full-screen) screenshot before cropping
+    const largeBlob: Blob = await new Promise((res, rej) =>
+      combined.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/png")
+    );
+
     // ③ Crop على شكل الـ bounding box للإحداثيات
     const px   = coordinates.map((p) => mapInstance.latLngToContainerPoint(L.latLng(p.lat, p.lng)));
     const xs   = px.map((p: any) => p.x);
@@ -132,13 +137,14 @@ export function useMapCanvas() {
     cCtx.clip();
     cCtx.drawImage(combined, -minX, -minY);   // ← الماب كامل جوا الشكل
 
-    const blob: Blob = await new Promise((res, rej) =>
-      cropped.toBlob((b) => b ? res(b) : rej(new Error("toBlob failed")), "image/png")
+    const smallBlob: Blob = await new Promise((res, rej) =>
+      cropped.toBlob((b) => b ? res(b) : rej(new Error("Small toBlob failed")), "image/png")
     );
 
-    const id  = await saveCapture(blob, coordinates, metadata);
-    const url = blobToUrl(blob);
-    return { id, url, blob };
+    const id  = await saveCapture(smallBlob, largeBlob, coordinates, metadata);
+    const smallUrl = blobToUrl(smallBlob);
+    const largeUrl = blobToUrl(largeBlob);
+    return { id, smallUrl, largeUrl, smallBlob, largeBlob };
   }, [saveCapture, blobToUrl]);
 
   // ── captureCircle ─────────────────────────────────────────────────────────
@@ -162,13 +168,15 @@ export function useMapCanvas() {
 
   // ── Send to Backend ───────────────────────────────────────────────────────
   const sendToBackend = useCallback(async (
-    blob:        Blob,
+    smallBlob:   Blob,
+    largeBlob:   Blob,
     coordinates: LatLngPoint[],
     metadata:    CaptureMetadata,
     endpoint     = "/api/map-capture"
   ): Promise<Response> => {
     const form = new FormData();
-    form.append("image",       blob,                      "capture.png");
+    form.append("smallImage",  smallBlob,                 "small_capture.png");
+    form.append("largeImage",  largeBlob,                 "large_capture.png");
     form.append("coordinates", JSON.stringify(coordinates));
     form.append("metadata",    JSON.stringify(metadata));
     return fetch(endpoint, { method: "POST", body: form });
