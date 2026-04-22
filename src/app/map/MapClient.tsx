@@ -25,6 +25,7 @@ export default function MapPage() {
   const [selectedArea,     setSelectedArea]      = useState({ name: "Selected Area", ha: 0 });
   const [coords,           setCoords]            = useState<{ lat: number; lng: number } | null>(null);
   const [captureUrl,       setCaptureUrl]        = useState<string | null>(null);
+  const [captures,         setCaptures]          = useState<any[]>([]);
   const [selectedFeature,  setSelectedFeature]   = useState<any>(null);
   const [view3D,           setView3D]            = useState<{ lat: number; lng: number; name?: string } | null>(null);
   const [activePanel,      setActivePanel]       = useState<string | null>("overview");
@@ -50,14 +51,15 @@ export default function MapPage() {
   const lastClickTimeRef = useRef<number>(0);
 
   const { isRTL } = useLang();
+  const isRestored = useRef(false);
 
   // ── 1. localStorage restore ───────────────────────────────────────────────
   useEffect(() => {
+    if (isRestored.current) return;
     try {
       const raw = localStorage.getItem(UPLOADED_GEOJSON_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        // Migration: if the stored data is a FeatureCollection, convert to Map format
         if (parsed && parsed.type === "FeatureCollection") {
           setUploadedGeoJsonMap({ "imported_legacy.json": parsed });
         } else {
@@ -66,6 +68,7 @@ export default function MapPage() {
       }
       const rawCfg = localStorage.getItem(EXTRUSION_CFG_STORAGE_KEY);
       if (rawCfg) setExtrusionCfg(JSON.parse(rawCfg));
+      isRestored.current = true;
     } catch (e) { console.error("Storage error", e); }
   }, []);
 
@@ -210,6 +213,7 @@ export default function MapPage() {
 
   // Sync uploadedGeoJsonMap to localStorage
   useEffect(() => {
+    if (!isRestored.current) return;
     localStorage.setItem(UPLOADED_GEOJSON_STORAGE_KEY, JSON.stringify(uploadedGeoJsonMap));
   }, [uploadedGeoJsonMap]);
 
@@ -232,6 +236,7 @@ export default function MapPage() {
     clearRef.current?.();
     setCoords(null);
     setCaptureUrl(null);
+    setCaptures([]);
     localStorage.removeItem(UPLOADED_GEOJSON_STORAGE_KEY);
     localStorage.removeItem(EXTRUSION_CFG_STORAGE_KEY);
     setUploadedGeoJsonMap({});
@@ -242,11 +247,20 @@ export default function MapPage() {
     setView3D((prev) => prev ? null : { ...lastCoordsRef.current });
   }, []);
 
+  const handleCapture = useCallback((url: string) => {
+    setCaptureUrl(url);
+    setCaptures((prev) => [
+      { id: Date.now(), url, createdAt: new Date().toISOString() },
+      ...prev,
+    ]);
+  }, []);
+
   // ── Shared sidebar ────────────────────────────────────────────────────────
   const sharedSidebar = useMemo(() => (
     <AnalysisSidebar
       selectedFeature={selectedFeature}
       uploadedGeoJsonMap={uploadedGeoJsonMap}
+      captures={captures}
       onGeoJSONUpload={handleGeoJSONUpload}
       onDeleteGeoJSON={handleDeleteGeoJSON}
       onOpen3D={handleOpen3D}
@@ -256,10 +270,12 @@ export default function MapPage() {
       onClose={handleClose3D}
       activePanel={activePanel as any}
       onActivePanelChange={(id) => setActivePanel(id)}
+      onClearCaptures={() => setCaptures([])}
     />
   ), [
     selectedFeature,
     uploadedGeoJsonMap,
+    captures,
     handleGeoJSONUpload,
     handleDeleteGeoJSON,
     handleOpen3D,
@@ -285,14 +301,6 @@ export default function MapPage() {
   const handleWrapperDoubleClick = useCallback(() => {
     setView3D({ ...lastCoordsRef.current });
   }, []);
-
-  // ── Capture toast timer ──────────────────────────────────────────────────
-  useEffect(() => {
-    if (captureUrl) {
-      const timer = setTimeout(() => setCaptureUrl(null), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [captureUrl]);
 
   return (
     <div className={`flex flex-col w-full h-screen bg-[#040d1a] overflow-hidden ${isRTL ? "font-arabic" : ""}`}>
@@ -331,7 +339,7 @@ export default function MapPage() {
               lastCoordsRef.current = { lat, lng };
               setCoords({ lat, lng });
             }}
-            onCapture={setCaptureUrl}
+              onCapture={handleCapture}
             flyToRef={flyToRef}
             clearRef={clearRef}
             onSatChange={(h) => { changeSatRef.current = h; }}
@@ -371,30 +379,35 @@ export default function MapPage() {
               <CoordsPopup lat={coords.lat} lng={coords.lng} onClose={() => setCoords(null)} />
             )}
 
-            {/* ── Capture Preview Toast ── */}
-            {captureUrl && (
-              <div className={`absolute top-20 left-1/2 -translate-x-1/2 z-[2000] animate-fadeUp`}>
-                <div className="bg-[#0a1628]/95 backdrop-blur-md border border-cyan-500/30 rounded-xl p-2 shadow-2xl flex items-center gap-3 min-w-[240px]">
-                  <div className="w-16 h-16 rounded-lg overflow-hidden border border-white/10 bg-black shrink-0">
-                    <img src={captureUrl} className="w-full h-full object-cover" alt="Capture" />
-                  </div>
-                  <div className="flex-1 pr-2">
-                    <p className="text-[0.7rem] font-bold text-cyan-400 uppercase tracking-wider">Area Captured</p>
-                    <p className="text-[0.62rem] text-slate-400 mt-0.5">Saved to local browser storage</p>
+            {/* ── Capture Left Sidebar Preview ── */}
+            {captures.length > 0 && (
+              <div className="absolute top-20 left-4 z-[1000] w-48 space-y-3 animate-fadeUp max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto">
+                <div className="flex items-center justify-between bg-[#0a1628]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-2 sticky top-0 z-10">
+                  <span className="text-[0.65rem] font-bold text-cyan-400 uppercase tracking-wider">Captures ({captures.length})</span>
+                  <button onClick={() => setCaptures([])} className="text-[0.6rem] text-slate-500 hover:text-red-400 cursor-pointer">Clear</button>
+                </div>
+                {captures.map((cap) => (
+                  <div key={cap.id} className="group relative bg-[#0a1628]/95 backdrop-blur-md border border-white/10 rounded-xl overflow-hidden shadow-xl">
+                    <div className="aspect-video bg-black/40">
+                      <img src={cap.url} className="w-full h-full object-cover" alt="Capture" />
+                    </div>
+                    <div className="p-2 flex items-center justify-between">
+                      <span className="text-[0.55rem] text-slate-500">{new Date(cap.createdAt).toLocaleTimeString()}</span>
+                      <button
+                        onClick={() => window.open(cap.url, '_blank')}
+                        className="text-[0.55rem] font-bold text-cyan-400 hover:underline cursor-pointer"
+                      >
+                        View
+                      </button>
+                    </div>
                     <button
-                      onClick={() => {
-                        setActivePanel("captures");
-                        setCaptureUrl(null);
-                      }}
-                      className="mt-1.5 text-[0.6rem] font-bold text-white bg-cyan-500/20 hover:bg-cyan-500/40 border border-cyan-500/30 px-2 py-1 rounded transition-all cursor-pointer"
+                      onClick={() => setCaptures(prev => prev.filter(c => c.id !== cap.id))}
+                      className="absolute top-1 right-1 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center text-white/60 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
                     >
-                      View in Captures
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M18 6 6 18M6 6l12 12"/></svg>
                     </button>
                   </div>
-                  <button onClick={() => setCaptureUrl(null)} className="p-1 text-slate-500 hover:text-white cursor-pointer">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                  </button>
-                </div>
+                ))}
               </div>
             )}
 

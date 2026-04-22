@@ -49,10 +49,15 @@ interface MapViewToggleProps {
 
   // ── AnalysisSidebar props ──
   selectedFeature?: GeoJSON.Feature | null;
-  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection) => void;
+  uploadedGeoJsonMap?: Record<string, any>;
+  captures: any[];
+  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string) => void;
+  onDeleteGeoJSON?: (fileName: string) => void;
+  onOpen3D?: (fileName: string) => void;
   onStartImageOverlay?: (file: File) => void;
   onExtrusionConfig?: (cfg: { enabled: boolean; heightProperty?: string; defaultHeightM?: number }) => void;
   onFlyTo?: (lat: number, lng: number) => void;
+  onClearCaptures: () => void;
 }
 
 type ViewMode = "2d" | "3d";
@@ -64,10 +69,15 @@ export default function MapViewToggle(props: MapViewToggleProps) {
   const sidebar = (
     <AnalysisSidebar
       selectedFeature={props.selectedFeature}
+      uploadedGeoJsonMap={props.uploadedGeoJsonMap}
+      captures={props.captures}
       onGeoJSONUpload={props.onGeoJSONUpload}
+      onDeleteGeoJSON={props.onDeleteGeoJSON}
+      onOpen3D={props.onOpen3D}
       onStartImageOverlay={props.onStartImageOverlay}
       onExtrusionConfig={props.onExtrusionConfig}
       onFlyTo={props.onFlyTo}
+      onClearCaptures={props.onClearCaptures}
     />
   );
 

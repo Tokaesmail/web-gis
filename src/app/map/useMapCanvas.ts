@@ -9,7 +9,7 @@ import { useMapDB }    from "./useMapDB";
 import { LatLngPoint, CaptureMetadata } from "./mapTypes_proxy";
 
 export function useMapCanvas() {
-  const { saveCapture, blobToUrl } = useMapDB();
+  const blobToUrl = (blob: Blob) => URL.createObjectURL(blob);
 
   // ── Draw functions ────────────────────────────────────────────────────────
 
@@ -81,14 +81,14 @@ export function useMapCanvas() {
     L:             any,
     coordinates:   LatLngPoint[],
     metadata:      CaptureMetadata
-  ): Promise<{ id: number; smallUrl: string; largeUrl: string; smallBlob: Blob; largeBlob: Blob }> => {
+  ): Promise<{ smallUrl: string; largeUrl: string; smallBlob: Blob; largeBlob: Blob }> => {
 
     const size     = mapInstance.getSize();
     const combined = document.createElement("canvas");
     combined.width = size.x; combined.height = size.y;
     const ctx = combined.getContext("2d")!;
 
-    // ① ارسم التايلز (دلوقتي من proxy → مفيش CORS)
+    // ① ارسم التايلز
     const tileEls = Array.from(
       mapInstance.getContainer().querySelectorAll(".leaflet-tile") as NodeListOf<HTMLImageElement>
     );
@@ -99,7 +99,6 @@ export function useMapCanvas() {
           try {
             ctx.drawImage(tile as CanvasImageSource, parseFloat(m[1]), parseFloat(m[2]));
           } catch (e) {
-            // لو في tile فضل مش crossOrigin نتجاهله
             console.warn("Tile draw skipped:", e);
           }
         }
@@ -107,45 +106,50 @@ export function useMapCanvas() {
       })
     ));
 
-    // ② ارسم الـ overlay (البولجون/الشكل) فوق التايلز
+    // ② ارسم الـ overlay
     ctx.drawImage(overlayCanvas, 0, 0);
 
-    // Capture the large (full-screen) screenshot before cropping
+    // Capture large Blob
     const largeBlob: Blob = await new Promise((res, rej) =>
       combined.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/png")
     );
 
-    // ③ Crop على شكل الـ bounding box للإحداثيات
+    // ③ Crop
     const px   = coordinates.map((p) => mapInstance.latLngToContainerPoint(L.latLng(p.lat, p.lng)));
     const xs   = px.map((p: any) => p.x);
     const ys   = px.map((p: any) => p.y);
-    const minX = Math.max(0, Math.floor(Math.min(...xs)));
-    const minY = Math.max(0, Math.floor(Math.min(...ys)));
-    const w    = Math.max(1, Math.min(size.x, Math.ceil(Math.max(...xs))) - minX);
-    const h    = Math.max(1, Math.min(size.y, Math.ceil(Math.max(...ys))) - minY);
+    const minX = Math.floor(Math.min(...xs));
+    const minY = Math.floor(Math.min(...ys));
+    const maxX = Math.ceil(Math.max(...xs));
+    const maxY = Math.ceil(Math.max(...ys));
+
+    const w = Math.max(1, maxX - minX);
+    const h = Math.max(1, maxY - minY);
 
     const cropped = document.createElement("canvas");
     cropped.width = w; cropped.height = h;
     const cCtx = cropped.getContext("2d")!;
 
-    // Clip على شكل البولجون بالظبط
+    // Clip to shape
     cCtx.beginPath();
     px.forEach(({ x, y }: any, i: number) =>
       i === 0 ? cCtx.moveTo(x - minX, y - minY) : cCtx.lineTo(x - minX, y - minY)
     );
     cCtx.closePath();
     cCtx.clip();
-    cCtx.drawImage(combined, -minX, -minY);   // ← الماب كامل جوا الشكل
+
+    // Use 9-arg drawImage for precision
+    // drawImage(image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight)
+    cCtx.drawImage(combined, minX, minY, w, h, 0, 0, w, h);
 
     const smallBlob: Blob = await new Promise((res, rej) =>
       cropped.toBlob((b) => b ? res(b) : rej(new Error("Small toBlob failed")), "image/png")
     );
 
-    const id  = await saveCapture(smallBlob, largeBlob, coordinates, metadata);
     const smallUrl = blobToUrl(smallBlob);
     const largeUrl = blobToUrl(largeBlob);
-    return { id, smallUrl, largeUrl, smallBlob, largeBlob };
-  }, [saveCapture, blobToUrl]);
+    return { smallUrl, largeUrl, smallBlob, largeBlob };
+  }, []);
 
   // ── captureCircle ─────────────────────────────────────────────────────────
   const captureCircle = useCallback(async (
@@ -155,7 +159,7 @@ export function useMapCanvas() {
     center:        LatLngPoint,
     radiusMeters:  number,
     metadata:      CaptureMetadata
-  ) => {
+  ): Promise<{ smallUrl: string; largeUrl: string; smallBlob: Blob; largeBlob: Blob }> => {
     const points: LatLngPoint[] = Array.from({ length: 32 }, (_, i) => {
       const angle = (i / 32) * Math.PI * 2;
       return {
