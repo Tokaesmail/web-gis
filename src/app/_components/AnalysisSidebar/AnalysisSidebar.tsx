@@ -1025,8 +1025,9 @@ export default function AnalysisSidebar({
   onStartImageOverlay,
   onExtrusionConfig,
   onFlyTo,
-    onClose,
-
+  onClose,
+  activePanel: controlledActivePanel,
+  onActivePanelChange,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
@@ -1037,14 +1038,24 @@ export default function AnalysisSidebar({
   onExtrusionConfig?: (cfg: { enabled: boolean; heightProperty?: string; defaultHeightM?: number }) => void;
   onFlyTo?: (lat: number, lng: number) => void;
   onClose?: () => void;
-
+  activePanel?: PanelId | null;
+  onActivePanelChange?: (id: PanelId | null) => void;
 }) {
-  const [activePanel, setActivePanel] = useState<PanelId | null>("overview");
-  const [uploadOpen, setUploadOpen]   = useState(false);
+  const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
+  const [uploadOpen, setUploadOpen] = useState(false);
   const { isRTL } = useLang();
 
-  const togglePanel = (id: PanelId) =>
-    setActivePanel((prev) => (prev === id ? null : id));
+  // Determine which state to use
+  const activePanel = controlledActivePanel !== undefined ? controlledActivePanel : internalActivePanel;
+
+  const togglePanel = (id: PanelId) => {
+    const next = activePanel === id ? null : id;
+    if (onActivePanelChange) {
+      onActivePanelChange(next);
+    } else {
+      setInternalActivePanel(next);
+    }
+  };
 
   const activeItem = panels.find((p) => p.id === activePanel);
 

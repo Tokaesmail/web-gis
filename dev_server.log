@@ -2,10 +2,68 @@
 > web-gis@0.1.0 dev
 > next dev
 
-⚠ Port 3000 is in use by an unknown process, using available port 3001 instead.
+⚠ Port 3000 is in use by an unknown process, using available port 3002 instead.
 ▲ Next.js 16.1.6 (Turbopack)
-- Local:         http://localhost:3001
-- Network:       http://192.168.0.2:3001
+- Local:         http://localhost:3002
+- Network:       http://192.168.0.2:3002
 
 ✓ Starting...
-✓ Ready in 3.4s
+⚠ Turbopack's filesystem cache has been deleted because we previously detected an internal error in Turbopack. Builds or page loads may be slower as a result.
+✓ Ready in 2.5s
+○ Compiling /map ...
+ GET /map 200 in 9.2s (compile: 8.9s, render: 356ms)
+Loaded from: /app/public/data/universities.geojson | Features: 15
+ GET /api/universities 200 in 1077ms (compile: 1007ms, render: 70ms)
+ GET /api/tile/11/1246/897?source=satellite 200 in 2.6s (compile: 2.3s, render: 286ms)
+ GET /api/tile/11/1246/899?source=satellite 200 in 1548ms (compile: 1256ms, render: 292ms)
+ GET /api/tile/11/1246/898?source=satellite 200 in 2.7s (compile: 2.3s, render: 337ms)
+ GET /api/tile/11/1247/898?source=satellite 200 in 2.8s (compile: 2.3s, render: 465ms)
+ GET /api/tile/11/1248/896?source=satellite 200 in 138ms (compile: 23ms, render: 115ms)
+ GET /api/tile/11/1247/897?source=satellite 200 in 3.0s (compile: 2.3s, render: 647ms)
+ GET /api/tile/11/1249/897?source=labels 200 in 320ms (compile: 89ms, render: 231ms)
+ GET /api/tile/11/1248/896?source=labels 200 in 176ms (compile: 7ms, render: 169ms)
+ GET /api/tile/11/1247/899?source=satellite 200 in 176ms (compile: 5ms, render: 171ms)
+ GET /api/tile/11/1247/897?source=labels 200 in 263ms (compile: 4ms, render: 259ms)
+ GET /api/tile/11/1249/896?source=satellite 200 in 181ms (compile: 30ms, render: 151ms)
+[next-auth][warn][NEXTAUTH_URL]
+https://next-auth.js.org/warnings#nextauth_url
+[next-auth][warn][NO_SECRET]
+https://next-auth.js.org/warnings#no_secret
+ GET /api/auth/session 200 in 3.5s (compile: 3.5s, render: 45ms)
+ GET /api/tile/11/1246/896?source=labels 200 in 246ms (compile: 12ms, render: 234ms)
+ GET /api/tile/11/1248/898?source=satellite 200 in 173ms (compile: 40ms, render: 133ms)
+ GET /api/tile/11/1247/898?source=labels 200 in 243ms (compile: 12ms, render: 231ms)
+ GET /api/tile/11/1245/899?source=satellite 200 in 151ms (compile: 21ms, render: 130ms)
+ GET /api/tile/11/1247/899?source=labels 200 in 140ms (compile: 8ms, render: 132ms)
+ GET /api/tile/11/1249/899?source=satellite 200 in 124ms (compile: 6ms, render: 118ms)
+ GET /api/tile/11/1244/897?source=satellite 200 in 166ms (compile: 9ms, render: 157ms)
+ GET /api/tile/11/1248/898?source=labels 200 in 152ms (compile: 6ms, render: 146ms)
+ GET /api/tile/11/1248/899?source=satellite 200 in 165ms (compile: 6ms, render: 159ms)
+ GET /api/tile/11/1244/899?source=satellite 200 in 148ms (compile: 12ms, render: 137ms)
+ GET /api/tile/11/1244/899?source=labels 200 in 152ms (compile: 6ms, render: 146ms)
+ GET /api/tile/11/1246/899?source=labels 200 in 225ms (compile: 4ms, render: 221ms)
+ GET /api/tile/11/1248/897?source=labels 200 in 150ms (compile: 6ms, render: 144ms)
+ GET /api/tile/11/1244/896?source=labels 200 in 148ms (compile: 5ms, render: 143ms)
+ GET /api/tile/11/1245/899?source=labels 200 in 137ms (compile: 4ms, render: 133ms)
+ GET /api/tile/11/1249/898?source=satellite 200 in 122ms (compile: 17ms, render: 105ms)
+ GET /api/tile/11/1246/896?source=satellite 200 in 148ms (compile: 12ms, render: 137ms)
+ GET /api/tile/11/1249/897?source=satellite 200 in 141ms (compile: 5ms, render: 135ms)
+ GET /api/tile/11/1249/896?source=labels 200 in 149ms (compile: 5ms, render: 143ms)
+ GET /api/tile/11/1245/897?source=satellite 200 in 140ms (compile: 4ms, render: 136ms)
+ GET /api/tile/11/1247/896?source=labels 200 in 173ms (compile: 4ms, render: 169ms)
+ GET /api/tile/11/1248/899?source=labels 200 in 155ms (compile: 3ms, render: 152ms)
+ GET /api/tile/11/1244/897?source=labels 200 in 177ms (compile: 4ms, render: 173ms)
+ GET /api/tile/11/1245/896?source=satellite 200 in 153ms (compile: 4ms, render: 150ms)
+ GET /api/tile/11/1245/897?source=labels 200 in 132ms (compile: 10ms, render: 121ms)
+ GET /api/tile/11/1246/898?source=labels 200 in 134ms (compile: 7ms, render: 127ms)
+ GET /api/tile/11/1245/898?source=labels 200 in 153ms (compile: 7ms, render: 145ms)
+ GET /api/tile/11/1247/896?source=satellite 200 in 132ms (compile: 24ms, render: 107ms)
+ GET /api/tile/11/1246/897?source=labels 200 in 151ms (compile: 7ms, render: 144ms)
+ GET /api/tile/11/1244/898?source=labels 200 in 208ms (compile: 5ms, render: 203ms)
+ GET /api/tile/11/1249/898?source=labels 200 in 180ms (compile: 10ms, render: 170ms)
+ GET /api/tile/11/1244/898?source=satellite 200 in 161ms (compile: 7ms, render: 154ms)
+ GET /api/tile/11/1244/896?source=satellite 200 in 165ms (compile: 45ms, render: 120ms)
+ GET /api/tile/11/1249/899?source=labels 200 in 138ms (compile: 5ms, render: 133ms)
+ GET /api/tile/11/1245/896?source=labels 200 in 224ms (compile: 52ms, render: 172ms)
+ GET /api/tile/11/1248/897?source=satellite 200 in 121ms (compile: 5ms, render: 116ms)
+ GET /api/tile/11/1245/898?source=satellite 200 in 129ms (compile: 5ms, render: 125ms)

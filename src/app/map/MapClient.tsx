@@ -27,6 +27,7 @@ export default function MapPage() {
   const [captureUrl,       setCaptureUrl]        = useState<string | null>(null);
   const [selectedFeature,  setSelectedFeature]   = useState<any>(null);
   const [view3D,           setView3D]            = useState<{ lat: number; lng: number; name?: string } | null>(null);
+  const [activePanel,      setActivePanel]       = useState<string | null>("overview");
 
   const [geoJsonData,     setGeoJsonData]     = useState<any>(null);
   const [geoJsonLoading,  setGeoJsonLoading]  = useState(false);
@@ -253,6 +254,8 @@ export default function MapPage() {
       onExtrusionConfig={handleExtrusionConfig}
       onFlyTo={handleFlyTo}
       onClose={handleClose3D}
+      activePanel={activePanel as any}
+      onActivePanelChange={(id) => setActivePanel(id)}
     />
   ), [
     selectedFeature,
@@ -264,6 +267,7 @@ export default function MapPage() {
     handleExtrusionConfig,
     handleFlyTo,
     handleClose3D,
+    activePanel,
   ]);
 
   const toggle2DButton = useMemo(() => (
@@ -281,6 +285,14 @@ export default function MapPage() {
   const handleWrapperDoubleClick = useCallback(() => {
     setView3D({ ...lastCoordsRef.current });
   }, []);
+
+  // ── Capture toast timer ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (captureUrl) {
+      const timer = setTimeout(() => setCaptureUrl(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [captureUrl]);
 
   return (
     <div className={`flex flex-col w-full h-screen bg-[#040d1a] overflow-hidden ${isRTL ? "font-arabic" : ""}`}>
@@ -358,6 +370,34 @@ export default function MapPage() {
             {coords && (
               <CoordsPopup lat={coords.lat} lng={coords.lng} onClose={() => setCoords(null)} />
             )}
+
+            {/* ── Capture Preview Toast ── */}
+            {captureUrl && (
+              <div className={`absolute top-20 left-1/2 -translate-x-1/2 z-[2000] animate-fadeUp`}>
+                <div className="bg-[#0a1628]/95 backdrop-blur-md border border-cyan-500/30 rounded-xl p-2 shadow-2xl flex items-center gap-3 min-w-[240px]">
+                  <div className="w-16 h-16 rounded-lg overflow-hidden border border-white/10 bg-black shrink-0">
+                    <img src={captureUrl} className="w-full h-full object-cover" alt="Capture" />
+                  </div>
+                  <div className="flex-1 pr-2">
+                    <p className="text-[0.7rem] font-bold text-cyan-400 uppercase tracking-wider">Area Captured</p>
+                    <p className="text-[0.62rem] text-slate-400 mt-0.5">Saved to local browser storage</p>
+                    <button
+                      onClick={() => {
+                        setActivePanel("captures");
+                        setCaptureUrl(null);
+                      }}
+                      className="mt-1.5 text-[0.6rem] font-bold text-white bg-cyan-500/20 hover:bg-cyan-500/40 border border-cyan-500/30 px-2 py-1 rounded transition-all cursor-pointer"
+                    >
+                      View in Captures
+                    </button>
+                  </div>
+                  <button onClick={() => setCaptureUrl(null)} className="p-1 text-slate-500 hover:text-white cursor-pointer">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  </button>
+                </div>
+              </div>
+            )}
+
             <AITriggerButton onClick={() => setAiOpen(!aiOpen)} active={aiOpen} />
             <AIAssistant open={aiOpen} onClose={() => setAiOpen(false)} />
             {sharedSidebar}
