@@ -236,7 +236,12 @@ export default function MapPage() {
     clearRef.current?.();
     setCoords(null);
     setCaptureUrl(null);
-    setCaptures([]);
+    setCaptures((prev) => {
+      prev.forEach(c => {
+        try { URL.revokeObjectURL(c.url); } catch (e) {}
+      });
+      return [];
+    });
     localStorage.removeItem(UPLOADED_GEOJSON_STORAGE_KEY);
     localStorage.removeItem(EXTRUSION_CFG_STORAGE_KEY);
     setUploadedGeoJsonMap({});
@@ -270,7 +275,14 @@ export default function MapPage() {
       onClose={handleClose3D}
       activePanel={activePanel as any}
       onActivePanelChange={(id) => setActivePanel(id)}
-      onClearCaptures={() => setCaptures([])}
+      onClearCaptures={() => {
+        setCaptures((prev) => {
+          prev.forEach(c => {
+            try { URL.revokeObjectURL(c.url); } catch (e) {}
+          });
+          return [];
+        });
+      }}
     />
   ), [
     selectedFeature,
@@ -381,7 +393,7 @@ export default function MapPage() {
 
             {/* ── Capture Left Sidebar Preview ── */}
             {captures.length > 0 && (
-              <div className="absolute top-20 left-4 z-[1000] w-48 space-y-3 animate-fadeUp max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto">
+              <div className="absolute top-20 left-19 right-16  z-[1000] w-48 space-y-3 animate-fadeUp max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto">
                 <div className="flex items-center justify-between bg-[#0a1628]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-2 sticky top-0 z-10">
                   <span className="text-[0.65rem] font-bold text-cyan-400 uppercase tracking-wider">Captures ({captures.length})</span>
                   <button onClick={() => setCaptures([])} className="text-[0.6rem] text-slate-500 hover:text-red-400 cursor-pointer">Clear</button>

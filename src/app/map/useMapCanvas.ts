@@ -89,22 +89,37 @@ export function useMapCanvas() {
     const ctx = combined.getContext("2d")!;
 
     // ① ارسم التايلز
+    const mapRect = mapInstance.getContainer().getBoundingClientRect();
     const tileEls = Array.from(
       mapInstance.getContainer().querySelectorAll(".leaflet-tile") as NodeListOf<HTMLImageElement>
     );
+
+    // Wait slightly to ensure all visible tiles are loaded if they are marked complete
     await Promise.all(tileEls.map((tile) =>
       new Promise<void>((res) => {
-        const m = tile.style.transform.match(/translate3d\((.+?)px,\s*(.+?)px/);
-        if (m && tile.complete && tile.naturalWidth > 0) {
-          try {
-            ctx.drawImage(tile as CanvasImageSource, parseFloat(m[1]), parseFloat(m[2]));
-          } catch (e) {
-            console.warn("Tile draw skipped:", e);
-          }
+        if (tile.complete) {
+          res();
+        } else {
+          tile.onload = () => res();
+          tile.onerror = () => res();
+          // Timeout as fallback
+          setTimeout(res, 2000);
         }
-        res();
       })
     ));
+
+    tileEls.forEach((tile) => {
+      if (tile.complete && tile.naturalWidth > 0) {
+        const rect = tile.getBoundingClientRect();
+        const x = rect.left - mapRect.left;
+        const y = rect.top - mapRect.top;
+        try {
+          ctx.drawImage(tile as CanvasImageSource, x, y, rect.width, rect.height);
+        } catch (e) {
+          console.warn("Tile draw skipped:", e);
+        }
+      }
+    });
 
     // ② ارسم الـ overlay
     ctx.drawImage(overlayCanvas, 0, 0);
