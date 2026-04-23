@@ -29,10 +29,11 @@ function openDB(): Promise<IDBDatabase> {
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 export function useMapDB() {
-  // ① حفظ Blob + الإحداثيات → يرجع id
+  // ① حفظ Blobs + الإحداثيات → يرجع id
   const saveCapture = useCallback(
     async (
-      blob: Blob,
+      smallBlob: Blob,
+      largeBlob: Blob,
       coordinates: LatLngPoint[],
       metadata: CaptureMetadata,
     ): Promise<number> => {
@@ -41,7 +42,7 @@ export function useMapDB() {
         const req = db
           .transaction(STORE, "readwrite")
           .objectStore(STORE)
-          .add({ blob, coordinates, metadata, createdAt: Date.now() });
+          .add({ smallBlob, largeBlob, coordinates, metadata, createdAt: Date.now() });
         req.onsuccess = (e) =>
           resolve((e.target as IDBRequest).result as number);
         req.onerror = (e) => reject((e.target as IDBRequest).error);

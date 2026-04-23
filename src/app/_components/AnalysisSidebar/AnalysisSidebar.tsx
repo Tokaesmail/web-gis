@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useLang } from "../translations";
 import JSONUploadModal from "./DataManagerPanel";
+import { useMapDB } from "../../map/useMapDB";
 
 type PanelId =
   | "ndvi"
@@ -14,7 +15,8 @@ type PanelId =
   | "notifications"
   | "settings"
   | "analyses"
-  | "layers";
+  | "layers"
+  | "captures";
 
 interface PanelItem {
   id: PanelId;
@@ -25,6 +27,17 @@ interface PanelItem {
 }
 
 const panels: PanelItem[] = [
+  {
+    id: "captures",
+    labelEn: "Captures",
+    labelAr: "اللقطات",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+        <circle cx="12" cy="13" r="4" />
+      </svg>
+    ),
+  },
   {
     id: "layers",
     labelEn: "Layers",
@@ -457,22 +470,92 @@ function NDVILivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
 // ─── helper: extract midpoint coords from any GeoJSON geometry ────────────────
 function getMidCoords(feature?: GeoJSON.Feature | null): [number, number] | null {
   const g = feature?.geometry as any;
-  if (!g) return null;
-  if (g.type === "Point")      return [g.coordinates[1], g.coordinates[0]];
-  if (g.type === "LineString" && g.coordinates?.length) {
-    const m = g.coordinates[Math.floor(g.coordinates.length / 2)];
-    return [m[1], m[0]];
-  }
-  if (g.type === "Polygon" && g.coordinates?.[0]?.length) {
-    const m = g.coordinates[0][Math.floor(g.coordinates[0].length / 2)];
-    return [m[1], m[0]];
-  }
-  return null;
+  if (!g?.coordinates) return null;
+  try {
+    if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
+    if (g.type === "LineString" || g.type === "MultiPoint") {
+      const mid = g.coordinates[Math.floor(g.coordinates.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    if (g.type === "Polygon" || g.type === "MultiLineString") {
+      const first = g.coordinates[0];
+      const mid = first[Math.floor(first.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    if (g.type === "MultiPolygon") {
+      const firstPoly = g.coordinates[0];
+      const firstRing = firstPoly[0];
+      const mid = firstRing[Math.floor(firstRing.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    // Deep fallback
+    const findFirst = (c: any): [number, number] | null => {
+      if (Array.isArray(c) && typeof c[0] === "number") return [c[1], c[0]];
+      if (Array.isArray(c)) {
+        for (const sub of c) {
+          const res = findFirst(sub);
+          if (res) return res;
+        }
+      }
+      return null;
+    };
+    return findFirst(g.coordinates);
+  } catch (e) { return null; }
 }
 
 // ─── Skeleton row ─────────────────────────────────────────────────────────────
 function SkRow({ w = "w-full", h = "h-4" }: { w?: string; h?: string }) {
   return <div className={`${h} ${w} rounded-md bg-white/[0.05] animate-pulse`} />;
+}
+
+// ─── Captures Panel ───────────────────────────────────────────────────────────
+function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }) {
+  return (
+    <div className="space-y-4">
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-2 flex items-center justify-between">
+        <div>
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Active Captures</p>
+          <p className="text-xs text-slate-300">Images kept in memory</p>
+        </div>
+        {items.length > 0 && (
+          <button 
+            onClick={onClear}
+            className="text-[0.6rem] px-2 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20"
+          >
+            Clear All
+          </button>
+        )}
+      </div>
+
+      {items.length === 0 ? (
+        <div className="py-10 text-center opacity-40 text-[0.7rem]">No captures found. Draw a shape to capture.</div>
+      ) : (
+        <div className="space-y-4">
+          {items.map((it) => {
+            return (
+              <div key={it.id} className="group bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
+                <div className="relative aspect-video bg-black/40">
+                  <img src={it.url} alt="Capture" className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-2 gap-2">
+                    <button 
+                      onClick={() => window.open(it.url, '_blank')}
+                      className="px-3 py-1.5 bg-cyan-500 text-black text-[0.65rem] rounded-lg font-bold"
+                    >
+                      Open Full Size
+                    </button>
+                  </div>
+                </div>
+                <div className="p-2.5">
+                  <p className="text-[0.65rem] text-slate-200 font-medium truncate">{new Date(it.createdAt).toLocaleString()}</p>
+                  <p className="text-[0.55rem] text-slate-500 mt-0.5">In-memory blob session</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Overview Live Panel ──────────────────────────────────────────────────────
@@ -706,16 +789,20 @@ function PanelContent({
   id,
   selectedFeature,
   uploadedGeoJsonMap,
+  captures,
   onDeleteGeoJSON,
   onOpen3D,
   onFlyTo,
+  onClearCaptures,
 }: {
   id: PanelId;
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
+  captures: any[];
   onDeleteGeoJSON?: (fileName: string) => void;
   onOpen3D?: (fileName: string) => void;
   onFlyTo?: (lat: number, lng: number) => void;
+  onClearCaptures: () => void;
 }) {
 
   // ── NDVI ──
@@ -731,6 +818,11 @@ function PanelContent({
   // ── WEATHER ──
   if (id === "weather") {
     return <WeatherLivePanel feature={selectedFeature} />;
+  }
+
+  // ── CAPTURES ──
+  if (id === "captures") {
+    return <CapturesPanel items={captures} onClear={onClearCaptures} />;
   }
 
   // ── LAYERS ──
@@ -916,17 +1008,21 @@ function PanelContent({
 export default function AnalysisSidebar({
   selectedFeature,
   uploadedGeoJsonMap,
+  captures,
   onGeoJSONUpload,
   onDeleteGeoJSON,
   onOpen3D,
   onStartImageOverlay,
   onExtrusionConfig,
   onFlyTo,
-    onClose,
-
+  onClose,
+  activePanel: controlledActivePanel,
+  onActivePanelChange,
+  onClearCaptures,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
+  captures: any[];
   onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string) => void;
   onDeleteGeoJSON?: (fileName: string) => void;
   onOpen3D?: (fileName: string) => void;
@@ -934,14 +1030,25 @@ export default function AnalysisSidebar({
   onExtrusionConfig?: (cfg: { enabled: boolean; heightProperty?: string; defaultHeightM?: number }) => void;
   onFlyTo?: (lat: number, lng: number) => void;
   onClose?: () => void;
-
+  activePanel?: PanelId | null;
+  onActivePanelChange?: (id: PanelId | null) => void;
+  onClearCaptures: () => void;
 }) {
-  const [activePanel, setActivePanel] = useState<PanelId | null>("overview");
-  const [uploadOpen, setUploadOpen]   = useState(false);
+  const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
+  const [uploadOpen, setUploadOpen] = useState(false);
   const { isRTL } = useLang();
 
-  const togglePanel = (id: PanelId) =>
-    setActivePanel((prev) => (prev === id ? null : id));
+  // Determine which state to use
+  const activePanel = controlledActivePanel !== undefined ? controlledActivePanel : internalActivePanel;
+
+  const togglePanel = (id: PanelId) => {
+    const next = activePanel === id ? null : id;
+    if (onActivePanelChange) {
+      onActivePanelChange(next);
+    } else {
+      setInternalActivePanel(next);
+    }
+  };
 
   const activeItem = panels.find((p) => p.id === activePanel);
 
@@ -983,7 +1090,7 @@ export default function AnalysisSidebar({
                 </span>
               </div>
               <button
-                onClick={() => setActivePanel(null)}
+                onClick={() => togglePanel(activePanel as PanelId)}
                 className="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/[0.07] rounded-md transition-all cursor-pointer"
                 style={{ pointerEvents: "all" }}
               >
@@ -1000,9 +1107,11 @@ export default function AnalysisSidebar({
                   id={activePanel}
                   selectedFeature={selectedFeature}
                   uploadedGeoJsonMap={uploadedGeoJsonMap}
+                  captures={captures}
                   onDeleteGeoJSON={onDeleteGeoJSON}
                   onOpen3D={onOpen3D}
                   onFlyTo={onFlyTo}
+                  onClearCaptures={onClearCaptures}
                 />
               )}
             </div>
