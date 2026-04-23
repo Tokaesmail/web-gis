@@ -778,11 +778,11 @@ export default function LeafletMap({
       Object.assign(map.getPane("imagePane")!.style, { zIndex: "350" });
       imagePaneReadyRef.current = true;
 
-      // ① Esri WorldImagery عبر الـ proxy — maxNativeZoom:19 عشان stretch بدل "not available"
+      // ① Esri WorldImagery عبر الـ proxy
       baseTileRef.current = L.tileLayer(
         "/api/tile/{z}/{x}/{y}?source=satellite", {
         attribution: "Tiles © Esri",
-        maxZoom: 18,
+        maxZoom: 22,
         maxNativeZoom: 18,
         pane: "satellitePane", crossOrigin: "anonymous",
       }).addTo(map);

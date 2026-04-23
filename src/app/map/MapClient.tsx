@@ -236,7 +236,12 @@ export default function MapPage() {
     clearRef.current?.();
     setCoords(null);
     setCaptureUrl(null);
-    setCaptures([]);
+    setCaptures((prev) => {
+      prev.forEach(c => {
+        try { URL.revokeObjectURL(c.url); } catch (e) {}
+      });
+      return [];
+    });
     localStorage.removeItem(UPLOADED_GEOJSON_STORAGE_KEY);
     localStorage.removeItem(EXTRUSION_CFG_STORAGE_KEY);
     setUploadedGeoJsonMap({});
@@ -270,7 +275,14 @@ export default function MapPage() {
       onClose={handleClose3D}
       activePanel={activePanel as any}
       onActivePanelChange={(id) => setActivePanel(id)}
-      onClearCaptures={() => setCaptures([])}
+      onClearCaptures={() => {
+        setCaptures((prev) => {
+          prev.forEach(c => {
+            try { URL.revokeObjectURL(c.url); } catch (e) {}
+          });
+          return [];
+        });
+      }}
     />
   ), [
     selectedFeature,

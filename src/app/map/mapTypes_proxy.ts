@@ -16,38 +16,39 @@ export interface CaptureMetadata {
 
 // ─── Satellite Layers ─────────────────────────────────────────────────────────
 // URL بتاخد ?source= عشان الـ proxy يعرف يجيب إيه
+// لازم نستخدم الـ proxy لجميع الطبقات عشان الـ CORS وقت الـ Capture
 export const SAT_LAYERS = {
   "Default": {
-    url:            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    url:            "/api/tile/{z}/{x}/{y}?source=satellite",
     type:           "xyz" as const,
     layers:         "",
     attribution:    "Tiles © Esri",
-    maxZoom:        18,   // اليوزر يزوم لـ 22
-    maxNativeZoom:  18,   // التايل بتيتجيب لحد 19 ثم stretch
+    maxZoom:        22,
+    maxNativeZoom:  18,
   },
   "Sentinel-2": {
-    url:            "https://tiles.maps.eox.at/wms",
-    type:           "wms" as const,
-    layers:         "s2cloudless-2021_3857",
+    url:            "/api/tile/{z}/{x}/{y}?source=sentinel",
+    type:           "xyz" as const,
+    layers:         "",
     attribution:    "Sentinel-2 cloudless 2021 © EOX",
-    maxZoom:        18,   // اليوزر يزوم لـ 22
-    maxNativeZoom:  18,   // التايل الحقيقي لحد 18 ثم stretch
+    maxZoom:        22,
+    maxNativeZoom:  16,
   },
   "Street Map": {
     url:            "/api/tile/{z}/{x}/{y}?source=osm",
     type:           "xyz" as const,
     layers:         "",
     attribution:    "© OpenStreetMap contributors",
-    maxZoom:        22,   // اليوزر يزوم لـ 22
-    maxNativeZoom:  19,   // OSM تايلز حد أقصاها 19
+    maxZoom:        22,
+    maxNativeZoom:  19,
   },
   "Terrain": {
-    url:            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}",
+    url:            "/api/tile/{z}/{x}/{y}?source=terrain",
     type:           "xyz" as const,
     layers:         "",
     attribution:    "Shaded Relief © Esri",
-    maxZoom:        22,   // اليوزر يزوم لـ 22
-    maxNativeZoom:  13,   // Terrain تايلز حد أقصاها 13 ثم stretch
+    maxZoom:        22,
+    maxNativeZoom:  13,
   },
 };
 
@@ -62,7 +63,7 @@ export const INDEX_TILES: Record<string, { url: string; color: string; desc: str
     color: "#22c55e", 
     desc: "Vegetation", 
     maxZoom: 22,
-    maxNativeZoom: 16,
+    maxNativeZoom: 18,
     opacity: 0.8 
   },
   "NDWI": { 
@@ -70,11 +71,11 @@ export const INDEX_TILES: Record<string, { url: string; color: string; desc: str
     color: "#38bdf8", 
     desc: "Water", 
     maxZoom: 22,
-    maxNativeZoom: 13,
+    maxNativeZoom: 19,
     opacity: 0.85 
   },
-  "NDSI": { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",        color: "#e0f2fe", desc: "Terrain",   maxZoom: 22, maxNativeZoom: 19, opacity: 0.75 },
-  "SWIR": { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",         color: "#fb923c", desc: "Satellite", maxZoom: 22, maxNativeZoom: 19, opacity: 0.9  },
+  "NDSI": { url: "/api/tile/{z}/{x}/{y}?source=topo",        color: "#e0f2fe", desc: "Terrain",   maxZoom: 22, maxNativeZoom: 19, opacity: 0.75 },
+  "SWIR": { url: "/api/tile/{z}/{x}/{y}?source=satellite",         color: "#fb923c", desc: "Satellite", maxZoom: 22, maxNativeZoom: 19, opacity: 0.9  },
 };
 
 export type SatKey = keyof typeof SAT_LAYERS;
