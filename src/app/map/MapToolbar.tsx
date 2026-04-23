@@ -87,13 +87,15 @@ export default function MapToolbar({
   activeTool,
   onToolChange,
   onClear,
+  isRTL,
 }: {
   activeTool: DrawTool;
   onToolChange: (t: DrawTool) => void;
   onClear: () => void;
+  isRTL?: boolean;
 }) {
   return (
-    <div className="absolute left-4 top-1/2 -translate-y-1/2 z-1000 flex flex-col gap-1.5 pointer-events-auto">
+    <div className={`absolute top-1/2 -translate-y-1/2 z-1000 flex flex-col gap-1.5 pointer-events-auto ${isRTL ? "right-4" : "left-4"}`}>
       {/* Drawing tools */}
       <div className="flex flex-col gap-1 bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-lg">
         {TOOLS.map((tool) => (

@@ -260,6 +260,11 @@ export default function MapPage() {
     ]);
   }, []);
 
+  const handleDeleteCapture = useCallback((id: number, url: string) => {
+    try { URL.revokeObjectURL(url); } catch (e) {}
+    setCaptures((prev) => prev.filter((c) => c.id !== id));
+  }, []);
+
   // ── Shared sidebar ────────────────────────────────────────────────────────
   const sharedSidebar = useMemo(() => (
     <AnalysisSidebar
@@ -382,7 +387,12 @@ export default function MapPage() {
             </div>
 
             <MapSearch onFlyTo={(lat, lng) => flyToRef.current?.(lat, lng)} />
-            <MapToolbar activeTool={activeTool} onToolChange={setActiveTool} onClear={handleClear} />
+            <MapToolbar
+              activeTool={activeTool}
+              onToolChange={setActiveTool}
+              onClear={handleClear}
+              isRTL={isRTL}
+            />
             <MapLayerBar
               onSatChange={(s) => changeSatRef.current?.(s)}
               onIdxChange={(i) => changeIdxRef.current?.(i)}
@@ -391,9 +401,10 @@ export default function MapPage() {
               <CoordsPopup lat={coords.lat} lng={coords.lng} onClose={() => setCoords(null)} />
             )}
 
-            {/* ── Capture Left Sidebar Preview ── */}
+            {/* ── Capture Sidebar Preview ── */}
             {captures.length > 0 && (
-              <div className="absolute top-20 left-4 z-[1000] w-48 space-y-3 animate-fadeUp max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto">
+              <div className={`absolute top-20 z-[1000] w-48 space-y-3 animate-fadeUp max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto
+                ${isRTL ? "left-16" : "right-16"}`}>
                 <div className="flex items-center justify-between bg-[#0a1628]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-2 sticky top-0 z-10">
                   <span className="text-[0.65rem] font-bold text-cyan-400 uppercase tracking-wider">Captures ({captures.length})</span>
                   <button onClick={() => setCaptures([])} className="text-[0.6rem] text-slate-500 hover:text-red-400 cursor-pointer">Clear</button>
@@ -413,7 +424,7 @@ export default function MapPage() {
                       </button>
                     </div>
                     <button
-                      onClick={() => setCaptures(prev => prev.filter(c => c.id !== cap.id))}
+                      onClick={() => handleDeleteCapture(cap.id, cap.url)}
                       className="absolute top-1 right-1 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center text-white/60 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
                     >
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M18 6 6 18M6 6l12 12"/></svg>
