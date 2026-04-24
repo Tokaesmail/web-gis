@@ -65,6 +65,11 @@ export const translations = {
     back: "Back",
     search: "Search",
     noResults: "No results found",
+    clearAll: "Clear All",
+    km: "km",
+    ha: "ha",
+    selectedArea: "Selected Area",
+    hectares: "Hectares",
     // Toolbar tools
     pointer: "Select",
     polygon: "Draw Polygon",
@@ -126,6 +131,11 @@ export const translations = {
     back: "رجوع",
     search: "بحث",
     noResults: "لا توجد نتائج",
+    clearAll: "إزالة الكل",
+    km: "كم",
+    ha: "هكتار",
+    selectedArea: "المساحة المحددة",
+    hectares: "هكتار",
     // Toolbar tools
     pointer: "تحديد",
     polygon: "رسم مضلع",

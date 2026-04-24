@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMapCanvas }      from "./useMapCanvas";
+import { useLang }           from "../_components/translations";
 import {
   DrawTool, SAT_LAYERS, INDEX_TILES,
   SatKey, IdxKey, LatLngPoint, CaptureMetadata,
@@ -96,6 +97,7 @@ export default function LeafletMap({
   extrusionGeoJson,
   extrusionConfig,
 }: Props) {
+  const { t, isRTL } = useLang();
 
   const IMAGE_OVERLAYS_STORAGE_KEY = "leaflet_image_overlays_v1";
 
@@ -697,7 +699,7 @@ export default function LeafletMap({
       const j = (i + 1) % pts.length;
       return acc + p[1] * pts[j][0] - pts[j][1] * p[0];
     }, 0)) / 2 * 12345).toFixed(1));
-    poly.bindPopup(`🔵 Polygon · ≈ ${area} ha`).openPopup();
+    poly.bindPopup(`🔵 ${t.polygon} · ≈ ${area} ${t.ha}`).openPopup();
     onAreaSelected("Drawn Polygon", area);
 
     const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
@@ -727,7 +729,7 @@ export default function LeafletMap({
     drawLayersRef.current.push(line);
     let dist = 0;
     for (let i = 1; i < pts.length; i++) dist += map.distance(pts[i - 1], pts[i]);
-    line.bindPopup(`📏 ${(dist / 1000).toFixed(3)} km`).openPopup();
+    line.bindPopup(`📏 ${(dist / 1000).toFixed(3)} ${t.km}`).openPopup();
 
     const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
     lastCoordsRef.current = coordinates;
@@ -1065,7 +1067,7 @@ export default function LeafletMap({
             const p1   = drawPointsRef.current[0];
             const rect = L.rectangle([p1, [lat, lng]], { color: c.stroke, weight: 2, fillColor: c.stroke, fillOpacity: 0.18 }).addTo(map);
             const area = parseFloat((Math.abs(p1[0] - lat) * Math.abs(p1[1] - lng) * 12345).toFixed(1));
-            rect.bindPopup(`📐 Rectangle · ≈ ${area} ha`).openPopup();
+            rect.bindPopup(`📐 ${t.rectangle} · ≈ ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(rect);
             onAreaSelected("Drawn Rectangle", area);
             if (canvasRef.current) {
@@ -1094,7 +1096,7 @@ export default function LeafletMap({
             const radius = map.distance(center, [lat, lng]);
             const circ   = L.circle(center, { radius, color: c.stroke, weight: 2, fillColor: c.stroke, fillOpacity: 0.18 }).addTo(map);
             const area   = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
-            circ.bindPopup(`🟢 Circle · R: ${radius.toFixed(0)} m · ≈ ${area} ha`).openPopup();
+            circ.bindPopup(`🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(circ);
             onAreaSelected("Drawn Circle", area);
             if (canvasRef.current) {

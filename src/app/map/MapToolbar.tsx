@@ -1,11 +1,12 @@
 "use client";
 
 import { DrawTool } from "./mapTypes_proxy";
+import { useLang } from "../_components/translations";
 
-const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
+const TOOLS: { id: DrawTool; icon: React.ReactNode; tKey: "pointer" | "polygon" | "rectangle" | "circle" | "measure" | "marker" }[] = [
   {
     id: "pointer",
-    label: "Select",
+    tKey: "pointer",
     icon: (
       <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
         <path d="M4 0l16 12-7 2-4 8L4 0z" />
@@ -14,7 +15,7 @@ const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
   },
   {
     id: "polygon",
-    label: "Polygon (dblclick finish)",
+    tKey: "polygon",
     icon: (
       <svg
         width="15"
@@ -29,7 +30,7 @@ const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
   },
   {
     id: "rectangle",
-    label: "Rectangle (2 clicks)",
+    tKey: "rectangle",
     icon: (
       <svg
         width="15"
@@ -44,7 +45,7 @@ const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
   },
   {
     id: "circle",
-    label: "Circle (2 clicks)",
+    tKey: "circle",
     icon: (
       <svg
         width="15"
@@ -59,7 +60,7 @@ const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
   },
   {
     id: "measure",
-    label: "Measure (dblclick finish)",
+    tKey: "measure",
     icon: (
       <svg
         width="15"
@@ -74,7 +75,7 @@ const TOOLS: { id: DrawTool; icon: React.ReactNode; label: string }[] = [
   },
   {
     id: "marker",
-    label: "Add Marker",
+    tKey: "marker",
     icon: (
       <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
         <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z" />
@@ -94,6 +95,8 @@ export default function MapToolbar({
   onClear: () => void;
   isRTL?: boolean;
 }) {
+  const { t } = useLang();
+
   return (
     <div className={`absolute top-1/2 -translate-y-1/2 z-1000 flex flex-col gap-1.5 pointer-events-auto ${isRTL ? "right-4" : "left-4"}`}>
       {/* Drawing tools */}
@@ -110,9 +113,9 @@ export default function MapToolbar({
                 }`}>
               {tool.icon}
             </button>
-            <div className="absolute left-11 top-1/2 -translate-y-1/2 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50">
+            <div className={`absolute top-1/2 -translate-y-1/2 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 ${isRTL ? "right-11" : "left-11"}`}>
               <div className="bg-[#0a1628] border border-white/10 text-slate-200 text-[0.68rem] px-2.5 py-1 rounded-md whitespace-nowrap shadow-lg">
-                {tool.label}
+                {t[tool.tKey]}
               </div>
             </div>
           </div>
@@ -137,9 +140,9 @@ export default function MapToolbar({
               <path d="M10 11v6M14 11v6M9 6V4h6v2" />
             </svg>
           </button>
-          <div className="absolute left-11 top-1/2 -translate-y-1/2 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50">
+          <div className={`absolute top-1/2 -translate-y-1/2 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 ${isRTL ? "right-11" : "left-11"}`}>
             <div className="bg-[#0a1628] border border-white/10 text-slate-200 text-[0.68rem] px-2.5 py-1 rounded-md whitespace-nowrap shadow-lg">
-              Clear All
+              {t.clearAll}
             </div>
           </div>
         </div>

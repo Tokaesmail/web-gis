@@ -19,6 +19,7 @@ const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
 
 export default function MapPage() {
+  const { t, isRTL } = useLang();
   const [aiOpen,           setAiOpen]           = useState(false);
   const [isFullscreen,     setIsFullscreen]      = useState(false);
   const [activeTool,       setActiveTool]        = useState<DrawTool>("pointer");
@@ -50,7 +51,6 @@ export default function MapPage() {
   // ── double-click tracking ─────────────────────────────────────────────────
   const lastClickTimeRef = useRef<number>(0);
 
-  const { isRTL } = useLang();
   const isRestored = useRef(false);
 
   // ── 1. localStorage restore ───────────────────────────────────────────────
@@ -399,6 +399,37 @@ export default function MapPage() {
             />
             {coords && (
               <CoordsPopup lat={coords.lat} lng={coords.lng} onClose={() => setCoords(null)} />
+            )}
+
+            {/* ── Area / Feature Info Overlay ── */}
+            {selectedArea.ha > 0 && (
+              <div className={`absolute bottom-24 z-[1000] px-4 py-3 bg-[#0a1628]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl animate-fadeUp flex items-center gap-4 pointer-events-auto
+                ${isRTL ? "left-20" : "right-20"}`}>
+                <div className="w-10 h-10 rounded-xl bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-[0.65rem] text-slate-500 uppercase tracking-widest font-bold mb-0.5">
+                    {t.selectedArea}
+                  </p>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-xl font-bold text-slate-100 tracking-tight">{selectedArea.ha.toLocaleString()}</span>
+                    <span className="text-[0.7rem] font-medium text-cyan-400/80 uppercase">
+                      {t.hectares}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedArea({ name: "Selected Area", ha: 0 })}
+                  className="ml-2 p-1.5 hover:bg-white/10 rounded-lg text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M18 6 6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             )}
 
             {/* ── Capture Sidebar Preview ── */}
