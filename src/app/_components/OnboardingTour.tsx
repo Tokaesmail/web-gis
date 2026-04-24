@@ -27,7 +27,17 @@ export default function OnboardingTour() {
       setStepIndex(initialStep);
       setRun(true);
     }
-  }, []);
+
+    const handleTrigger = () => {
+      localStorage.removeItem(TOUR_FINISHED_KEY);
+      localStorage.removeItem(TOUR_STEP_KEY);
+      setStepIndex(pathname === "/map" ? 1 : 0);
+      setRun(true);
+    };
+
+    window.addEventListener("trigger-onboarding-tour", handleTrigger);
+    return () => window.removeEventListener("trigger-onboarding-tour", handleTrigger);
+  }, [pathname]);
 
   // Sync stepIndex to localStorage so it persists across page navigation
   useEffect(() => {
