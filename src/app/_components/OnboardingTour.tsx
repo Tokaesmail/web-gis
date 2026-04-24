@@ -3,29 +3,38 @@
 import React, { useState, useEffect } from "react";
 import { Joyride, Step, EventData, STATUS, ACTIONS, EVENTS } from "react-joyride";
 import { useLang } from "./translations";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
-const TOUR_STORAGE_KEY = "geosense_tour_finished";
+const TOUR_FINISHED_KEY = "geosense_tour_finished_v1";
+const TOUR_STEP_KEY     = "geosense_tour_step_v1";
 
 export default function OnboardingTour() {
   const { t, isRTL } = useLang();
   const pathname = usePathname();
+  const router   = useRouter();
+
   const [run, setRun] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
-    const isFinished = localStorage.getItem(TOUR_STORAGE_KEY);
+    const isFinished = localStorage.getItem(TOUR_FINISHED_KEY);
     if (!isFinished) {
+      const savedStep = localStorage.getItem(TOUR_STEP_KEY);
+      const initialStep = savedStep ? parseInt(savedStep, 10) : 0;
+
+      setStepIndex(initialStep);
       setRun(true);
-      if (pathname === "/map") {
-        setStepIndex(1);
-      } else {
-        setStepIndex(0);
-      }
     }
-  }, [pathname]);
+  }, []);
+
+  // Sync stepIndex to localStorage so it persists across page navigation
+  useEffect(() => {
+    if (run) {
+      localStorage.setItem(TOUR_STEP_KEY, stepIndex.toString());
+    }
+  }, [stepIndex, run]);
 
   if (!mounted) return null;
 
@@ -58,9 +67,18 @@ export default function OnboardingTour() {
 
     if (status === STATUS.FINISHED || status === STATUS.SKIPPED) {
       setRun(false);
-      localStorage.setItem(TOUR_STORAGE_KEY, "true");
+      localStorage.setItem(TOUR_FINISHED_KEY, "true");
+      localStorage.removeItem(TOUR_STEP_KEY);
     } else if (type === EVENTS.STEP_AFTER || type === EVENTS.TARGET_NOT_FOUND) {
-      setStepIndex(index + (action === ACTIONS.PREV ? -1 : 1));
+      const nextStep = index + (action === ACTIONS.PREV ? -1 : 1);
+
+      // Special case: If we're on step 0 (Hero page button) and moving forward,
+      // the click happens on #tour-start which navigates to /map.
+      // We don't need to manually navigate here if the user clicks the button itself,
+      // but Joyride's "Next" button should also trigger the transition if needed.
+      // However, usually we want the user to click the actual UI button.
+
+      setStepIndex(nextStep);
     }
   };
 
@@ -93,6 +111,7 @@ export default function OnboardingTour() {
           backgroundColor: "#0a1628",
           color: "#e2e8f0",
           padding: "10px",
+          boxShadow: "0 20px 50px rgba(0,0,0,0.5)",
         },
         buttonPrimary: {
           borderRadius: "8px",
