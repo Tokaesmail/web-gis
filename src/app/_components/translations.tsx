@@ -77,15 +77,6 @@ export const translations = {
     circle: "Circle",
     measure: "Distance Tool",
     marker: "Add Marker",
-    // Tour
-    tourStart: "Start here to explore the map",
-    tourTools: "Use these tools to define your study area or measure areas",
-    tourUpload: "Upload your GeoJSON files to view your custom data",
-    tour3D: "Switch to 3D view to see terrain",
-    tourNext: "Next",
-    tourBack: "Back",
-    tourSkip: "Skip",
-    tourDone: "Done",
   },
   ar: {
     // Nav
@@ -152,15 +143,6 @@ export const translations = {
     circle: "رسم دائرة",
     measure: "أداة المسافات",
     marker: "إضافة علامة",
-    // Tour
-    tourStart: "ابدأ من هنا لاستكشاف الخريطة",
-    tourTools: "استخدم هذه الأدوات لتحديد منطقة الدراسة أو قياس المساحات",
-    tourUpload: "ارفع ملفات الـ GeoJSON الخاصة بك لعرض بياناتك المخصصة",
-    tour3D: "حول الخريطة لعرض ثلاثي الأبعاد لرؤية التضاريس",
-    tourNext: "التالي",
-    tourBack: "السابق",
-    tourSkip: "تخطي",
-    tourDone: "تم",
   },
 } as const;
 

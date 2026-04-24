@@ -1170,7 +1170,6 @@ export default function AnalysisSidebar({
           {/* ── Upload GeoJSON button ── */}
           <div className="relative group w-full flex justify-center">
             <button
-              id="tour-upload"
               onClick={() => setUploadOpen((p) => !p)}
               className={`
                 relative w-9 h-9 rounded-lg flex items-center justify-center

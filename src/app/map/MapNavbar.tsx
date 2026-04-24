@@ -32,17 +32,6 @@ export default function MapNavbar({
 
       <div className="flex items-center gap-1.5">
         <button
-          onClick={() => window.dispatchEvent(new CustomEvent("trigger-onboarding-tour"))}
-          title="Show Guide"
-          className="px-3 py-1 flex items-center gap-1.5 text-slate-400 hover:text-cyan-400 hover:bg-cyan-400/8 border border-white/5 hover:border-cyan-400/20 rounded-md transition-all cursor-pointer text-[0.65rem] font-medium"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-          </svg>
-          {lang === "ar" ? "شرح الموقع" : "Site Guide"}
-        </button>
-
-        <button
           onClick={onFullscreenToggle}
           title="Fullscreen"
           className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-cyan-400 hover:bg-cyan-400/8 border border-transparent hover:border-cyan-400/20 rounded-md transition-all cursor-pointer"

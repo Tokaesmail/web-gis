@@ -100,7 +100,7 @@ export default function MapToolbar({
   return (
     <div className={`absolute top-1/2 -translate-y-1/2 z-1000 flex flex-col gap-1.5 pointer-events-auto ${isRTL ? "right-4" : "left-4"}`}>
       {/* Drawing tools */}
-      <div id="tour-tools" className="flex flex-col gap-1 bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-lg">
+      <div className="flex flex-col gap-1 bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-lg">
         {TOOLS.map((tool) => (
           <div key={tool.id} className="relative group">
             <button
