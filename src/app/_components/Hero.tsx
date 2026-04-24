@@ -176,7 +176,11 @@ export default function Hero() {
               <p className={`fu-3 text-slate-500 leading-relaxed mb-10 ${isRTL ? "text-sm font-arabic" : "text-xs font-light"}`}>{t.heroSub2}</p>
 
               <div className="fu-4 flex flex-wrap gap-3">
-                <button onClick={handleMapClick} className={`btn-glow text-[#040d1a] font-semibold text-sm px-6 py-3 rounded-lg flex items-center gap-2 cursor-pointer ${isRTL ? "font-arabic" : ""}`}>
+                <button
+                  id="tour-start"
+                  onClick={handleMapClick}
+                  className={`btn-glow text-[#040d1a] font-semibold text-sm px-6 py-3 rounded-lg flex items-center gap-2 cursor-pointer ${isRTL ? "font-arabic" : ""}`}
+                >
                   <MapIcon />
                   {t.heroBtnMap}
                 </button>

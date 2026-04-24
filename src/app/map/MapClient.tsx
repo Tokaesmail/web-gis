@@ -376,6 +376,7 @@ export default function MapPage() {
             {/* زرار 3D + hint */}
             <div className="absolute top-3 left-3 z-[1100] flex items-center gap-2">
               <button
+                id="tour-3d"
                 onClick={handleToggleView}
                 className="px-3 py-1.5 rounded-lg bg-[#0d1f3c] border border-white/10 text-slate-300 text-xs cursor-pointer hover:text-cyan-400 transition-all"
               >
