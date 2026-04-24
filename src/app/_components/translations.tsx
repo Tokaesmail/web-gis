@@ -72,10 +72,10 @@ export const translations = {
     hectares: "Hectares",
     // Toolbar tools
     pointer: "Select",
-    polygon: "Draw Polygon",
-    rectangle: "Draw Rectangle",
-    circle: "Draw Circle",
-    measure: "Measure",
+    polygon: "Area Tool",
+    rectangle: "Rectangle",
+    circle: "Circle",
+    measure: "Distance Tool",
     marker: "Add Marker",
   },
   ar: {
@@ -138,10 +138,10 @@ export const translations = {
     hectares: "هكتار",
     // Toolbar tools
     pointer: "تحديد",
-    polygon: "رسم مضلع",
+    polygon: "أداة المساحات",
     rectangle: "رسم مستطيل",
     circle: "رسم دائرة",
-    measure: "قياس",
+    measure: "أداة المسافات",
     marker: "إضافة علامة",
   },
 } as const;

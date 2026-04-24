@@ -8,6 +8,7 @@
 // ④ الألوان للعرض بس — مش بتتبعت للباك
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useMapCanvas }      from "./useMapCanvas";
 import { useLang }           from "../_components/translations";
 import {
@@ -293,14 +294,37 @@ export default function LeafletMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onImagePlacerRegister, mapReady]);
 
-  // Escape cancels image placement
+  // Escape handler: cancels image placement or finishes drawings
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && placingImageRef.current) stopImagePlacement();
+      if (e.key === "Escape") {
+        if (placingImageRef.current) {
+          stopImagePlacement();
+        } else if (drawPointsRef.current.length > 0) {
+          const map = mapInstanceRef.current;
+          const L = LRef.current;
+          if (!map || !L) return;
+
+          const tool = activeToolRef.current;
+          if (tool === "polygon") {
+            if (drawPointsRef.current.length >= 3) {
+              finishPolygon(map, L);
+            } else {
+              toast.error(isRTL ? "يرجى رسم 3 نقاط على الأقل" : "Please draw at least 3 points");
+            }
+          } else if (tool === "measure") {
+            if (drawPointsRef.current.length >= 2) {
+              finishMeasure(map, L);
+            } else {
+              toast.error(isRTL ? "يرجى رسم نقطتين على الأقل" : "Please draw at least 2 points");
+            }
+          }
+        }
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [isRTL]);
 
   const drawExtrusions = () => {
     const map = mapInstanceRef.current;
@@ -1026,6 +1050,14 @@ export default function LeafletMap({
         if (tool === "polygon") {
           const pts = drawPointsRef.current;
           const c   = TOOL_COLORS.polygon;
+
+          if (pts.length === 0) {
+            toast(isRTL ? "اضغط Esc لإنهاء الرسم وعرض النتائج" : "Press Esc to finish drawing and see results", {
+              icon: "⌨️",
+              duration: 5000,
+            });
+          }
+
           // لو في 3 نقاط وكليك قريب من النقطة الأولى → أقفل
           if (pts.length >= 3) {
             const firstPx = map.latLngToContainerPoint(L.latLng(pts[0][0], pts[0][1]));
@@ -1049,6 +1081,12 @@ export default function LeafletMap({
         // ── Measure ──────────────────────────────────────────────────────────
         if (tool === "measure") {
           const pts = drawPointsRef.current;
+          if (pts.length === 0) {
+            toast(isRTL ? "اضغط Esc لإنهاء القياس وعرض النتائج" : "Press Esc to finish measuring and see results", {
+              icon: "📏",
+              duration: 5000,
+            });
+          }
           pts.push([lat, lng]);
           drawLayersRef.current.push(
             L.circleMarker([lat, lng], { radius: 4, color: TOOL_COLORS.measure.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map)
@@ -1117,14 +1155,6 @@ export default function LeafletMap({
             if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
           }
         }
-      });
-
-      // ── dblclick: يقفل البولجون / measure بدون zoom ───────────────────────
-      map.on("dblclick", (e: any) => {
-        const tool = activeToolRef.current;
-        if (tool === "polygon" && drawPointsRef.current.length >= 3) finishPolygon(map, L);
-        else if (tool === "measure" && drawPointsRef.current.length >= 2) finishMeasure(map, L);
-        // doubleClickZoom: false → مش بيزوم في أي حالة
       });
 
       // ── Mousemove (throttled via rAF) ────────────────────────────────────
