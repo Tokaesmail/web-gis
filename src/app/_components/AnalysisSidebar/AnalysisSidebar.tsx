@@ -12,11 +12,6 @@ type PanelId =
   | "ndvi"
   | "weather"
   | "overview"
-  | "vra"
-  | "activity"
-  | "fieldManager"
-  | "notifications"
-  | "settings"
   | "analyses"
   | "layers"
   | "captures"
@@ -106,64 +101,6 @@ const panels: PanelItem[] = [
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
-      </svg>
-    ),
-  },
-  {
-    id: "vra",
-    labelEn: "VRA Maps",
-    labelAr: "خرائط VRA",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
-        <line x1="9" y1="3" x2="9" y2="18" /><line x1="15" y1="6" x2="15" y2="21" />
-      </svg>
-    ),
-  },
-  {
-    id: "activity",
-    labelEn: "Field Activity",
-    labelAr: "نشاط الحقل",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <polyline points="14 2 14 8 20 8" />
-        <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
-      </svg>
-    ),
-  },
-  {
-    id: "fieldManager",
-    labelEn: "Field Manager",
-    labelAr: "مدير الحقول",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-        <circle cx="9" cy="7" r="4" />
-        <path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
-      </svg>
-    ),
-  },
-  {
-    id: "notifications",
-    labelEn: "Notifications",
-    labelAr: "الإشعارات",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-      </svg>
-    ),
-    badge: "5",
-  },
-  {
-    id: "settings",
-    labelEn: "Settings",
-    labelAr: "الإعدادات",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
       </svg>
     ),
   },
@@ -342,24 +279,34 @@ function NDVILivePanel({ feature, onExport }: { feature?: GeoJSON.Feature | null
       <div className="space-y-5">
         <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
           <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">Mean NDVI Index</p>
-          <p className="text-3xl font-semibold text-emerald-400">0.72</p>
+          <p className="text-3xl font-semibold text-emerald-400">0.720</p>
           <p className="text-[0.65rem] text-slate-500 mt-1">↑ 0.04 from last month</p>
           <div className="mt-3 h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
             <div className="h-full rounded-full bg-emerald-400" style={{ width: "72%" }} />
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          {[{ label: "Coverage", value: "87%", color: "text-cyan-400" }, { label: "Stressed", value: "13%", color: "text-red-400" }, { label: "Area", value: "27.4 ha", color: "text-slate-200" }, { label: "Confidence", value: "94%", color: "text-violet-400" }].map(s => (
-            <div key={s.label} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2.5">
-              <p className={`text-sm font-semibold ${s.color}`}>{s.value}</p>
-              <p className="text-[0.62rem] text-slate-500 mt-0.5">{s.label}</p>
+
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { label: "Avg", value: "0.682", color: "text-emerald-400" },
+            { label: "Min", value: "0.410", color: "text-amber-400" },
+            { label: "Max", value: "0.895", color: "text-emerald-500" },
+          ].map(s => (
+            <div key={s.label} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2 text-center">
+              <p className={`text-xs font-bold ${s.color}`}>{s.value}</p>
+              <p className="text-[0.55rem] text-slate-500 mt-0.5">{s.label}</p>
             </div>
           ))}
         </div>
+
         <div>
           <div className="flex justify-between text-[0.6rem] text-slate-500 mb-1"><span>Low</span><span>NDVI Scale</span><span>High</span></div>
           <div className="h-2.5 rounded-full" style={{ background: "linear-gradient(to right,#8B0000,#FF4500,#FFD700,#ADFF2F,#006400)" }} />
+          <div className="flex justify-between px-1 mt-1">
+             {["-1.0", "0.0", "0.2", "0.4", "0.6", "1.0"].map(v => <span key={v} className="text-[0.45rem] text-slate-600">{v}</span>)}
+          </div>
         </div>
+
         <div>
           <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-2">30-Day Timeline</p>
           <div className="flex items-end gap-1 h-16">
@@ -377,6 +324,7 @@ function NDVILivePanel({ feature, onExport }: { feature?: GeoJSON.Feature | null
             ))}
           </div>
         </div>
+
         <div>
           <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Health Distribution</p>
           <div className="flex items-center justify-around">
@@ -846,6 +794,7 @@ function PanelContent({
     const exportBundle = {
         coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
         ndviData: ndviExportData,
+        title: "NDVI Vegetation Index Analysis"
     };
 
     return (
@@ -882,7 +831,19 @@ function PanelContent({
 
   // ── WEATHER ──
   if (id === "weather") {
-    return <WeatherLivePanel feature={selectedFeature} />;
+    const coords = getMidCoords(selectedFeature);
+    const exportData = {
+      title: "Weather Report",
+      coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+      timestamp: new Date().toISOString()
+    };
+
+    return (
+      <div className="space-y-4">
+        <WeatherLivePanel feature={selectedFeature} />
+        {selectedFeature && <ExportButton data={exportData} />}
+      </div>
+    );
   }
 
   // ── CROPS ──

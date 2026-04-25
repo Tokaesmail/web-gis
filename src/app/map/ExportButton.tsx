@@ -4,15 +4,18 @@ import { useLang } from "../_components/translations";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface ExportData {
+  title?: string;
   selectedArea?: { name: string; ha: number };
   coords?: { lat: number; lng: number };
   ndviData?: Record<string, { value: number; min: number; max: number; mean: number; trend: string }>;
+  weatherData?: any;
   cropAnalysis?: {
     cropType: string; health: string; coverage: number;
     estimatedYield: string; recommendation: string;
   };
   layers?: { name: string; type: string; visible: boolean; featureCount?: number }[];
   geoJsonFeatures?: any[];
+  timestamp?: string;
 }
 
 interface Props {
@@ -47,11 +50,25 @@ function exportPDF(data: ExportData, isRTL: boolean) {
           <td style="padding:8px 12px;text-align:center">${l.featureCount ?? "—"}</td>
         </tr>`).join("") : "";
 
+  // ── Visualization for PDF (CSS bars/charts) ──
+  const ndviChart = data.ndviData ? `
+    <div style="margin:20px 0;background:#f8fafc;padding:20px;border-radius:12px;border:1px solid #e2e8f0">
+      <div style="font-weight:700;margin-bottom:15px;color:#64748b;font-size:11px;text-transform:uppercase">NDVI Profile Visualization</div>
+      <div style="display:flex;align-items:flex-end;gap:4px;height:120px">
+        ${Object.values(data.ndviData).map(v => `
+          <div style="flex:1;background:linear-gradient(to top,#22c55e,#4ade80);height:${(v.value*100)}%;border-radius:4px 4px 0 0;position:relative">
+             <div style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:9px;font-weight:700">${v.value.toFixed(2)}</div>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  ` : "";
+
   const html = `<!DOCTYPE html>
 <html dir="${dir}" lang="${isRTL?"ar":"en"}">
 <head>
   <meta charset="UTF-8"/>
-  <title>GeoSense AI — Export</title>
+  <title>${data.title || "GeoSense AI"} — Export</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&family=Noto+Sans+Arabic:wght@400;600;700&display=swap');
     *{box-sizing:border-box;margin:0;padding:0}
@@ -85,6 +102,8 @@ function exportPDF(data: ExportData, isRTL: boolean) {
     <div class="meta">${isRTL?"تاريخ التصدير":"Exported"}: ${now}</div>
   </div>
 
+  ${data.title ? `<h1 style="font-size:22px;margin:10px 0;color:#0f172a">${data.title}</h1>` : ""}
+
   ${data.coords || data.selectedArea ? `
   <h2>${isRTL?"بيانات المنطقة المحددة":"Selected Area Data"}</h2>
   <div class="kpi-grid">
@@ -99,6 +118,7 @@ function exportPDF(data: ExportData, isRTL: boolean) {
 
   ${indicesRows ? `
   <h2>${isRTL?"المؤشرات النباتية (Sentinel-2)":"Vegetation Indices (Sentinel-2)"}</h2>
+  ${ndviChart}
   <table>
     <thead><tr>
       <th>${isRTL?"المؤشر":"Index"}</th><th>${isRTL?"القيمة":"Value"}</th>

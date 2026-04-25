@@ -515,6 +515,17 @@ export default function MapPage() {
               onToolChange={setActiveTool}
               onClear={handleClear}
               isRTL={isRTL}
+              globalExportData={{
+                title: "GeoSense AI — Comprehensive Global Report",
+                selectedArea: selectedArea.ha > 0 ? selectedArea : undefined,
+                coords: coords ?? undefined,
+                layers: layers.map(({ id: _id, ...rest }) => rest),
+                geoJsonFeatures: [
+                  ...(geoJsonData?.features ?? []),
+                  ...(combinedGeoJson?.features ?? []),
+                ].slice(0, 100),
+                timestamp: new Date().toISOString()
+              }}
             />
             <MapLayerBar
               onSatChange={(s) => changeSatRef.current?.(s)}

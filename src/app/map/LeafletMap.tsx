@@ -971,6 +971,15 @@ export default function LeafletMap({
         // throttle setState to avoid React re-renders on every click
         requestAnimationFrame(() => onCoordsUpdate(lat, lng));
 
+        // Trigger onFeatureClick with a virtual feature to update panels (Weather/NDVI) for any click
+        if (tool === "pointer") {
+          onFeatureClick?.({
+            type: "Feature",
+            geometry: { type: "Point", coordinates: [lng, lat] },
+            properties: { _virtual: true }
+          });
+        }
+
         // ── Image placement mode (always takes precedence) ───────────────────
         if (placingImageRef.current) {
           const st = placingImageRef.current;
