@@ -14,6 +14,8 @@ import LeafletMap from "./LeafletMap";
 import CoordsPopup from "./CoordsPopup";
 import AITriggerButton from "./AITriggerButton";
 import Mapbox3DView from "./Mapbox3DView";
+import LayerPanel, { MapLayer } from "./LayerPanel";
+import ExportButton from "./ExportButton";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
@@ -40,6 +42,15 @@ export default function MapPage() {
   const [uploadedGeoJsonMap, setUploadedGeoJsonMap] = useState<Record<string, any>>({});
   const [latestGeoJson,   setLatestGeoJson]   = useState<any>(null);
   const [extrusionCfg,    setExtrusionCfg]    = useState<any>(null);
+
+  // ── Layer panel state ────────────────────────────────────────────────────
+  const [layers, setLayers] = useState<MapLayer[]>([
+    { id: "contours",   name: "Contours",           nameAr: "خطوط الكنتور",     type: "vector", visible: true,  opacity: 1,    color: "#00d4ff", source: "Backend API · /gis/contours" },
+    { id: "osm",        name: "OpenStreetMap Base",  nameAr: "خريطة OSM الأساسية", type: "tile",   visible: true,  opacity: 1 },
+    { id: "satellite",  name: "Satellite Imagery",   nameAr: "صور الأقمار الصناعية", type: "raster", visible: false, opacity: 0.9,  source: "Esri World Imagery" },
+    { id: "ndvi-tile",  name: "NDVI Live Layer",     nameAr: "طبقة NDVI الحية",  type: "ndvi",   visible: false, opacity: 0.85, source: "Sentinel-2 via open-meteo" },
+    { id: "universities", name: "Universities",      nameAr: "الجامعات",         type: "vector", visible: true,  opacity: 1,    color: "#a855f7", source: "API · /api/universities" },
+  ]);
 
   const flyToRef               = useRef<((lat: number, lng: number) => void) | null>(null);
   const clearRef               = useRef<(() => void) | null>(null);
@@ -270,6 +281,86 @@ export default function MapPage() {
     setCaptures((prev) => prev.filter((c) => c.id !== id));
   }, []);
 
+  // ── Layer panel handlers ──────────────────────────────────────────────────
+  const handleLayerToggle  = useCallback((id: string, visible: boolean) => {
+    setLayers((prev) => prev.map((l) => l.id === id ? { ...l, visible } : l));
+    // Wire to map tile changes where applicable
+    if (id === "satellite" && visible) changeSatRef.current?.("esri_sat" as any);
+    if (id === "ndvi-tile" && visible) changeIdxRef.current?.("NDVI" as any);
+  }, []);
+
+  const handleLayerOpacity = useCallback((id: string, opacity: number) => {
+    setLayers((prev) => prev.map((l) => l.id === id ? { ...l, opacity } : l));
+    changeOpacityRef.current?.(opacity);
+  }, []);
+
+  const handleLayerColor   = useCallback((id: string, color: string) => {
+    setLayers((prev) => prev.map((l) => l.id === id ? { ...l, color } : l));
+  }, []);
+
+  const handleLayerRemove  = useCallback((id: string) => {
+    setLayers((prev) => prev.filter((l) => l.id !== id));
+    if (id === "contours") setGeoJsonData(null);
+    if (id.startsWith("uploaded_")) {
+        const fileName = id.replace("uploaded_", "");
+        handleDeleteGeoJSON(fileName);
+    }
+  }, [handleDeleteGeoJSON]);
+
+  const handleLayerZoom    = useCallback((id: string) => {
+    // Fly to appropriate location for the layer
+    if (id === "universities") flyToRef.current?.(30.05, 31.23);
+    if (id === "contours") flyToRef.current?.(30.05, 31.23);
+    if (id.startsWith("uploaded_")) {
+        const fileName = id.replace("uploaded_", "");
+        const gj = uploadedGeoJsonMap[fileName];
+        if (gj?.features?.[0]?.geometry) {
+            // Find a way to get center. LeafletMap has some logic.
+            // For now, we can use handleOpen3D's center logic or just rely on LeafletMap fitting bounds if we can trigger it.
+            // Simplified:
+            const feat = gj.features[0];
+            const getCenter = (g: any): [number, number] | null => {
+                if (!g?.coordinates) return null;
+                if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
+                if (Array.isArray(g.coordinates[0])) {
+                   const first = Array.isArray(g.coordinates[0][0]) ? g.coordinates[0][0] : g.coordinates[0];
+                   return [first[1], first[0]];
+                }
+                return null;
+            };
+            const c = getCenter(feat.geometry);
+            if (c) flyToRef.current?.(c[0], c[1]);
+        }
+    }
+  }, [uploadedGeoJsonMap]);
+
+  // Sync uploaded GeoJSON as layers
+  useEffect(() => {
+    const uploadedLayers: MapLayer[] = Object.entries(uploadedGeoJsonMap).map(([name, gj]) => ({
+      id: `uploaded_${name}`,
+      name, nameAr: name,
+      type: "vector" as const,
+      visible: true, opacity: 1, color: "#00d4ff",
+      featureCount: gj?.features?.length,
+      source: "Uploaded GeoJSON",
+    }));
+    setLayers((prev) => [
+      ...prev.filter((l) => !l.id.startsWith("uploaded_")),
+      ...uploadedLayers,
+    ]);
+  }, [uploadedGeoJsonMap]);
+
+  // Export data bundle
+  const exportData = useMemo(() => ({
+    coords: coords ?? undefined,
+    selectedArea: selectedArea.ha > 0 ? selectedArea : undefined,
+    layers: layers.map(({ id: _id, ...rest }) => rest),
+    geoJsonFeatures: [
+      ...(geoJsonData?.features ?? []),
+      ...(combinedGeoJson?.features ?? []),
+    ].slice(0, 200),
+  }), [coords, selectedArea, layers, geoJsonData, combinedGeoJson]);
+
   // ── Shared sidebar ────────────────────────────────────────────────────────
   const sharedSidebar = useMemo(() => (
     <AnalysisSidebar
@@ -293,6 +384,13 @@ export default function MapPage() {
           return [];
         });
       }}
+      layers={layers}
+      onLayerToggle={handleLayerToggle}
+      onLayerOpacity={handleLayerOpacity}
+      onLayerColor={handleLayerColor}
+      onLayerRemove={handleLayerRemove}
+      onLayerZoom={handleLayerZoom}
+      onLayer3D={handleOpen3D}
     />
   ), [
     selectedFeature,
@@ -306,6 +404,13 @@ export default function MapPage() {
     handleFlyTo,
     handleClose3D,
     activePanel,
+    layers,
+    handleLayerToggle,
+    handleLayerOpacity,
+    handleLayerColor,
+    handleLayerRemove,
+    handleLayerZoom,
+    handleOpen3D,
   ]);
 
   const toggle2DButton = useMemo(() => (
@@ -379,16 +484,28 @@ export default function MapPage() {
         {/* ── 2D overlays ── */}
         {!view3D && (
           <>
-            {/* زرار 3D + hint */}
-            <div className="absolute top-3 left-3 z-[1100] flex items-center gap-2">
+            {/* ── Top-left controls bar ── */}
+            <div className="absolute top-3 left-3 z-[1100] flex items-center gap-2 flex-wrap">
+              {/* 3D View */}
               <button
                 onClick={handleToggleView}
-                className="px-3 py-1.5 rounded-lg bg-[#0d1f3c] border border-white/10 text-slate-300 text-xs cursor-pointer hover:text-cyan-400 transition-all"
+                className="px-3 py-1.5 rounded-lg bg-[#0d1f3c] border border-white/10 text-slate-300 text-xs cursor-pointer hover:text-cyan-400 transition-all flex items-center gap-1.5"
               >
-                3D View
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                3D
               </button>
-              <span className="px-2 py-1 rounded-md bg-[#0a1628]/80 border border-white/[0.06] text-slate-500 text-[0.65rem] select-none">
-                أو Double-click على الخريطة
+
+              {/* Layers panel toggle (now opens sidebar) */}
+              <button
+                onClick={() => setActivePanel("layers")}
+                className={`px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-all flex items-center gap-1.5 ${activePanel === "layers" ? "bg-cyan-400/10 border-cyan-400/40 text-cyan-400" : "bg-[#0d1f3c] border-white/10 text-slate-300 hover:text-cyan-400"}`}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>
+                {isRTL ? "الطبقات" : "Layers"}
+              </button>
+
+              <span className="px-2 py-1 rounded-md bg-[#0a1628]/80 border border-white/[0.06] text-slate-500 text-[0.65rem] select-none hidden sm:block">
+                {isRTL ? "دبل كليك للـ 3D" : "Double-click → 3D"}
               </span>
             </div>
 

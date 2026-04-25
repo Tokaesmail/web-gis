@@ -5,6 +5,8 @@ import { useLang } from "../translations";
 import JSONUploadModal from "./DataManagerPanel";
 import { exportToExcel, exportToPDF } from "../../../../lib/exportUtils";
 import { useMapDB } from "../../map/useMapDB";
+import LayerPanel, { MapLayer } from "../../map/LayerPanel";
+import ExportButton from "../../map/ExportButton";
 
 type PanelId =
   | "ndvi"
@@ -237,22 +239,54 @@ function StackedBarChart({ data }: { data: { label: string; a: number; b: number
 }
 
 
+// ─── helper: extract midpoint coords from any GeoJSON geometry ────────────────
+function getMidCoords(feature?: GeoJSON.Feature | null): [number, number] | null {
+  const g = feature?.geometry as any;
+  if (!g?.coordinates) return null;
+  try {
+    if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
+    if (g.type === "LineString" || g.type === "MultiPoint") {
+      const mid = g.coordinates[Math.floor(g.coordinates.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    if (g.type === "Polygon" || g.type === "MultiLineString") {
+      const first = g.coordinates[0];
+      const mid = first[Math.floor(first.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    if (g.type === "MultiPolygon") {
+      const firstPoly = g.coordinates[0];
+      const firstRing = firstPoly[0];
+      const mid = firstRing[Math.floor(firstRing.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    // Deep fallback
+    const findFirst = (c: any): [number, number] | null => {
+      if (Array.isArray(c) && typeof c[0] === "number") return [c[1], c[0]];
+      if (Array.isArray(c)) {
+        for (const sub of c) {
+          const res = findFirst(sub);
+          if (res) return res;
+        }
+      }
+      return null;
+    };
+    return findFirst(g.coordinates);
+  } catch (e) { return null; }
+}
+
+// ─── Skeleton row ─────────────────────────────────────────────────────────────
+function SkRow({ w = "w-full", h = "h-4" }: { w?: string; h?: string }) {
+  return <div className={`${h} ${w} rounded-md bg-white/[0.05] animate-pulse`} />;
+}
+
 // ─── NDVI Live Panel (data from selected feature coords) ──────────────────────
-function NDVILivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
+function NDVILivePanel({ feature, onExport }: { feature?: GeoJSON.Feature | null; onExport?: (data: any) => void }) {
   const [ndviData, setNdviData] = useState<any>(null);
   const [loading,  setLoading]  = useState(false);
 
   // derive midpoint coords from geometry
-  const coords: [number, number] | null = (() => {
-    if (!feature?.geometry) return null;
-    const g = feature.geometry as any;
-    if (g.type === "LineString" && g.coordinates?.length) {
-      const m = g.coordinates[Math.floor(g.coordinates.length / 2)];
-      return [m[1], m[0]];
-    }
-    if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
-    return null;
-  })();
+  const coords: [number, number] | null = useMemo(() => getMidCoords(feature), [feature]);
 
   useEffect(() => {
     if (!coords) return;
@@ -280,7 +314,16 @@ function NDVILivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
         const avgST = soilT.length ? soilT.reduce((a: number, b: number) => a + b, 0) / soilT.length : null;
         const latest = series[series.length - 1]?.value ?? 0;
         const prev   = series[series.length - 4]?.value ?? latest;
-        setNdviData({ series, latest, prev, avgSM, avgST });
+
+        const data = { series, latest, prev, avgSM, avgST };
+        setNdviData(data);
+
+        if (onExport) {
+            const ndviDataMap: Record<string, any> = {
+                "NDVI": { value: latest, min: Math.min(...series.map((s:any)=>s.value)), max: Math.max(...series.map((s:any)=>s.value)), mean: series.reduce((a:any,b:any)=>a+b.value,0)/series.length, trend: latest >= prev ? "up" : "down" }
+            };
+            onExport(ndviDataMap);
+        }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -474,97 +517,6 @@ function NDVILivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
             <p className="text-[0.6rem] text-slate-500">Contour Line</p>
             <p className="text-[0.75rem] font-semibold text-slate-200">{feature.properties.Contour}m · Id {feature.properties.Id ?? feature.properties.OBJECTID}</p>
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── helper: extract midpoint coords from any GeoJSON geometry ────────────────
-function getMidCoords(feature?: GeoJSON.Feature | null): [number, number] | null {
-  const g = feature?.geometry as any;
-  if (!g?.coordinates) return null;
-  try {
-    if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
-    if (g.type === "LineString" || g.type === "MultiPoint") {
-      const mid = g.coordinates[Math.floor(g.coordinates.length / 2)];
-      return [mid[1], mid[0]];
-    }
-    if (g.type === "Polygon" || g.type === "MultiLineString") {
-      const first = g.coordinates[0];
-      const mid = first[Math.floor(first.length / 2)];
-      return [mid[1], mid[0]];
-    }
-    if (g.type === "MultiPolygon") {
-      const firstPoly = g.coordinates[0];
-      const firstRing = firstPoly[0];
-      const mid = firstRing[Math.floor(firstRing.length / 2)];
-      return [mid[1], mid[0]];
-    }
-    // Deep fallback
-    const findFirst = (c: any): [number, number] | null => {
-      if (Array.isArray(c) && typeof c[0] === "number") return [c[1], c[0]];
-      if (Array.isArray(c)) {
-        for (const sub of c) {
-          const res = findFirst(sub);
-          if (res) return res;
-        }
-      }
-      return null;
-    };
-    return findFirst(g.coordinates);
-  } catch (e) { return null; }
-}
-
-// ─── Skeleton row ─────────────────────────────────────────────────────────────
-function SkRow({ w = "w-full", h = "h-4" }: { w?: string; h?: string }) {
-  return <div className={`${h} ${w} rounded-md bg-white/[0.05] animate-pulse`} />;
-}
-
-// ─── Captures Panel ───────────────────────────────────────────────────────────
-function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }) {
-  return (
-    <div className="space-y-4">
-      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-2 flex items-center justify-between">
-        <div>
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Active Captures</p>
-          <p className="text-xs text-slate-300">Images kept in memory</p>
-        </div>
-        {items.length > 0 && (
-          <button
-            onClick={onClear}
-            className="text-[0.6rem] px-2 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20"
-          >
-            Clear All
-          </button>
-        )}
-      </div>
-
-      {items.length === 0 ? (
-        <div className="py-10 text-center opacity-40 text-[0.7rem]">No captures found. Draw a shape to capture.</div>
-      ) : (
-        <div className="space-y-4">
-          {items.map((it) => {
-            return (
-              <div key={it.id} className="group bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
-                <div className="relative aspect-video bg-black/40">
-                  <img src={it.url} alt="Capture" className="w-full h-full object-cover" />
-                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-2 gap-2">
-                    <button
-                      onClick={() => window.open(it.url, '_blank')}
-                      className="px-3 py-1.5 bg-cyan-500 text-black text-[0.65rem] rounded-lg font-bold"
-                    >
-                      Open Full Size
-                    </button>
-                  </div>
-                </div>
-                <div className="p-2.5">
-                  <p className="text-[0.65rem] text-slate-200 font-medium truncate">{new Date(it.createdAt).toLocaleString()}</p>
-                  <p className="text-[0.55rem] text-slate-500 mt-0.5">In-memory blob session</p>
-                </div>
-              </div>
-            );
-          })}
         </div>
       )}
     </div>
@@ -797,6 +749,57 @@ function WeatherLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
     </div>
   );
 }
+
+// ─── Captures Panel ───────────────────────────────────────────────────────────
+function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }) {
+  return (
+    <div className="space-y-4">
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-2 flex items-center justify-between">
+        <div>
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Active Captures</p>
+          <p className="text-xs text-slate-300">Images kept in memory</p>
+        </div>
+        {items.length > 0 && (
+          <button
+            onClick={onClear}
+            className="text-[0.6rem] px-2 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20"
+          >
+            Clear All
+          </button>
+        )}
+      </div>
+
+      {items.length === 0 ? (
+        <div className="py-10 text-center opacity-40 text-[0.7rem]">No captures found. Draw a shape to capture.</div>
+      ) : (
+        <div className="space-y-4">
+          {items.map((it) => {
+            return (
+              <div key={it.id} className="group bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
+                <div className="relative aspect-video bg-black/40">
+                  <img src={it.url} alt="Capture" className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-2 gap-2">
+                    <button
+                      onClick={() => window.open(it.url, '_blank')}
+                      className="px-3 py-1.5 bg-cyan-500 text-black text-[0.65rem] rounded-lg font-bold"
+                    >
+                      Open Full Size
+                    </button>
+                  </div>
+                </div>
+                <div className="p-2.5">
+                  <p className="text-[0.65rem] text-slate-200 font-medium truncate">{new Date(it.createdAt).toLocaleString()}</p>
+                  <p className="text-[0.55rem] text-slate-500 mt-0.5">In-memory blob session</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Panel Contents ───────────────────────────────────────────────────────────
 function PanelContent({
   id,
@@ -808,6 +811,13 @@ function PanelContent({
   onOpen3D,
   onFlyTo,
   onClearCaptures,
+  layers,
+  onLayerToggle,
+  onLayerOpacity,
+  onLayerColor,
+  onLayerRemove,
+  onLayerZoom,
+  onLayer3D,
 }: {
   id: PanelId;
   selectedFeature?: GeoJSON.Feature | null;
@@ -818,12 +828,32 @@ function PanelContent({
   onOpen3D?: (fileName: string) => void;
   onFlyTo?: (lat: number, lng: number) => void;
   onClearCaptures: () => void;
+  layers: MapLayer[];
+  onLayerToggle: (id: string, visible: boolean) => void;
+  onLayerOpacity: (id: string, opacity: number) => void;
+  onLayerColor: (id: string, color: string) => void;
+  onLayerRemove: (id: string) => void;
+  onLayerZoom: (id: string) => void;
+  onLayer3D?: (id: string) => void;
 }) {
-  const { t } = useLang();
+  const { t, isRTL } = useLang();
 
   // ── NDVI ──
   if (id === "ndvi") {
-    return <NDVILivePanel feature={selectedFeature} />;
+    const coords = getMidCoords(selectedFeature);
+    const [ndviExportData, setNdviExportData] = useState<any>(null);
+
+    const exportBundle = {
+        coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+        ndviData: ndviExportData,
+    };
+
+    return (
+        <div className="space-y-4">
+            <NDVILivePanel feature={selectedFeature} onExport={setNdviExportData} />
+            {selectedFeature && <ExportButton data={exportBundle} />}
+        </div>
+    );
   }
 
   // ── OVERVIEW ──
@@ -831,39 +861,10 @@ function PanelContent({
     const p = selectedFeature?.properties ?? {};
     const coords = getMidCoords(selectedFeature);
 
-    const handleExportExcel = () => {
-      const data = [{
-        ID: p.Id || p.OBJECTID || "N/A",
-        Elevation: p.Contour ? `${p.Contour}m` : "N/A",
-        Latitude: coords ? coords[0] : "N/A",
-        Longitude: coords ? coords[1] : "N/A",
-        Geometry: selectedFeature?.geometry?.type || "N/A",
-        ...p
-      }];
-      exportToExcel(data, `feature_${data[0].ID}.xlsx`);
-    };
-
-    const handleExportPDF = () => {
-      const data = [{
-        Label: "Field Property",
-        Value: "Details"
-      }, {
-        Label: "Elevation",
-        Value: p.Contour ? `${p.Contour}m` : "N/A"
-      }, {
-        Label: "Location",
-        Value: coords ? `${coords[0].toFixed(4)}, ${coords[1].toFixed(4)}` : "N/A"
-      }, {
-        Label: "Type",
-        Value: selectedFeature?.geometry?.type || "N/A"
-      }];
-      // Add all other properties
-      Object.entries(p).forEach(([k, v]) => {
-        if (!["Contour", "Id", "OBJECTID", "_color", "_fillColor"].includes(k)) {
-          data.push({ Label: k, Value: String(v) });
-        }
-      });
-      exportToPDF(data, "Study Area Report", `report_${p.Id || "area"}.pdf`);
+    const exportData = {
+      coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+      layers: layers.map(({ id: _id, ...rest }) => rest),
+      geoJsonFeatures: selectedFeature ? [selectedFeature] : undefined,
     };
 
     return (
@@ -872,20 +873,7 @@ function PanelContent({
 
         {selectedFeature && (
           <div className="flex gap-2">
-            <button
-              onClick={handleExportExcel}
-              className="flex-1 px-3 py-2.5 bg-[#10b981] text-white rounded-xl text-[0.65rem] font-bold hover:bg-[#059669] shadow-[0_4px_12px_rgba(16,185,129,0.35)] border-none transition-all flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-              {t.exportExcel}
-            </button>
-            <button
-              onClick={handleExportPDF}
-              className="flex-1 px-3 py-2.5 bg-[#ef4444] text-white rounded-xl text-[0.65rem] font-bold hover:bg-[#dc2626] shadow-[0_4px_12px_rgba(239,68,68,0.35)] border-none transition-all flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15h3a2 2 0 0 1 0 4h-3"/></svg>
-              {t.exportPDF}
-            </button>
+            <ExportButton data={exportData} />
           </div>
         )}
       </div>
@@ -899,6 +887,19 @@ function PanelContent({
 
   // ── CROPS ──
   if (id === "crops") {
+    const cropData = {
+      cropType: "Corn",
+      health: "good",
+      coverage: 87,
+      estimatedYield: "12.4 t/ha",
+      recommendation: "Soil moisture is optimal. Monitor for pests in the NW sector."
+    };
+
+    const exportData = {
+      cropAnalysis: cropData,
+      selectedArea: { name: "Corn Field Z32", ha: 27.4 }
+    };
+
     return (
       <div className="space-y-4">
         <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3">
@@ -946,22 +947,7 @@ function PanelContent({
            </div>
         </div>
 
-        <button
-          onClick={() => {
-            const data = [
-              { Metric: t.soilMoisture, Value: "42%" },
-              { Metric: t.biomass, Value: "High" },
-              { Metric: t.sowing, Value: "12 Apr" },
-              { Metric: t.harvestEst, Value: "25 Aug" },
-              { Metric: "Field Stage", Value: "Stem elongation" }
-            ];
-            exportToExcel(data, "crop_analysis.xlsx");
-          }}
-          className="w-full px-3 py-2.5 bg-[#0891b2] text-white rounded-xl text-[0.65rem] font-bold hover:bg-[#06b6d4] shadow-[0_4px_12px_rgba(6,182,212,0.35)] border-none transition-all flex items-center justify-center gap-2 cursor-pointer"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          {t.exportExcel}
-        </button>
+        <ExportButton data={exportData} />
       </div>
     );
   }
@@ -973,111 +959,16 @@ function PanelContent({
 
   // ── LAYERS ──
   if (id === "layers") {
-    const files = Object.keys(uploadedGeoJsonMap || {});
     return (
-      <div className="space-y-4">
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3.5 mb-2 shadow-inner">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1 font-bold">Vector Data Storage</p>
-          <p className="text-xs text-slate-400 leading-relaxed">Manage your multi-layer GeoJSON uploads with independent visibility and styles.</p>
-        </div>
-
-        {files.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 bg-white/[0.02] border border-dashed border-white/10 rounded-2xl opacity-40">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-3">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            <p className="text-[0.65rem] font-medium uppercase tracking-widest">No active layers</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {files.map((fileName) => {
-              const geojson = uploadedGeoJsonMap![fileName];
-              const count = geojson?.features?.length ?? 0;
-              const firstColor = geojson?.features?.[0]?.properties?._color || "#00c8ff";
-
-              return (
-                <div key={fileName} className="group bg-[#0a1628]/60 border border-white/[0.07] hover:border-cyan-500/30 hover:bg-[#0a1628]/80 rounded-2xl p-4 transition-all duration-300 shadow-lg">
-                  <div className="flex items-start gap-3.5">
-                    <div
-                      className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-lg transition-transform group-hover:scale-105"
-                      style={{ backgroundColor: `${firstColor}15`, border: `1px solid ${firstColor}30`, color: firstColor }}
-                    >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                        <polygon points="12 2 2 7 12 12 22 7 12 2" />
-                        <polyline points="2 17 12 22 22 17" />
-                        <polyline points="2 12 12 17 22 12" />
-                      </svg>
-                    </div>
-                    <div className="flex-1 min-w-0 pt-0.5">
-                      <p className="text-[0.8rem] font-bold text-slate-100 truncate mb-0.5 tracking-tight">{fileName}</p>
-                      <div className="flex items-center gap-2">
-                         <span className="text-[0.6rem] text-slate-500 font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/5">{count} feat</span>
-                         <div className="w-1 h-1 rounded-full bg-slate-700" />
-                         <span className="text-[0.6rem] text-slate-500 uppercase tracking-tighter font-bold">GeoJSON</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 flex items-center justify-between gap-2 border-t border-white/5 pt-3">
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => {
-                          if (!geojson?.features?.[0]?.geometry) return;
-                          const coords = getMidCoords(geojson.features[0]);
-                          if (coords) onFlyTo?.(coords[0], coords[1]);
-                        }}
-                        className="px-3 py-1.5 bg-[#0891b2] text-white rounded-lg text-[0.6rem] font-bold flex items-center gap-1.5 hover:bg-[#06b6d4] transition-all cursor-pointer shadow-md active:scale-95"
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2m8-10h2M2 12h2"/></svg>
-                        Fly
-                      </button>
-
-                      <button
-                        onClick={() => onOpen3D?.(fileName)}
-                        className="px-3 py-1.5 bg-[#d97706] text-white rounded-lg text-[0.6rem] font-bold flex items-center gap-1.5 hover:bg-[#f59e0b] transition-all cursor-pointer shadow-md active:scale-95"
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m21 8-9-4-9 4 9 4 9-4z"/><path d="m21 12-9 4-9-4"/><path d="m21 16-9 4-9-4"/></svg>
-                        3D
-                      </button>
-                    </div>
-
-                    <button
-                      onClick={() => onDeleteGeoJSON?.(fileName)}
-                      className="w-8 h-8 flex items-center justify-center bg-red-500/10 border border-red-500/20 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all cursor-pointer shadow-sm active:scale-90"
-                      title="Delete Layer"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" /></svg>
-                    </button>
-                  </div>
-
-                  {/* Style Selector */}
-                  <div className="mt-3 flex items-center gap-2.5">
-                     <div className="text-[0.55rem] text-slate-500 uppercase tracking-widest font-black">Theme</div>
-                     <div className="flex items-center gap-1.5">
-                       {["#00c8ff", "#a78bfa", "#34d399", "#fbbf24", "#f87171"].map(c => (
-                         <button
-                           key={c}
-                           onClick={() => {
-                             const updated = { ...geojson };
-                             updated.features = updated.features.map((f: any) => ({
-                               ...f,
-                               properties: { ...f.properties, _color: c, _fillColor: c }
-                             }));
-                             onGeoJSONUpload?.(updated, fileName, true);
-                           }}
-                           className={`w-4 h-4 rounded-full border border-white/20 transition-all cursor-pointer active:scale-75
-                             ${firstColor === c ? "ring-2 ring-cyan-400 ring-offset-2 ring-offset-[#0a1628] scale-110" : "hover:scale-110"}`}
-                           style={{ backgroundColor: c }}
-                         />
-                       ))}
-                     </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+      <LayerPanel
+        layers={layers}
+        onLayerToggle={onLayerToggle}
+        onLayerOpacity={onLayerOpacity}
+        onLayerColor={onLayerColor}
+        onLayerRemove={onLayerRemove}
+        onLayerZoom={onLayerZoom}
+        onLayer3D={onLayer3D}
+      />
     );
   }
 
@@ -1193,6 +1084,13 @@ export default function AnalysisSidebar({
   activePanel: controlledActivePanel,
   onActivePanelChange,
   onClearCaptures,
+  layers,
+  onLayerToggle,
+  onLayerOpacity,
+  onLayerColor,
+  onLayerRemove,
+  onLayerZoom,
+  onLayer3D,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
@@ -1207,6 +1105,13 @@ export default function AnalysisSidebar({
   activePanel?: PanelId | null;
   onActivePanelChange?: (id: PanelId | null) => void;
   onClearCaptures: () => void;
+  layers: MapLayer[];
+  onLayerToggle: (id: string, visible: boolean) => void;
+  onLayerOpacity: (id: string, opacity: number) => void;
+  onLayerColor: (id: string, color: string) => void;
+  onLayerRemove: (id: string) => void;
+  onLayerZoom: (id: string) => void;
+  onLayer3D?: (id: string) => void;
 }) {
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -1287,6 +1192,13 @@ export default function AnalysisSidebar({
                   onOpen3D={onOpen3D}
                   onFlyTo={onFlyTo}
                   onClearCaptures={onClearCaptures}
+                  layers={layers}
+                  onLayerToggle={onLayerToggle}
+                  onLayerOpacity={onLayerOpacity}
+                  onLayerColor={onLayerColor}
+                  onLayerRemove={onLayerRemove}
+                  onLayerZoom={onLayerZoom}
+                  onLayer3D={onLayer3D}
                 />
               )}
             </div>
