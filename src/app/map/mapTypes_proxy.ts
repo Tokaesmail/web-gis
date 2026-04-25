@@ -74,6 +74,14 @@ export const INDEX_TILES: Record<string, { url: string; color: string; desc: str
     maxNativeZoom: 19,
     opacity: 0.85 
   },
+  "NDMI": {
+    url: "/api/tile/{z}/{x}/{y}?source=sentinel",
+    color: "#a78bfa",
+    desc: "Moisture",
+    maxZoom: 22,
+    maxNativeZoom: 16,
+    opacity: 0.8
+  },
   "NDSI": { url: "/api/tile/{z}/{x}/{y}?source=topo",        color: "#e0f2fe", desc: "Terrain",   maxZoom: 22, maxNativeZoom: 19, opacity: 0.75 },
   "SWIR": { url: "/api/tile/{z}/{x}/{y}?source=satellite",         color: "#fb923c", desc: "Satellite", maxZoom: 22, maxNativeZoom: 19, opacity: 0.9  },
 };

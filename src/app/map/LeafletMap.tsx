@@ -43,6 +43,7 @@ interface Props {
   clearRef:       React.MutableRefObject<(() => void) | null>;
   onSatChange:    (handler: (sat: SatKey) => void) => void;
   onIdxChange:    (handler: (idx: IdxKey) => void) => void;
+  onOpacityChangeRegister?: (handler: (o: number) => void) => void;
   /** register an image placement workflow (2 clicks to place image) */
   onImagePlacerRegister?: (handler: (file: File) => void) => void;
   onCapture?:     (url: string) => void;
@@ -92,7 +93,7 @@ function getUniversityColor(from: number, to: number): { fill: string; stroke: s
 
 export default function LeafletMap({
   activeTool, onAreaSelected, onCoordsUpdate,
-  flyToRef, clearRef, onSatChange, onIdxChange, onCapture,
+  flyToRef, clearRef, onSatChange, onIdxChange, onOpacityChangeRegister, onCapture,
   geoJsonData, extraGeoJsonData, latestGeoJson, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
   onImagePlacerRegister,
   extrusionGeoJson,
@@ -929,6 +930,11 @@ export default function LeafletMap({
           maxZoom: tile.maxZoom, maxNativeZoom: tile.maxNativeZoom,
           tileSize: 256, opacity: tile.opacity, pane: "indexPane", crossOrigin: "anonymous",
         }).addTo(map);
+      });
+
+      onOpacityChangeRegister?.((o: number) => {
+        if (indexTileRef.current) indexTileRef.current.setOpacity(o);
+        if (labelsLayerRef.current) labelsLayerRef.current.setOpacity(o * 0.8 + 0.1);
       });
 
       document.getElementById("map-zoom-in")?.addEventListener("click",  () => map.zoomIn());

@@ -77,6 +77,17 @@ export const translations = {
     circle: "Circle",
     measure: "Distance Tool",
     marker: "Add Marker",
+    // Export & Crops
+    exportExcel: "Export Excel",
+    exportPDF: "Export PDF",
+    cropInsight: "Crop Insight",
+    fieldInsights: "Field Insights",
+    growthPrediction: "Growth Prediction",
+    scoutingRequired: "Scouting Required",
+    soilMoisture: "Soil Moisture",
+    biomass: "Biomass",
+    sowing: "Sowing",
+    harvestEst: "Harvest Est.",
   },
   ar: {
     // Nav
@@ -143,6 +154,17 @@ export const translations = {
     circle: "رسم دائرة",
     measure: "أداة المسافات",
     marker: "إضافة علامة",
+    // Export & Crops
+    exportExcel: "تصدير Excel",
+    exportPDF: "تصدير PDF",
+    cropInsight: "رؤية المحاصيل",
+    fieldInsights: "رؤية الحقل",
+    growthPrediction: "توقع النمو",
+    scoutingRequired: "مطلوب كشف",
+    soilMoisture: "رطوبة التربة",
+    biomass: "الكتلة الحيوية",
+    sowing: "البذر",
+    harvestEst: "تقدير الحصاد",
   },
 } as const;
 

@@ -6,14 +6,17 @@ import { SAT_LAYERS, INDEX_TILES, SatKey, IdxKey } from "./mapTypes_proxy";
 export default function MapLayerBar({
   onSatChange,
   onIdxChange,
+  onOpacityChange,
 }: {
   onSatChange: (sat: SatKey) => void;
   onIdxChange: (idx: IdxKey) => void;
+  onOpacityChange?: (o: number) => void;
 }) {
   const [sat, setSat] = useState<SatKey>("Default");
   const [idx, setIdx] = useState<IdxKey>("RGB");
   const [satLoading, setSatLoading] = useState(false);
   const [idxLoading, setIdxLoading] = useState(false);
+  const [opacity, setOpacity] = useState(80);
 
   const handleSat = (s: SatKey) => {
     if (s === sat) return;
@@ -83,6 +86,25 @@ export default function MapLayerBar({
             {i}
           </button>
         ))}
+      </div>
+
+      {/* Opacity Slider */}
+      <div className="flex items-center gap-3 bg-[#0a1628]/95 backdrop-blur-md border border-white/10 rounded-full px-4 py-1.5 shadow-lg min-w-[140px]">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-slate-500">
+          <circle cx="12" cy="12" r="10"/><path d="M12 2v20M2 12h20"/>
+        </svg>
+        <input
+          type="range"
+          min="0" max="100"
+          value={opacity}
+          onChange={(e) => {
+            const val = parseInt(e.target.value);
+            setOpacity(val);
+            onOpacityChange?.(val / 100);
+          }}
+          className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+        />
+        <span className="text-[0.6rem] text-slate-400 font-mono w-6">{opacity}%</span>
       </div>
 
       {/* Active indicator */}

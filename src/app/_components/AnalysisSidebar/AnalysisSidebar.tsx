@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useLang } from "../translations";
 import JSONUploadModal from "./DataManagerPanel";
+import { exportToExcel, exportToPDF } from "../../../../lib/exportUtils";
 import { useMapDB } from "../../map/useMapDB";
 
 type PanelId =
@@ -16,7 +17,8 @@ type PanelId =
   | "settings"
   | "analyses"
   | "layers"
-  | "captures";
+  | "captures"
+  | "crops";
 
 interface PanelItem {
   id: PanelId;
@@ -27,6 +29,17 @@ interface PanelItem {
 }
 
 const panels: PanelItem[] = [
+  {
+    id: "crops",
+    labelEn: "Crop Insight",
+    labelAr: "رؤية المحاصيل",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M11 20A7 7 0 0 1 4 13V5a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v8a7 7 0 0 1-7 7Z" />
+        <path d="M13 20a7 7 0 0 0 7-7V5a2 2 0 0 0-2-2h-5a2 2 0 0 0-2 2v8a7 7 0 0 0 7 7Z" />
+      </svg>
+    ),
+  },
   {
     id: "captures",
     labelEn: "Captures",
@@ -587,7 +600,7 @@ function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
 
   // all extra properties from the API (exclude the known ones already displayed)
   const extraProps = Object.entries(p).filter(
-    ([k]) => !["Contour", "Id", "OBJECTID", "Shape_Length"].includes(k)
+    ([k]) => !["Contour", "Id", "OBJECTID", "Shape_Length", "_color", "_fillColor"].includes(k)
   );
 
   return (
@@ -790,6 +803,7 @@ function PanelContent({
   selectedFeature,
   uploadedGeoJsonMap,
   captures,
+  onGeoJSONUpload,
   onDeleteGeoJSON,
   onOpen3D,
   onFlyTo,
@@ -799,11 +813,13 @@ function PanelContent({
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
   captures: any[];
+  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string, isUpdate?: boolean) => void;
   onDeleteGeoJSON?: (fileName: string) => void;
   onOpen3D?: (fileName: string) => void;
   onFlyTo?: (lat: number, lng: number) => void;
   onClearCaptures: () => void;
 }) {
+  const { t } = useLang();
 
   // ── NDVI ──
   if (id === "ndvi") {
@@ -812,12 +828,142 @@ function PanelContent({
 
   // ── OVERVIEW ──
   if (id === "overview") {
-    return <OverviewLivePanel feature={selectedFeature} />;
+    const p = selectedFeature?.properties ?? {};
+    const coords = getMidCoords(selectedFeature);
+
+    const handleExportExcel = () => {
+      const data = [{
+        ID: p.Id || p.OBJECTID || "N/A",
+        Elevation: p.Contour ? `${p.Contour}m` : "N/A",
+        Latitude: coords ? coords[0] : "N/A",
+        Longitude: coords ? coords[1] : "N/A",
+        Geometry: selectedFeature?.geometry?.type || "N/A",
+        ...p
+      }];
+      exportToExcel(data, `feature_${data[0].ID}.xlsx`);
+    };
+
+    const handleExportPDF = () => {
+      const data = [{
+        Label: "Field Property",
+        Value: "Details"
+      }, {
+        Label: "Elevation",
+        Value: p.Contour ? `${p.Contour}m` : "N/A"
+      }, {
+        Label: "Location",
+        Value: coords ? `${coords[0].toFixed(4)}, ${coords[1].toFixed(4)}` : "N/A"
+      }, {
+        Label: "Type",
+        Value: selectedFeature?.geometry?.type || "N/A"
+      }];
+      // Add all other properties
+      Object.entries(p).forEach(([k, v]) => {
+        if (!["Contour", "Id", "OBJECTID", "_color", "_fillColor"].includes(k)) {
+          data.push({ Label: k, Value: String(v) });
+        }
+      });
+      exportToPDF(data, "Study Area Report", `report_${p.Id || "area"}.pdf`);
+    };
+
+    return (
+      <div className="space-y-4">
+        <OverviewLivePanel feature={selectedFeature} />
+
+        {selectedFeature && (
+          <div className="flex gap-2">
+            <button
+              onClick={handleExportExcel}
+              className="flex-1 px-3 py-2.5 bg-[#10b981] text-white rounded-xl text-[0.65rem] font-bold hover:bg-[#059669] shadow-[0_4px_12px_rgba(16,185,129,0.35)] border-none transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              {t.exportExcel}
+            </button>
+            <button
+              onClick={handleExportPDF}
+              className="flex-1 px-3 py-2.5 bg-[#ef4444] text-white rounded-xl text-[0.65rem] font-bold hover:bg-[#dc2626] shadow-[0_4px_12px_rgba(239,68,68,0.35)] border-none transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15h3a2 2 0 0 1 0 4h-3"/></svg>
+              {t.exportPDF}
+            </button>
+          </div>
+        )}
+      </div>
+    );
   }
 
   // ── WEATHER ──
   if (id === "weather") {
     return <WeatherLivePanel feature={selectedFeature} />;
+  }
+
+  // ── CROPS ──
+  if (id === "crops") {
+    return (
+      <div className="space-y-4">
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">{t.fieldInsights} (EOS)</p>
+          <div className="flex items-center gap-3">
+            <div className="text-2xl">🌽</div>
+            <div>
+              <p className="text-sm font-bold text-slate-200">Corn Field · Z32</p>
+              <p className="text-[0.6rem] text-slate-500">Stem elongation stage</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { l: t.soilMoisture, v: "42%", c: "text-blue-400" },
+            { l: t.biomass, v: "High", c: "text-emerald-400" },
+            { l: t.sowing, v: "12 Apr", c: "text-slate-300" },
+            { l: t.harvestEst, v: "25 Aug", c: "text-amber-400" },
+          ].map(it => (
+            <div key={it.l} className="bg-white/[0.03] border border-white/[0.05] rounded-lg p-2">
+              <p className={`text-xs font-bold ${it.c}`}>{it.v}</p>
+              <p className="text-[0.55rem] text-slate-500 mt-0.5">{it.l}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 space-y-3">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">{t.growthPrediction}</p>
+          <div className="relative h-12 flex items-end gap-1">
+             {[30, 45, 60, 55, 75, 90, 85].map((h, i) => (
+               <div key={i} className="flex-1 bg-cyan-400/20 rounded-t-sm transition-all hover:bg-cyan-400/40" style={{ height: `${h}%` }} />
+             ))}
+          </div>
+          <div className="flex justify-between text-[0.55rem] text-slate-600 px-1">
+            <span>May</span><span>Jun</span><span>Jul</span><span>Aug</span>
+          </div>
+        </div>
+
+        <div className="bg-amber-400/[0.05] border border-amber-400/20 rounded-xl p-3 flex gap-3">
+           <div className="text-lg">⚠️</div>
+           <div>
+             <p className="text-[0.65rem] font-bold text-amber-400">{t.scoutingRequired}</p>
+             <p className="text-[0.58rem] text-slate-400 mt-0.5">Potential water stress detected in North-West sector.</p>
+           </div>
+        </div>
+
+        <button
+          onClick={() => {
+            const data = [
+              { Metric: t.soilMoisture, Value: "42%" },
+              { Metric: t.biomass, Value: "High" },
+              { Metric: t.sowing, Value: "12 Apr" },
+              { Metric: t.harvestEst, Value: "25 Aug" },
+              { Metric: "Field Stage", Value: "Stem elongation" }
+            ];
+            exportToExcel(data, "crop_analysis.xlsx");
+          }}
+          className="w-full px-3 py-2.5 bg-[#0891b2] text-white rounded-xl text-[0.65rem] font-bold hover:bg-[#06b6d4] shadow-[0_4px_12px_rgba(6,182,212,0.35)] border-none transition-all flex items-center justify-center gap-2 cursor-pointer"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          {t.exportExcel}
+        </button>
+      </div>
+    );
   }
 
   // ── CAPTURES ──
@@ -829,74 +975,102 @@ function PanelContent({
   if (id === "layers") {
     const files = Object.keys(uploadedGeoJsonMap || {});
     return (
-      <div className="space-y-3">
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-2">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Uploaded Layers</p>
-          <p className="text-xs text-slate-300">Manage your uploaded GeoJSON files</p>
+      <div className="space-y-4">
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3.5 mb-2 shadow-inner">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1 font-bold">Vector Data Storage</p>
+          <p className="text-xs text-slate-400 leading-relaxed">Manage your multi-layer GeoJSON uploads with independent visibility and styles.</p>
         </div>
 
         {files.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 opacity-40">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-2">
+          <div className="flex flex-col items-center justify-center py-12 bg-white/[0.02] border border-dashed border-white/10 rounded-2xl opacity-40">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-3">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
-            <p className="text-[0.65rem]">No files uploaded yet</p>
+            <p className="text-[0.65rem] font-medium uppercase tracking-widest">No active layers</p>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {files.map((fileName) => {
               const geojson = uploadedGeoJsonMap![fileName];
               const count = geojson?.features?.length ?? 0;
+              const firstColor = geojson?.features?.[0]?.properties?._color || "#00c8ff";
+
               return (
-                <div key={fileName} className="group bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.15] rounded-xl p-3 transition-all">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <div key={fileName} className="group bg-[#0a1628]/60 border border-white/[0.07] hover:border-cyan-500/30 hover:bg-[#0a1628]/80 rounded-2xl p-4 transition-all duration-300 shadow-lg">
+                  <div className="flex items-start gap-3.5">
+                    <div
+                      className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-lg transition-transform group-hover:scale-105"
+                      style={{ backgroundColor: `${firstColor}15`, border: `1px solid ${firstColor}30`, color: firstColor }}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
                         <polygon points="12 2 2 7 12 12 22 7 12 2" />
                         <polyline points="2 17 12 22 22 17" />
                         <polyline points="2 12 12 17 22 12" />
                       </svg>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[0.72rem] font-medium text-slate-200 truncate">{fileName}</p>
-                      <p className="text-[0.6rem] text-slate-500">{count} features</p>
+                    <div className="flex-1 min-w-0 pt-0.5">
+                      <p className="text-[0.8rem] font-bold text-slate-100 truncate mb-0.5 tracking-tight">{fileName}</p>
+                      <div className="flex items-center gap-2">
+                         <span className="text-[0.6rem] text-slate-500 font-mono bg-white/5 px-1.5 py-0.5 rounded border border-white/5">{count} feat</span>
+                         <div className="w-1 h-1 rounded-full bg-slate-700" />
+                         <span className="text-[0.6rem] text-slate-500 uppercase tracking-tighter font-bold">GeoJSON</span>
+                      </div>
                     </div>
+                  </div>
 
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                  <div className="mt-4 flex items-center justify-between gap-2 border-t border-white/5 pt-3">
+                    <div className="flex gap-2">
                       <button
                         onClick={() => {
                           if (!geojson?.features?.[0]?.geometry) return;
                           const coords = getMidCoords(geojson.features[0]);
                           if (coords) onFlyTo?.(coords[0], coords[1]);
                         }}
-                        title="Fly to"
-                        className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-cyan-400 hover:bg-cyan-400/10 rounded-lg transition-all cursor-pointer"
+                        className="px-3 py-1.5 bg-[#0891b2] text-white rounded-lg text-[0.6rem] font-bold flex items-center gap-1.5 hover:bg-[#06b6d4] transition-all cursor-pointer shadow-md active:scale-95"
                       >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2m8-10h2M2 12h2"/>
-                        </svg>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2m8-10h2M2 12h2"/></svg>
+                        Fly
                       </button>
 
                       <button
                         onClick={() => onOpen3D?.(fileName)}
-                        title="View in 3D"
-                        className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-orange-400 hover:bg-orange-400/10 rounded-lg transition-all cursor-pointer"
+                        className="px-3 py-1.5 bg-[#d97706] text-white rounded-lg text-[0.6rem] font-bold flex items-center gap-1.5 hover:bg-[#f59e0b] transition-all cursor-pointer shadow-md active:scale-95"
                       >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="m21 8-9-4-9 4 9 4 9-4z"/><path d="m21 12-9 4-9-4"/><path d="m21 16-9 4-9-4"/>
-                        </svg>
-                      </button>
-
-                      <button
-                        onClick={() => onDeleteGeoJSON?.(fileName)}
-                        title="Delete"
-                        className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all cursor-pointer"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
-                        </svg>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m21 8-9-4-9 4 9 4 9-4z"/><path d="m21 12-9 4-9-4"/><path d="m21 16-9 4-9-4"/></svg>
+                        3D
                       </button>
                     </div>
+
+                    <button
+                      onClick={() => onDeleteGeoJSON?.(fileName)}
+                      className="w-8 h-8 flex items-center justify-center bg-red-500/10 border border-red-500/20 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all cursor-pointer shadow-sm active:scale-90"
+                      title="Delete Layer"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" /></svg>
+                    </button>
+                  </div>
+
+                  {/* Style Selector */}
+                  <div className="mt-3 flex items-center gap-2.5">
+                     <div className="text-[0.55rem] text-slate-500 uppercase tracking-widest font-black">Theme</div>
+                     <div className="flex items-center gap-1.5">
+                       {["#00c8ff", "#a78bfa", "#34d399", "#fbbf24", "#f87171"].map(c => (
+                         <button
+                           key={c}
+                           onClick={() => {
+                             const updated = { ...geojson };
+                             updated.features = updated.features.map((f: any) => ({
+                               ...f,
+                               properties: { ...f.properties, _color: c, _fillColor: c }
+                             }));
+                             onGeoJSONUpload?.(updated, fileName, true);
+                           }}
+                           className={`w-4 h-4 rounded-full border border-white/20 transition-all cursor-pointer active:scale-75
+                             ${firstColor === c ? "ring-2 ring-cyan-400 ring-offset-2 ring-offset-[#0a1628] scale-110" : "hover:scale-110"}`}
+                           style={{ backgroundColor: c }}
+                         />
+                       ))}
+                     </div>
                   </div>
                 </div>
               );
@@ -1023,7 +1197,7 @@ export default function AnalysisSidebar({
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
   captures: any[];
-  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string) => void;
+  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string, isUpdate?: boolean) => void;
   onDeleteGeoJSON?: (fileName: string) => void;
   onOpen3D?: (fileName: string) => void;
   onStartImageOverlay?: (file: File) => void;
@@ -1108,6 +1282,7 @@ export default function AnalysisSidebar({
                   selectedFeature={selectedFeature}
                   uploadedGeoJsonMap={uploadedGeoJsonMap}
                   captures={captures}
+                  onGeoJSONUpload={onGeoJSONUpload}
                   onDeleteGeoJSON={onDeleteGeoJSON}
                   onOpen3D={onOpen3D}
                   onFlyTo={onFlyTo}

@@ -45,6 +45,7 @@ export default function MapPage() {
   const clearRef               = useRef<(() => void) | null>(null);
   const changeSatRef           = useRef<((sat: SatKey) => void) | null>(null);
   const changeIdxRef           = useRef<((idx: IdxKey) => void) | null>(null);
+  const changeOpacityRef       = useRef<((o: number) => void) | null>(null);
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
   const lastCoordsRef          = useRef<{ lat: number; lng: number }>({ lat: 30.0, lng: 31.0 });
 
@@ -122,7 +123,7 @@ export default function MapPage() {
   }, [uniData, mergedUploadedGeoJson]);
 
   // ── Stable callbacks ──────────────────────────────────────────────────────
-  const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json") => {
+  const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json", isUpdate: boolean = false) => {
     setUploadedGeoJsonMap((prev) => {
       // Check if this file name already exists AND if it has the same geometry roughly
       // (to avoid duplicating during the onDisplay -> onUpload cycle)
@@ -134,6 +135,10 @@ export default function MapPage() {
         if (JSON.stringify(oldFeat) === JSON.stringify(newFeat)) {
           return { ...prev, [fileName]: geojson };
         }
+      }
+
+      if (isUpdate && existing) {
+        return { ...prev, [fileName]: geojson };
       }
 
       let uniqueName = fileName;
@@ -151,7 +156,7 @@ export default function MapPage() {
       }
       return { ...prev, [uniqueName]: geojson };
     });
-    setLatestGeoJson(geojson);
+    if (!isUpdate) setLatestGeoJson(geojson);
   }, []);
 
   const handleDeleteGeoJSON = useCallback((fileName: string) => {
@@ -271,7 +276,7 @@ export default function MapPage() {
       selectedFeature={selectedFeature}
       uploadedGeoJsonMap={uploadedGeoJsonMap}
       captures={captures}
-      onGeoJSONUpload={handleGeoJSONUpload}
+      onGeoJSONUpload={(gj, name, isUp) => handleGeoJSONUpload(gj, name, isUp)}
       onDeleteGeoJSON={handleDeleteGeoJSON}
       onOpen3D={handleOpen3D}
       onStartImageOverlay={handleStartImageOverlay}
@@ -361,6 +366,7 @@ export default function MapPage() {
             clearRef={clearRef}
             onSatChange={(h) => { changeSatRef.current = h; }}
             onIdxChange={(h) => { changeIdxRef.current = h; }}
+              onOpacityChangeRegister={(h) => { changeOpacityRef.current = h; }}
             onImagePlacerRegister={(h) => { startImagePlacementRef.current = h; }}
             geoJsonData={geoJsonData}
             extraGeoJsonData={combinedGeoJson}
@@ -396,6 +402,7 @@ export default function MapPage() {
             <MapLayerBar
               onSatChange={(s) => changeSatRef.current?.(s)}
               onIdxChange={(i) => changeIdxRef.current?.(i)}
+              onOpacityChange={(o) => changeOpacityRef.current?.(o)}
             />
             {coords && (
               <CoordsPopup lat={coords.lat} lng={coords.lng} onClose={() => setCoords(null)} />
