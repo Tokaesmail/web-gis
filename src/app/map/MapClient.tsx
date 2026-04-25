@@ -14,11 +14,14 @@ import LeafletMap from "./LeafletMap";
 import CoordsPopup from "./CoordsPopup";
 import AITriggerButton from "./AITriggerButton";
 import Mapbox3DView from "./Mapbox3DView";
+import LayerPanel, { MapLayer } from "./LayerPanel";
+import ExportButton from "./ExportButton";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
 
 export default function MapPage() {
+  const { t, isRTL } = useLang();
   const [aiOpen,           setAiOpen]           = useState(false);
   const [isFullscreen,     setIsFullscreen]      = useState(false);
   const [activeTool,       setActiveTool]        = useState<DrawTool>("pointer");
@@ -40,6 +43,16 @@ export default function MapPage() {
   const [latestGeoJson,   setLatestGeoJson]   = useState<any>(null);
   const [extrusionCfg,    setExtrusionCfg]    = useState<any>(null);
 
+  // ── Layer panel state ────────────────────────────────────────────────────
+  const [layers, setLayers] = useState<MapLayer[]>([
+    { id: "contours",   name: "Contours",           nameAr: "خطوط الكنتور",     type: "vector", visible: true,  opacity: 1,    color: "#00d4ff", source: "Backend API · /gis/contours" },
+    { id: "osm",        name: "OpenStreetMap Base",  nameAr: "خريطة OSM الأساسية", type: "tile",   visible: true,  opacity: 1 },
+    { id: "satellite",  name: "Satellite Imagery",   nameAr: "صور الأقمار الصناعية", type: "raster", visible: false, opacity: 0.9,  source: "Esri World Imagery" },
+    { id: "ndvi-tile",  name: "NDVI Live Layer",     nameAr: "طبقة NDVI الحية",  type: "ndvi",   visible: false, opacity: 0.85, source: "Sentinel-2 via open-meteo" },
+    { id: "universities", name: "Universities",      nameAr: "الجامعات",         type: "vector", visible: true,  opacity: 1,    color: "#a855f7", source: "API · /api/universities" },
+  ]);
+  const [showLayerPanel, setShowLayerPanel] = useState(false);
+
   const flyToRef               = useRef<((lat: number, lng: number) => void) | null>(null);
   const clearRef               = useRef<(() => void) | null>(null);
   const changeSatRef           = useRef<((sat: SatKey) => void) | null>(null);
@@ -50,7 +63,6 @@ export default function MapPage() {
   // ── double-click tracking ─────────────────────────────────────────────────
   const lastClickTimeRef = useRef<number>(0);
 
-  const { isRTL } = useLang();
   const isRestored = useRef(false);
 
   // ── 1. localStorage restore ───────────────────────────────────────────────
@@ -260,6 +272,65 @@ export default function MapPage() {
     ]);
   }, []);
 
+  const handleDeleteCapture = useCallback((id: number, url: string) => {
+    try { URL.revokeObjectURL(url); } catch (e) {}
+    setCaptures((prev) => prev.filter((c) => c.id !== id));
+  }, []);
+
+  // ── Layer panel handlers ──────────────────────────────────────────────────
+  const handleLayerToggle  = useCallback((id: string, visible: boolean) => {
+    setLayers((prev) => prev.map((l) => l.id === id ? { ...l, visible } : l));
+    // Wire to map tile changes where applicable
+    if (id === "satellite" && visible) changeSatRef.current?.("esri_sat" as any);
+    if (id === "ndvi-tile" && visible) changeIdxRef.current?.("NDVI" as any);
+  }, []);
+
+  const handleLayerOpacity = useCallback((id: string, opacity: number) => {
+    setLayers((prev) => prev.map((l) => l.id === id ? { ...l, opacity } : l));
+  }, []);
+
+  const handleLayerColor   = useCallback((id: string, color: string) => {
+    setLayers((prev) => prev.map((l) => l.id === id ? { ...l, color } : l));
+  }, []);
+
+  const handleLayerRemove  = useCallback((id: string) => {
+    setLayers((prev) => prev.filter((l) => l.id !== id));
+    if (id === "contours") setGeoJsonData(null);
+  }, []);
+
+  const handleLayerZoom    = useCallback((id: string) => {
+    // Fly to appropriate location for the layer
+    if (id === "universities") flyToRef.current?.(30.05, 31.23);
+    if (id === "contours") flyToRef.current?.(30.05, 31.23);
+  }, []);
+
+  // Sync uploaded GeoJSON as layers
+  useEffect(() => {
+    const uploadedLayers: MapLayer[] = Object.entries(uploadedGeoJsonMap).map(([name, gj]) => ({
+      id: `uploaded_${name}`,
+      name, nameAr: name,
+      type: "vector" as const,
+      visible: true, opacity: 1, color: "#00d4ff",
+      featureCount: gj?.features?.length,
+      source: "Uploaded GeoJSON",
+    }));
+    setLayers((prev) => [
+      ...prev.filter((l) => !l.id.startsWith("uploaded_")),
+      ...uploadedLayers,
+    ]);
+  }, [uploadedGeoJsonMap]);
+
+  // Export data bundle
+  const exportData = useMemo(() => ({
+    coords: coords ?? undefined,
+    selectedArea: selectedArea.ha > 0 ? selectedArea : undefined,
+    layers: layers.map(({ id: _id, ...rest }) => rest),
+    geoJsonFeatures: [
+      ...(geoJsonData?.features ?? []),
+      ...(combinedGeoJson?.features ?? []),
+    ].slice(0, 200),
+  }), [coords, selectedArea, layers, geoJsonData, combinedGeoJson]);
+
   // ── Shared sidebar ────────────────────────────────────────────────────────
   const sharedSidebar = useMemo(() => (
     <AnalysisSidebar
@@ -368,21 +439,65 @@ export default function MapPage() {
         {/* ── 2D overlays ── */}
         {!view3D && (
           <>
-            {/* زرار 3D + hint */}
-            <div className="absolute top-3 left-3 z-[1100] flex items-center gap-2">
+            {/* ── Top-left controls bar ── */}
+            <div className="absolute top-3 left-3 z-[1100] flex items-center gap-2 flex-wrap">
+              {/* 3D View */}
               <button
+                id="tour-3d"
                 onClick={handleToggleView}
-                className="px-3 py-1.5 rounded-lg bg-[#0d1f3c] border border-white/10 text-slate-300 text-xs cursor-pointer hover:text-cyan-400 transition-all"
+                className="px-3 py-1.5 rounded-lg bg-[#0d1f3c] border border-white/10 text-slate-300 text-xs cursor-pointer hover:text-cyan-400 transition-all flex items-center gap-1.5"
               >
-                3D View
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                3D
               </button>
-              <span className="px-2 py-1 rounded-md bg-[#0a1628]/80 border border-white/[0.06] text-slate-500 text-[0.65rem] select-none">
-                أو Double-click على الخريطة
+
+              {/* Layers panel toggle */}
+              <button
+                onClick={() => setShowLayerPanel(p => !p)}
+                className={`px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-all flex items-center gap-1.5 ${showLayerPanel ? "bg-cyan-400/10 border-cyan-400/40 text-cyan-400" : "bg-[#0d1f3c] border-white/10 text-slate-300 hover:text-cyan-400"}`}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>
+                {isRTL ? "الطبقات" : "Layers"}
+              </button>
+
+
+              {/* Export button */}
+              <ExportButton data={exportData} />
+
+              <span className="px-2 py-1 rounded-md bg-[#0a1628]/80 border border-white/[0.06] text-slate-500 text-[0.65rem] select-none hidden sm:block">
+                {isRTL ? "دبل كليك للـ 3D" : "Double-click → 3D"}
               </span>
             </div>
 
+            {/* ── Floating Layer Panel ── */}
+            {showLayerPanel && (
+              <div className="absolute top-14 left-3 z-[1050] w-80 max-h-[70vh] overflow-y-auto rounded-2xl bg-[#070f1e]/95 backdrop-blur-xl border border-white/[0.07] shadow-2xl p-4 animate-fadeUp"
+                style={{ fontFamily: isRTL ? "'Noto Sans Arabic',sans-serif" : "'DM Sans',sans-serif" }}>
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-xs font-bold text-cyan-400 uppercase tracking-widest">{isRTL ? "إدارة الطبقات" : "Layer Manager"}</span>
+                  <button onClick={() => setShowLayerPanel(false)} className="text-slate-500 hover:text-slate-300 cursor-pointer p-1">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+                <LayerPanel
+                  layers={layers}
+                  onLayerToggle={handleLayerToggle}
+                  onLayerOpacity={handleLayerOpacity}
+                  onLayerColor={handleLayerColor}
+                  onLayerRemove={handleLayerRemove}
+                  onLayerZoom={handleLayerZoom}
+                />
+              </div>
+            )}
+
+
             <MapSearch onFlyTo={(lat, lng) => flyToRef.current?.(lat, lng)} />
-            <MapToolbar activeTool={activeTool} onToolChange={setActiveTool} onClear={handleClear} />
+            <MapToolbar
+              activeTool={activeTool}
+              onToolChange={setActiveTool}
+              onClear={handleClear}
+              isRTL={isRTL}
+            />
             <MapLayerBar
               onSatChange={(s) => changeSatRef.current?.(s)}
               onIdxChange={(i) => changeIdxRef.current?.(i)}
@@ -391,9 +506,41 @@ export default function MapPage() {
               <CoordsPopup lat={coords.lat} lng={coords.lng} onClose={() => setCoords(null)} />
             )}
 
-            {/* ── Capture Left Sidebar Preview ── */}
+            {/* ── Area / Feature Info Overlay ── */}
+            {selectedArea.ha > 0 && (
+              <div className={`absolute bottom-24 z-[1000] px-4 py-3 bg-[#0a1628]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl animate-fadeUp flex items-center gap-4 pointer-events-auto
+                ${isRTL ? "left-20" : "right-20"}`}>
+                <div className="w-10 h-10 rounded-xl bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-[0.65rem] text-slate-500 uppercase tracking-widest font-bold mb-0.5">
+                    {t.selectedArea}
+                  </p>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-xl font-bold text-slate-100 tracking-tight">{selectedArea.ha.toLocaleString()}</span>
+                    <span className="text-[0.7rem] font-medium text-cyan-400/80 uppercase">
+                      {t.hectares}
+                    </span>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setSelectedArea({ name: "Selected Area", ha: 0 })}
+                  className="ml-2 p-1.5 hover:bg-white/10 rounded-lg text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M18 6 6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            {/* ── Capture Sidebar Preview ── */}
             {captures.length > 0 && (
-              <div className="absolute top-20 left-19 right-16  z-[1000] w-48 space-y-3 animate-fadeUp max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto">
+              <div className={`absolute top-20 z-[1000] w-48 space-y-3 animate-fadeUp max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto
+                ${isRTL ? "left-16" : "right-16"}`}>
                 <div className="flex items-center justify-between bg-[#0a1628]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-2 sticky top-0 z-10">
                   <span className="text-[0.65rem] font-bold text-cyan-400 uppercase tracking-wider">Captures ({captures.length})</span>
                   <button onClick={() => setCaptures([])} className="text-[0.6rem] text-slate-500 hover:text-red-400 cursor-pointer">Clear</button>
@@ -413,7 +560,7 @@ export default function MapPage() {
                       </button>
                     </div>
                     <button 
-                      onClick={() => setCaptures(prev => prev.filter(c => c.id !== cap.id))}
+                      onClick={() => handleDeleteCapture(cap.id, cap.url)}
                       className="absolute top-1 right-1 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center text-white/60 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
                     >
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M18 6 6 18M6 6l12 12"/></svg>

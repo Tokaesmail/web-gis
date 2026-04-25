@@ -8,7 +8,9 @@
 // ④ الألوان للعرض بس — مش بتتبعت للباك
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useMapCanvas }      from "./useMapCanvas";
+import { useLang }           from "../_components/translations";
 import {
   DrawTool, SAT_LAYERS, INDEX_TILES,
   SatKey, IdxKey, LatLngPoint, CaptureMetadata,
@@ -41,6 +43,7 @@ interface Props {
   clearRef:       React.MutableRefObject<(() => void) | null>;
   onSatChange:    (handler: (sat: SatKey) => void) => void;
   onIdxChange:    (handler: (idx: IdxKey) => void) => void;
+  onOpacityChangeRegister?: (handler: (o: number) => void) => void;
   /** register an image placement workflow (2 clicks to place image) */
   onImagePlacerRegister?: (handler: (file: File) => void) => void;
   onCapture?:     (url: string) => void;
@@ -90,12 +93,13 @@ function getUniversityColor(from: number, to: number): { fill: string; stroke: s
 
 export default function LeafletMap({
   activeTool, onAreaSelected, onCoordsUpdate,
-  flyToRef, clearRef, onSatChange, onIdxChange, onCapture,
+  flyToRef, clearRef, onSatChange, onIdxChange, onOpacityChangeRegister, onCapture,
   geoJsonData, extraGeoJsonData, latestGeoJson, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
   onImagePlacerRegister,
   extrusionGeoJson,
   extrusionConfig,
 }: Props) {
+  const { t, isRTL } = useLang();
 
   const IMAGE_OVERLAYS_STORAGE_KEY = "leaflet_image_overlays_v1";
 
@@ -291,14 +295,37 @@ export default function LeafletMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onImagePlacerRegister, mapReady]);
 
-  // Escape cancels image placement
+  // Escape handler: cancels image placement or finishes drawings
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && placingImageRef.current) stopImagePlacement();
+      if (e.key === "Escape") {
+        if (placingImageRef.current) {
+          stopImagePlacement();
+        } else if (drawPointsRef.current.length > 0) {
+          const map = mapInstanceRef.current;
+          const L = LRef.current;
+          if (!map || !L) return;
+
+          const tool = activeToolRef.current;
+          if (tool === "polygon") {
+            if (drawPointsRef.current.length >= 3) {
+              finishPolygon(map, L);
+            } else {
+              toast.error(isRTL ? "يرجى رسم 3 نقاط على الأقل" : "Please draw at least 3 points");
+            }
+          } else if (tool === "measure") {
+            if (drawPointsRef.current.length >= 2) {
+              finishMeasure(map, L);
+            } else {
+              toast.error(isRTL ? "يرجى رسم نقطتين على الأقل" : "Please draw at least 2 points");
+            }
+          }
+        }
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [isRTL]);
 
   const drawExtrusions = () => {
     const map = mapInstanceRef.current;
@@ -697,7 +724,7 @@ export default function LeafletMap({
       const j = (i + 1) % pts.length;
       return acc + p[1] * pts[j][0] - pts[j][1] * p[0];
     }, 0)) / 2 * 12345).toFixed(1));
-    poly.bindPopup(`🔵 Polygon · ≈ ${area} ha`).openPopup();
+    poly.bindPopup(`🔵 ${t.polygon} · ≈ ${area} ${t.ha}`).openPopup();
     onAreaSelected("Drawn Polygon", area);
 
     const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
@@ -727,7 +754,7 @@ export default function LeafletMap({
     drawLayersRef.current.push(line);
     let dist = 0;
     for (let i = 1; i < pts.length; i++) dist += map.distance(pts[i - 1], pts[i]);
-    line.bindPopup(`📏 ${(dist / 1000).toFixed(3)} km`).openPopup();
+    line.bindPopup(`📏 ${(dist / 1000).toFixed(3)} ${t.km}`).openPopup();
 
     const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
     lastCoordsRef.current = coordinates;
@@ -905,6 +932,11 @@ export default function LeafletMap({
         }).addTo(map);
       });
 
+      onOpacityChangeRegister?.((o: number) => {
+        if (indexTileRef.current) indexTileRef.current.setOpacity(o);
+        if (labelsLayerRef.current) labelsLayerRef.current.setOpacity(o * 0.8 + 0.1);
+      });
+
       document.getElementById("map-zoom-in")?.addEventListener("click",  () => map.zoomIn());
       document.getElementById("map-zoom-out")?.addEventListener("click", () => map.zoomOut());
 
@@ -1024,6 +1056,14 @@ export default function LeafletMap({
         if (tool === "polygon") {
           const pts = drawPointsRef.current;
           const c   = TOOL_COLORS.polygon;
+
+          if (pts.length === 0) {
+            toast(isRTL ? "اضغط Esc لإنهاء الرسم وعرض النتائج" : "Press Esc to finish drawing and see results", {
+              icon: "⌨️",
+              duration: 5000,
+            });
+          }
+
           // لو في 3 نقاط وكليك قريب من النقطة الأولى → أقفل
           if (pts.length >= 3) {
             const firstPx = map.latLngToContainerPoint(L.latLng(pts[0][0], pts[0][1]));
@@ -1047,6 +1087,12 @@ export default function LeafletMap({
         // ── Measure ──────────────────────────────────────────────────────────
         if (tool === "measure") {
           const pts = drawPointsRef.current;
+          if (pts.length === 0) {
+            toast(isRTL ? "اضغط Esc لإنهاء القياس وعرض النتائج" : "Press Esc to finish measuring and see results", {
+              icon: "📏",
+              duration: 5000,
+            });
+          }
           pts.push([lat, lng]);
           drawLayersRef.current.push(
             L.circleMarker([lat, lng], { radius: 4, color: TOOL_COLORS.measure.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map)
@@ -1065,7 +1111,7 @@ export default function LeafletMap({
             const p1   = drawPointsRef.current[0];
             const rect = L.rectangle([p1, [lat, lng]], { color: c.stroke, weight: 2, fillColor: c.stroke, fillOpacity: 0.18 }).addTo(map);
             const area = parseFloat((Math.abs(p1[0] - lat) * Math.abs(p1[1] - lng) * 12345).toFixed(1));
-            rect.bindPopup(`📐 Rectangle · ≈ ${area} ha`).openPopup();
+            rect.bindPopup(`📐 ${t.rectangle} · ≈ ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(rect);
             onAreaSelected("Drawn Rectangle", area);
             if (canvasRef.current) {
@@ -1094,7 +1140,7 @@ export default function LeafletMap({
             const radius = map.distance(center, [lat, lng]);
             const circ   = L.circle(center, { radius, color: c.stroke, weight: 2, fillColor: c.stroke, fillOpacity: 0.18 }).addTo(map);
             const area   = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
-            circ.bindPopup(`🟢 Circle · R: ${radius.toFixed(0)} m · ≈ ${area} ha`).openPopup();
+            circ.bindPopup(`🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(circ);
             onAreaSelected("Drawn Circle", area);
             if (canvasRef.current) {
@@ -1115,14 +1161,6 @@ export default function LeafletMap({
             if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
           }
         }
-      });
-
-      // ── dblclick: يقفل البولجون / measure بدون zoom ───────────────────────
-      map.on("dblclick", (e: any) => {
-        const tool = activeToolRef.current;
-        if (tool === "polygon" && drawPointsRef.current.length >= 3) finishPolygon(map, L);
-        else if (tool === "measure" && drawPointsRef.current.length >= 2) finishMeasure(map, L);
-        // doubleClickZoom: false → مش بيزوم في أي حالة
       });
 
       // ── Mousemove (throttled via rAF) ────────────────────────────────────

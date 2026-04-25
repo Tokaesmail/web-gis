@@ -273,66 +273,53 @@ function NDVILivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
       .finally(() => setLoading(false));
   }, [coords?.[0], coords?.[1]]);
 
-  // ── No feature selected — show static mock ────────────────────────────────
+  // ── No feature selected ───────────────────────────────────────────────────
   if (!feature || !coords) {
-    const bars = [
-      { label: "23 Dec", value: 0.58 }, { label: "02 Jan", value: 0.61 },
-      { label: "12 Jan", value: 0.67 }, { label: "22 Jan", value: 0.70 },
-      { label: "01 Feb", value: 0.69 }, { label: "11 Feb", value: 0.72 },
-      { label: "16 Feb", value: 0.72 },
-    ];
-    const maxV = Math.max(...bars.map(b => b.value));
     return (
-      <div className="space-y-5">
+      <div className="space-y-4">
+        {/* CTA */}
+        <div className="bg-emerald-400/[0.05] border border-emerald-400/20 rounded-xl p-5 flex flex-col items-center text-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-emerald-400/10 border border-emerald-400/20 flex items-center justify-center">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="1.8">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-emerald-400 mb-1">Live NDVI Analysis</p>
+            <p className="text-[0.7rem] text-slate-400 leading-relaxed">
+              اضغط على أي خط كنتور أو feature على الخريطة لتحميل بيانات NDVI الحقيقية من Sentinel-2 عبر open-meteo
+            </p>
+          </div>
+          <div className="w-full h-px bg-white/[0.06]" />
+          <p className="text-[0.65rem] text-slate-500">Click any map feature to load live vegetation data</p>
+        </div>
+
+        {/* NDVI Scale */}
         <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">Mean NDVI Index</p>
-          <p className="text-3xl font-semibold text-emerald-400">0.72</p>
-          <p className="text-[0.65rem] text-slate-500 mt-1">↑ 0.04 from last month</p>
-          <div className="mt-3 h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
-            <div className="h-full rounded-full bg-emerald-400" style={{ width: "72%" }} />
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">NDVI Scale Reference</p>
+          <div className="h-3 rounded-full" style={{ background: "linear-gradient(to right,#8B0000,#FF4500,#FFD700,#ADFF2F,#006400)" }} />
+          <div className="flex justify-between mt-1.5">
+            {["-1 Water","","0","","+1 Dense"].map((l,i) => (
+              <span key={i} className="text-[0.52rem] text-slate-600">{l}</span>
+            ))}
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          {[{ label: "Coverage", value: "87%", color: "text-cyan-400" }, { label: "Stressed", value: "13%", color: "text-red-400" }, { label: "Area", value: "27.4 ha", color: "text-slate-200" }, { label: "Confidence", value: "94%", color: "text-violet-400" }].map(s => (
-            <div key={s.label} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2.5">
-              <p className={`text-sm font-semibold ${s.color}`}>{s.value}</p>
-              <p className="text-[0.62rem] text-slate-500 mt-0.5">{s.label}</p>
+
+        {/* What you'll get */}
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4 space-y-2.5">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">After selecting a feature</p>
+          {[
+            { icon: "📈", label: "30-Day NDVI Timeline",       color: "text-emerald-400" },
+            { icon: "💧", label: "Soil Moisture & Temperature", color: "text-blue-400"   },
+            { icon: "🌿", label: "Health Distribution Chart",   color: "text-green-400"  },
+            { icon: "🛰️", label: "Sentinel-2 via open-meteo",  color: "text-cyan-400"   },
+          ].map(item => (
+            <div key={item.label} className="flex items-center gap-2.5">
+              <span className="text-base">{item.icon}</span>
+              <span className={`text-[0.7rem] ${item.color}`}>{item.label}</span>
             </div>
           ))}
         </div>
-        <div>
-          <div className="flex justify-between text-[0.6rem] text-slate-500 mb-1"><span>Low</span><span>NDVI Scale</span><span>High</span></div>
-          <div className="h-2.5 rounded-full" style={{ background: "linear-gradient(to right,#8B0000,#FF4500,#FFD700,#ADFF2F,#006400)" }} />
-        </div>
-        <div>
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-2">30-Day Timeline</p>
-          <div className="flex items-end gap-1 h-16">
-            {bars.map((b, i) => (
-              <div key={i} className="flex-1 flex flex-col items-center gap-0.5 group cursor-pointer">
-                <div className="relative w-full">
-                  <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
-                    <div className="bg-[#0a1628] border border-white/10 text-[0.6rem] text-slate-200 px-1.5 py-0.5 rounded whitespace-nowrap">{b.value}</div>
-                  </div>
-                  <div className="w-full rounded-sm group-hover:brightness-125 transition-all"
-                    style={{ height: `${(b.value / maxV) * 56}px`, background: b.label === "16 Feb" ? "#22d3ee" : "#22c55e88" }} />
-                </div>
-                <span className="text-[0.5rem] text-slate-600 whitespace-nowrap overflow-hidden" style={{ maxWidth: 28, textOverflow: "clip" }}>{b.label.slice(0, 6)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div>
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Health Distribution</p>
-          <div className="flex items-center justify-around">
-            {[{ v: 72, c: "#22c55e", bg: "rgba(34,197,94,0.12)", l: "Healthy" }, { v: 13, c: "#ef4444", bg: "rgba(239,68,68,0.12)", l: "Stressed" }, { v: 15, c: "#f59e0b", bg: "rgba(245,158,11,0.12)", l: "Moderate" }].map(d => (
-              <div key={d.l} className="flex flex-col items-center gap-1">
-                <DonutChart value={d.v} total={100} color={d.c} bg={d.bg} />
-                <p className="text-[0.62rem] text-slate-400">{d.l}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-        <p className="text-[0.58rem] text-slate-600 text-center">Click a contour line for live data</p>
       </div>
     );
   }
@@ -828,75 +815,105 @@ function PanelContent({
   // ── LAYERS ──
   if (id === "layers") {
     const files = Object.keys(uploadedGeoJsonMap || {});
+
+    const exportLayerCSV = (fileName: string, geojson: any) => {
+      if (!geojson?.features?.length) return;
+      const allProps = new Set<string>();
+      geojson.features.forEach((f: any) => Object.keys(f.properties ?? {}).forEach((k: string) => allProps.add(k)));
+      const headers = ["geometry_type", ...Array.from(allProps)];
+      const rows = [headers, ...geojson.features.slice(0, 500).map((f: any) => [
+        f.geometry?.type ?? "",
+        ...Array.from(allProps).map(k => String((f.properties ?? {})[k as string] ?? "")),
+      ])];
+      const csv = "\uFEFF" + rows.map((r: any[]) => r.map((c: any) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+      a.download = fileName.replace(/\.geojson?$/i, "") + "_export.csv";
+      a.click();
+    };
+
     return (
       <div className="space-y-3">
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-2">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Uploaded Layers</p>
-          <p className="text-xs text-slate-300">Manage your uploaded GeoJSON files</p>
+        {/* Header */}
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 flex items-center justify-between">
+          <div>
+            <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Uploaded Layers</p>
+            <p className="text-xs text-slate-300">{files.length} {files.length === 1 ? "file" : "files"} loaded</p>
+          </div>
+          <div className="flex flex-col gap-0.5 text-[0.55rem] text-slate-600">
+            <span><span className="text-cyan-400">●</span> Fly to</span>
+            <span><span className="text-orange-400">●</span> 3D View</span>
+            <span><span className="text-emerald-400">●</span> Export CSV</span>
+          </div>
         </div>
 
         {files.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 opacity-40">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          <div className="flex flex-col items-center justify-center py-10 gap-2 opacity-40">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
-            <p className="text-[0.65rem]">No files uploaded yet</p>
+            <p className="text-[0.68rem]">No files uploaded yet</p>
+            <p className="text-[0.6rem] text-slate-600">Use the ↑ button below to upload</p>
           </div>
         ) : (
           <div className="space-y-2">
             {files.map((fileName) => {
               const geojson = uploadedGeoJsonMap![fileName];
-              const count = geojson?.features?.length ?? 0;
+              const count   = geojson?.features?.length ?? 0;
               return (
-                <div key={fileName} className="group bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.15] rounded-xl p-3 transition-all">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polygon points="12 2 2 7 12 12 22 7 12 2" />
-                        <polyline points="2 17 12 22 22 17" />
-                        <polyline points="2 12 12 17 22 12" />
+                <div key={fileName} className="bg-white/[0.03] border border-white/[0.07] hover:border-cyan-400/20 rounded-xl p-3 transition-all">
+                  {/* Name + count */}
+                  <div className="flex items-center gap-2.5 mb-2.5">
+                    <div className="w-7 h-7 rounded-lg bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                        <polyline points="2 17 12 22 22 17"/>
+                        <polyline points="2 12 12 17 22 12"/>
                       </svg>
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-[0.72rem] font-medium text-slate-200 truncate">{fileName}</p>
-                      <p className="text-[0.6rem] text-slate-500">{count} features</p>
+                      <p className="text-[0.73rem] font-medium text-slate-200 truncate">{fileName}</p>
+                      <p className="text-[0.6rem] text-slate-500">{count.toLocaleString()} features</p>
                     </div>
-                    
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                      <button
-                        onClick={() => {
-                          if (!geojson?.features?.[0]?.geometry) return;
-                          const coords = getMidCoords(geojson.features[0]);
-                          if (coords) onFlyTo?.(coords[0], coords[1]);
-                        }}
-                        title="Fly to"
-                        className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-cyan-400 hover:bg-cyan-400/10 rounded-lg transition-all cursor-pointer"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2m8-10h2M2 12h2"/>
-                        </svg>
-                      </button>
-                      
-                      <button
-                        onClick={() => onOpen3D?.(fileName)}
-                        title="View in 3D"
-                        className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-orange-400 hover:bg-orange-400/10 rounded-lg transition-all cursor-pointer"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="m21 8-9-4-9 4 9 4 9-4z"/><path d="m21 12-9 4-9-4"/><path d="m21 16-9 4-9-4"/>
-                        </svg>
-                      </button>
+                  </div>
 
-                      <button
-                        onClick={() => onDeleteGeoJSON?.(fileName)}
-                        title="Delete"
-                        className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all cursor-pointer"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
-                        </svg>
-                      </button>
-                    </div>
+                  {/* Action buttons — always visible */}
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => { const c = getMidCoords(geojson?.features?.[0]); if (c) onFlyTo?.(c[0], c[1]); }}
+                      title="Fly to"
+                      className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 text-cyan-400 hover:bg-cyan-400/20 transition-all cursor-pointer text-[0.62rem] font-semibold"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2m8-10h2M2 12h2"/></svg>
+                      Fly
+                    </button>
+
+                    <button
+                      onClick={() => onOpen3D?.(fileName)}
+                      title="View in 3D"
+                      className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg border border-orange-400/30 bg-orange-400/10 text-orange-400 hover:bg-orange-400/20 transition-all cursor-pointer text-[0.62rem] font-semibold"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m21 8-9-4-9 4 9 4 9-4z"/><path d="m21 12-9 4-9-4"/><path d="m21 16-9 4-9-4"/></svg>
+                      3D
+                    </button>
+
+                    <button
+                      onClick={() => exportLayerCSV(fileName, geojson)}
+                      title="Export as CSV"
+                      className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-400 hover:bg-emerald-400/20 transition-all cursor-pointer text-[0.62rem] font-semibold"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      CSV
+                    </button>
+
+                    <button
+                      onClick={() => onDeleteGeoJSON?.(fileName)}
+                      title="Delete layer"
+                      className="w-[30px] h-[30px] flex items-center justify-center rounded-lg border border-red-400/30 bg-red-400/10 text-red-400 hover:bg-red-400/20 transition-all cursor-pointer shrink-0"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
                   </div>
                 </div>
               );
@@ -1089,15 +1106,35 @@ export default function AnalysisSidebar({
                   {isRTL ? activeItem?.labelAr : activeItem?.labelEn}
                 </span>
               </div>
-              <button
-                onClick={() => togglePanel(activePanel as PanelId)}
-                className="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/[0.07] rounded-md transition-all cursor-pointer"
-                style={{ pointerEvents: "all" }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M18 6 6 18M6 6l12 12" />
-                </svg>
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => {
+                    if (activePanel === "layers") {
+                      const files = Object.keys(uploadedGeoJsonMap || {});
+                      const csv = "\uFEFF" + "File,Features\n" + files.map(f => `"${f}","${(uploadedGeoJsonMap?.[f]?.features?.length ?? 0)}"`).join("\n");
+                      const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" })); a.download = `layers_${Date.now()}.csv`; a.click();
+                    }
+                  }}
+                  title="Export panel data"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-cyan-400/40 bg-cyan-400/12 text-cyan-400 hover:bg-cyan-400/25 transition-all cursor-pointer text-[0.62rem] font-bold"
+                  style={{ pointerEvents: "all" }}
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  Export
+                </button>
+                <button
+                  onClick={() => togglePanel(activePanel as PanelId)}
+                  className="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/[0.07] rounded-md transition-all cursor-pointer"
+                  style={{ pointerEvents: "all" }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M18 6 6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             {/* Panel body */}
@@ -1170,6 +1207,7 @@ export default function AnalysisSidebar({
           {/* ── Upload GeoJSON button ── */}
           <div className="relative group w-full flex justify-center">
             <button
+              id="tour-upload"
               onClick={() => setUploadOpen((p) => !p)}
               className={`
                 relative w-9 h-9 rounded-lg flex items-center justify-center
