@@ -764,6 +764,8 @@ function PanelContent({
   onLayerOpacity,
   onLayerColor,
   onLayerRemove,
+  onLayerRename,
+  onLayerReorder,
   onLayerZoom,
   onLayer3D,
 }: {
@@ -781,6 +783,8 @@ function PanelContent({
   onLayerOpacity: (id: string, opacity: number) => void;
   onLayerColor: (id: string, color: string) => void;
   onLayerRemove: (id: string) => void;
+  onLayerRename: (id: string, newName: string) => void;
+  onLayerReorder?: (from: number, to: number) => void;
   onLayerZoom: (id: string) => void;
   onLayer3D?: (id: string) => void;
 }) {
@@ -927,6 +931,8 @@ function PanelContent({
         onLayerOpacity={onLayerOpacity}
         onLayerColor={onLayerColor}
         onLayerRemove={onLayerRemove}
+        onLayerRename={onLayerRename}
+        onLayerReorder={onLayerReorder}
         onLayerZoom={onLayerZoom}
         onLayer3D={onLayer3D}
       />
@@ -1050,6 +1056,8 @@ export default function AnalysisSidebar({
   onLayerOpacity,
   onLayerColor,
   onLayerRemove,
+  onLayerRename,
+  onLayerReorder,
   onLayerZoom,
   onLayer3D,
 }: {
@@ -1071,6 +1079,8 @@ export default function AnalysisSidebar({
   onLayerOpacity: (id: string, opacity: number) => void;
   onLayerColor: (id: string, color: string) => void;
   onLayerRemove: (id: string) => void;
+  onLayerRename: (id: string, newName: string) => void;
+  onLayerReorder?: (from: number, to: number) => void;
   onLayerZoom: (id: string) => void;
   onLayer3D?: (id: string) => void;
 }) {
@@ -1158,6 +1168,8 @@ export default function AnalysisSidebar({
                   onLayerOpacity={onLayerOpacity}
                   onLayerColor={onLayerColor}
                   onLayerRemove={onLayerRemove}
+                  onLayerRename={onLayerRename}
+                  onLayerReorder={onLayerReorder}
                   onLayerZoom={onLayerZoom}
                   onLayer3D={onLayer3D}
                 />

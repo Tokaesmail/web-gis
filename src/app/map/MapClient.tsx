@@ -117,21 +117,48 @@ export default function MapPage() {
     return () => { isMounted = false; };
   }, []);
 
-  // ── 4. Combined GeoJSON ───────────────────────────────────────────────────
+  // ── 4. Combined GeoJSON (Respecting Layer Order) ──────────────────────────
+  const combinedGeoJson = useMemo(() => {
+    const features: any[] = [];
+
+    // Iterate through layers to maintain order (bottom to top in array = bottom to top on map)
+    // Actually, usually the first in the list is the "top" one in UI,
+    // but in Leaflet/Canvas, the last one drawn is on top.
+    // We'll reverse the layers array for rendering if we want the top of the sidebar to be on top of the map.
+    const orderedLayers = [...layers].reverse();
+
+    orderedLayers.forEach(layer => {
+      if (!layer.visible) return;
+
+      if (layer.id === "universities" && uniData?.features) {
+        features.push(...uniData.features);
+      } else if (layer.id.startsWith("uploaded_")) {
+        const fileName = layer.id.replace("uploaded_", "");
+        const gj = uploadedGeoJsonMap[fileName];
+        if (gj?.features) {
+          // Apply layer-level opacity and color if needed?
+          // For now, we just aggregate. LeafletMap handles the rest.
+          features.push(...gj.features.map((f: any) => ({
+            ...f,
+            properties: {
+              ...f.properties,
+              _color: layer.color,
+              _opacity: layer.opacity
+            }
+          })));
+        }
+      }
+    });
+
+    return { type: "FeatureCollection", features } as any;
+  }, [layers, uniData, uploadedGeoJsonMap]);
+
   const mergedUploadedGeoJson = useMemo(() => {
     const features = Object.values(uploadedGeoJsonMap).flatMap(
       (gj: any) => gj?.features ?? []
     );
     return { type: "FeatureCollection", features } as any;
   }, [uploadedGeoJsonMap]);
-
-  const combinedGeoJson = useMemo(() => {
-    const features = [
-      ...(uniData?.features ?? []),
-      ...(mergedUploadedGeoJson?.features ?? []),
-    ];
-    return { type: "FeatureCollection", features } as any;
-  }, [uniData, mergedUploadedGeoJson]);
 
   // ── Stable callbacks ──────────────────────────────────────────────────────
   const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json", isUpdate: boolean = false) => {
@@ -298,6 +325,33 @@ export default function MapPage() {
     setLayers((prev) => prev.map((l) => l.id === id ? { ...l, color } : l));
   }, []);
 
+  const handleLayerReorder = useCallback((fromIndex: number, toIndex: number) => {
+    setLayers((prev) => {
+      const result = [...prev];
+      const [removed] = result.splice(fromIndex, 1);
+      result.splice(toIndex, 0, removed);
+      return result;
+    });
+  }, []);
+
+  const handleLayerRename = useCallback((id: string, newName: string) => {
+    if (id.startsWith("uploaded_")) {
+      const oldName = id.replace("uploaded_", "");
+      setUploadedGeoJsonMap((prev) => {
+        if (!prev[oldName]) return prev;
+        const next = { ...prev };
+        const data = next[oldName];
+        delete next[oldName];
+        next[newName] = data;
+        return next;
+      });
+    } else {
+      setLayers((prev) =>
+        prev.map((l) => (l.id === id ? { ...l, name: newName, nameAr: newName } : l))
+      );
+    }
+  }, []);
+
   const handleLayerRemove  = useCallback((id: string) => {
     setLayers((prev) => prev.filter((l) => l.id !== id));
     if (id === "contours") setGeoJsonData(null);
@@ -336,18 +390,27 @@ export default function MapPage() {
 
   // Sync uploaded GeoJSON as layers
   useEffect(() => {
-    const uploadedLayers: MapLayer[] = Object.entries(uploadedGeoJsonMap).map(([name, gj]) => ({
-      id: `uploaded_${name}`,
-      name, nameAr: name,
-      type: "vector" as const,
-      visible: true, opacity: 1, color: "#00d4ff",
-      featureCount: gj?.features?.length,
-      source: "Uploaded GeoJSON",
-    }));
-    setLayers((prev) => [
-      ...prev.filter((l) => !l.id.startsWith("uploaded_")),
-      ...uploadedLayers,
-    ]);
+    const uploadedIds = Object.keys(uploadedGeoJsonMap).map(name => `uploaded_${name}`);
+
+    setLayers((prev) => {
+      // 1. Remove layers that are no longer in uploadedGeoJsonMap
+      const filtered = prev.filter(l => !l.id.startsWith("uploaded_") || uploadedIds.includes(l.id));
+
+      // 2. Add new layers that are not yet in the layers state
+      const existingIds = filtered.map(l => l.id);
+      const newLayers: MapLayer[] = Object.entries(uploadedGeoJsonMap)
+        .filter(([name]) => !existingIds.includes(`uploaded_${name}`))
+        .map(([name, gj]) => ({
+          id: `uploaded_${name}`,
+          name, nameAr: name,
+          type: "vector" as const,
+          visible: true, opacity: 1, color: "#00d4ff",
+          featureCount: gj?.features?.length,
+          source: "Uploaded GeoJSON",
+        }));
+
+      return [...newLayers, ...filtered]; // Add new ones to top
+    });
   }, [uploadedGeoJsonMap]);
 
   // Export data bundle
@@ -389,6 +452,8 @@ export default function MapPage() {
       onLayerOpacity={handleLayerOpacity}
       onLayerColor={handleLayerColor}
       onLayerRemove={handleLayerRemove}
+      onLayerRename={handleLayerRename}
+      onLayerReorder={handleLayerReorder}
       onLayerZoom={handleLayerZoom}
       onLayer3D={handleOpen3D}
     />

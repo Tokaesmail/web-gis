@@ -63,6 +63,8 @@ interface MapViewToggleProps {
   onLayerOpacity: (id: string, opacity: number) => void;
   onLayerColor: (id: string, color: string) => void;
   onLayerRemove: (id: string) => void;
+  onLayerRename: (id: string, newName: string) => void;
+  onLayerReorder?: (from: number, to: number) => void;
   onLayerZoom: (id: string) => void;
 }
 
@@ -89,6 +91,8 @@ export default function MapViewToggle(props: MapViewToggleProps) {
       onLayerOpacity={props.onLayerOpacity}
       onLayerColor={props.onLayerColor}
       onLayerRemove={props.onLayerRemove}
+      onLayerRename={props.onLayerRename}
+      onLayerReorder={props.onLayerReorder}
       onLayerZoom={props.onLayerZoom}
     />
   );
