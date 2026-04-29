@@ -51,12 +51,12 @@ export default function MapPage() {
     { id: "ndvi-tile",  name: "NDVI Live Layer",     nameAr: "طبقة NDVI الحية",  type: "ndvi",   visible: false, opacity: 0.85, source: "Sentinel-2 via open-meteo" },
     { id: "universities", name: "Universities",      nameAr: "الجامعات",         type: "vector", visible: true,  opacity: 1,    color: "#a855f7", source: "API · /api/universities" },
   ]);
-  const [showLayerPanel, setShowLayerPanel] = useState(false);
 
   const flyToRef               = useRef<((lat: number, lng: number) => void) | null>(null);
   const clearRef               = useRef<(() => void) | null>(null);
   const changeSatRef           = useRef<((sat: SatKey) => void) | null>(null);
   const changeIdxRef           = useRef<((idx: IdxKey) => void) | null>(null);
+  const changeOpacityRef       = useRef<((o: number) => void) | null>(null);
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
   const lastCoordsRef          = useRef<{ lat: number; lng: number }>({ lat: 30.0, lng: 31.0 });
 
@@ -117,7 +117,42 @@ export default function MapPage() {
     return () => { isMounted = false; };
   }, []);
 
-  // ── 4. Combined GeoJSON ───────────────────────────────────────────────────
+  // ── 4. Combined GeoJSON (Respecting Layer Order) ──────────────────────────
+  const combinedGeoJson = useMemo(() => {
+    const features: any[] = [];
+    
+    // Iterate through layers to maintain order (bottom to top in array = bottom to top on map)
+    // Actually, usually the first in the list is the "top" one in UI, 
+    // but in Leaflet/Canvas, the last one drawn is on top.
+    // We'll reverse the layers array for rendering if we want the top of the sidebar to be on top of the map.
+    const orderedLayers = [...layers].reverse();
+
+    orderedLayers.forEach(layer => {
+      if (!layer.visible) return;
+
+      if (layer.id === "universities" && uniData?.features) {
+        features.push(...uniData.features);
+      } else if (layer.id.startsWith("uploaded_")) {
+        const fileName = layer.id.replace("uploaded_", "");
+        const gj = uploadedGeoJsonMap[fileName];
+        if (gj?.features) {
+          // Apply layer-level opacity and color if needed? 
+          // For now, we just aggregate. LeafletMap handles the rest.
+          features.push(...gj.features.map((f: any) => ({
+            ...f,
+            properties: { 
+              ...f.properties, 
+              _color: layer.color,
+              _opacity: layer.opacity 
+            }
+          })));
+        }
+      }
+    });
+
+    return { type: "FeatureCollection", features } as any;
+  }, [layers, uniData, uploadedGeoJsonMap]);
+
   const mergedUploadedGeoJson = useMemo(() => {
     const features = Object.values(uploadedGeoJsonMap).flatMap(
       (gj: any) => gj?.features ?? []
@@ -125,16 +160,8 @@ export default function MapPage() {
     return { type: "FeatureCollection", features } as any;
   }, [uploadedGeoJsonMap]);
 
-  const combinedGeoJson = useMemo(() => {
-    const features = [
-      ...(uniData?.features ?? []),
-      ...(mergedUploadedGeoJson?.features ?? []),
-    ];
-    return { type: "FeatureCollection", features } as any;
-  }, [uniData, mergedUploadedGeoJson]);
-
   // ── Stable callbacks ──────────────────────────────────────────────────────
-  const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json") => {
+  const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json", isUpdate: boolean = false) => {
     setUploadedGeoJsonMap((prev) => {
       // Check if this file name already exists AND if it has the same geometry roughly
       // (to avoid duplicating during the onDisplay -> onUpload cycle)
@@ -146,6 +173,10 @@ export default function MapPage() {
         if (JSON.stringify(oldFeat) === JSON.stringify(newFeat)) {
           return { ...prev, [fileName]: geojson };
         }
+      }
+
+      if (isUpdate && existing) {
+        return { ...prev, [fileName]: geojson };
       }
 
       let uniqueName = fileName;
@@ -163,7 +194,7 @@ export default function MapPage() {
       }
       return { ...prev, [uniqueName]: geojson };
     });
-    setLatestGeoJson(geojson);
+    if (!isUpdate) setLatestGeoJson(geojson);
   }, []);
 
   const handleDeleteGeoJSON = useCallback((fileName: string) => {
@@ -287,37 +318,124 @@ export default function MapPage() {
 
   const handleLayerOpacity = useCallback((id: string, opacity: number) => {
     setLayers((prev) => prev.map((l) => l.id === id ? { ...l, opacity } : l));
+    changeOpacityRef.current?.(opacity);
   }, []);
+
 
   const handleLayerColor   = useCallback((id: string, color: string) => {
     setLayers((prev) => prev.map((l) => l.id === id ? { ...l, color } : l));
   }, []);
 
+  const handleLayerReorder = useCallback((fromIndex: number, toIndex: number) => {
+    setLayers((prev) => {
+      const result = [...prev];
+      const [removed] = result.splice(fromIndex, 1);
+      result.splice(toIndex, 0, removed);
+      return result;
+    });
+  }, []);
+
+  const handleLayerRename = useCallback((id: string, newName: string) => {
+    if (id.startsWith("uploaded_")) {
+      const oldName = id.replace("uploaded_", "");
+      setUploadedGeoJsonMap((prev) => {
+        if (!prev[oldName]) return prev;
+        const next = { ...prev };
+        const data = next[oldName];
+        delete next[oldName];
+        next[newName] = data;
+        return next;
+      });
+    } else {
+      setLayers((prev) =>
+        prev.map((l) => (l.id === id ? { ...l, name: newName, nameAr: newName } : l))
+      );
+    }
+  }, []);
+
   const handleLayerRemove  = useCallback((id: string) => {
     setLayers((prev) => prev.filter((l) => l.id !== id));
     if (id === "contours") setGeoJsonData(null);
-  }, []);
+    if (id.startsWith("uploaded_")) {
+        const fileName = id.replace("uploaded_", "");
+        handleDeleteGeoJSON(fileName);
+    }
+  }, [handleDeleteGeoJSON]);
 
   const handleLayerZoom    = useCallback((id: string) => {
     // Fly to appropriate location for the layer
     if (id === "universities") flyToRef.current?.(30.05, 31.23);
     if (id === "contours") flyToRef.current?.(30.05, 31.23);
-  }, []);
+    if (id.startsWith("uploaded_")) {
+        const fileName = id.replace("uploaded_", "");
+        const gj = uploadedGeoJsonMap[fileName];
+        if (gj?.features?.[0]?.geometry) {
+            const feat = gj.features[0];
+            const getCenter = (g: any): [number, number] | null => {
+              if (!g?.coordinates) return null;
+              try {
+                if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
+                if (g.type === "LineString" || g.type === "MultiPoint") {
+                  const mid = g.coordinates[Math.floor(g.coordinates.length / 2)];
+                  return [mid[1], mid[0]];
+                }
+                if (g.type === "Polygon" || g.type === "MultiLineString") {
+                  const first = g.coordinates[0];
+                  const mid = first[Math.floor(first.length / 2)];
+                  return [mid[1], mid[0]];
+                }
+                if (g.type === "MultiPolygon") {
+                  const firstPoly = g.coordinates[0];
+                  const firstRing = firstPoly[0];
+                  const mid = firstRing[Math.floor(firstRing.length / 2)];
+                  return [mid[1], mid[0]];
+                }
+                const findFirst = (c: any): [number, number] | null => {
+                  if (Array.isArray(c) && typeof c[0] === "number") return [c[1], c[0]];
+                  if (Array.isArray(c)) {
+                    for (const sub of c) {
+                      const res = findFirst(sub);
+                      if (res) return res;
+                    }
+                  }
+                  return null;
+                };
+                return findFirst(g.coordinates);
+              } catch (e) {
+                return null;
+              }
+            };
+            const c = getCenter(feat.geometry);
+            if (c && Number.isFinite(c[0]) && Number.isFinite(c[1])) {
+              flyToRef.current?.(c[0], c[1]);
+            }
+        }
+    }
+  }, [uploadedGeoJsonMap]);
 
   // Sync uploaded GeoJSON as layers
   useEffect(() => {
-    const uploadedLayers: MapLayer[] = Object.entries(uploadedGeoJsonMap).map(([name, gj]) => ({
-      id: `uploaded_${name}`,
-      name, nameAr: name,
-      type: "vector" as const,
-      visible: true, opacity: 1, color: "#00d4ff",
-      featureCount: gj?.features?.length,
-      source: "Uploaded GeoJSON",
-    }));
-    setLayers((prev) => [
-      ...prev.filter((l) => !l.id.startsWith("uploaded_")),
-      ...uploadedLayers,
-    ]);
+    const uploadedIds = Object.keys(uploadedGeoJsonMap).map(name => `uploaded_${name}`);
+    
+    setLayers((prev) => {
+      // 1. Remove layers that are no longer in uploadedGeoJsonMap
+      const filtered = prev.filter(l => !l.id.startsWith("uploaded_") || uploadedIds.includes(l.id));
+      
+      // 2. Add new layers that are not yet in the layers state
+      const existingIds = filtered.map(l => l.id);
+      const newLayers: MapLayer[] = Object.entries(uploadedGeoJsonMap)
+        .filter(([name]) => !existingIds.includes(`uploaded_${name}`))
+        .map(([name, gj]) => ({
+          id: `uploaded_${name}`,
+          name, nameAr: name,
+          type: "vector" as const,
+          visible: true, opacity: 1, color: "#00d4ff",
+          featureCount: gj?.features?.length,
+          source: "Uploaded GeoJSON",
+        }));
+        
+      return [...newLayers, ...filtered]; // Add new ones to top
+    });
   }, [uploadedGeoJsonMap]);
 
   // Export data bundle
@@ -337,7 +455,7 @@ export default function MapPage() {
       selectedFeature={selectedFeature}
       uploadedGeoJsonMap={uploadedGeoJsonMap}
       captures={captures}
-      onGeoJSONUpload={handleGeoJSONUpload}
+      onGeoJSONUpload={(gj, name, isUp) => handleGeoJSONUpload(gj, name, isUp)}
       onDeleteGeoJSON={handleDeleteGeoJSON}
       onOpen3D={handleOpen3D}
       onStartImageOverlay={handleStartImageOverlay}
@@ -354,6 +472,15 @@ export default function MapPage() {
           return [];
         });
       }}
+      layers={layers}
+      onLayerToggle={handleLayerToggle}
+      onLayerOpacity={handleLayerOpacity}
+      onLayerColor={handleLayerColor}
+      onLayerRemove={handleLayerRemove}
+      onLayerRename={handleLayerRename}
+      onLayerReorder={handleLayerReorder}
+      onLayerZoom={handleLayerZoom}
+      onLayer3D={handleOpen3D}
     />
   ), [
     selectedFeature,
@@ -367,6 +494,13 @@ export default function MapPage() {
     handleFlyTo,
     handleClose3D,
     activePanel,
+    layers,
+    handleLayerToggle,
+    handleLayerOpacity,
+    handleLayerColor,
+    handleLayerRemove,
+    handleLayerZoom,
+    handleOpen3D,
   ]);
 
   const toggle2DButton = useMemo(() => (
@@ -427,6 +561,7 @@ export default function MapPage() {
             clearRef={clearRef}
             onSatChange={(h) => { changeSatRef.current = h; }}
             onIdxChange={(h) => { changeIdxRef.current = h; }}
+              onOpacityChangeRegister={(h) => { changeOpacityRef.current = h; }}
             onImagePlacerRegister={(h) => { startImagePlacementRef.current = h; }}
             geoJsonData={geoJsonData}
             extraGeoJsonData={combinedGeoJson}
@@ -443,7 +578,6 @@ export default function MapPage() {
             <div className="absolute top-3 left-3 z-[1100] flex items-center gap-2 flex-wrap">
               {/* 3D View */}
               <button
-                id="tour-3d"
                 onClick={handleToggleView}
                 className="px-3 py-1.5 rounded-lg bg-[#0d1f3c] border border-white/10 text-slate-300 text-xs cursor-pointer hover:text-cyan-400 transition-all flex items-center gap-1.5"
               >
@@ -451,45 +585,19 @@ export default function MapPage() {
                 3D
               </button>
 
-              {/* Layers panel toggle */}
+              {/* Layers panel toggle (now opens sidebar) */}
               <button
-                onClick={() => setShowLayerPanel(p => !p)}
-                className={`px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-all flex items-center gap-1.5 ${showLayerPanel ? "bg-cyan-400/10 border-cyan-400/40 text-cyan-400" : "bg-[#0d1f3c] border-white/10 text-slate-300 hover:text-cyan-400"}`}
+                onClick={() => setActivePanel("layers")}
+                className={`px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-all flex items-center gap-1.5 ${activePanel === "layers" ? "bg-cyan-400/10 border-cyan-400/40 text-cyan-400" : "bg-[#0d1f3c] border-white/10 text-slate-300 hover:text-cyan-400"}`}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>
                 {isRTL ? "الطبقات" : "Layers"}
               </button>
 
-
-              {/* Export button */}
-              <ExportButton data={exportData} />
-
               <span className="px-2 py-1 rounded-md bg-[#0a1628]/80 border border-white/[0.06] text-slate-500 text-[0.65rem] select-none hidden sm:block">
                 {isRTL ? "دبل كليك للـ 3D" : "Double-click → 3D"}
               </span>
             </div>
-
-            {/* ── Floating Layer Panel ── */}
-            {showLayerPanel && (
-              <div className="absolute top-14 left-3 z-[1050] w-80 max-h-[70vh] overflow-y-auto rounded-2xl bg-[#070f1e]/95 backdrop-blur-xl border border-white/[0.07] shadow-2xl p-4 animate-fadeUp"
-                style={{ fontFamily: isRTL ? "'Noto Sans Arabic',sans-serif" : "'DM Sans',sans-serif" }}>
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-xs font-bold text-cyan-400 uppercase tracking-widest">{isRTL ? "إدارة الطبقات" : "Layer Manager"}</span>
-                  <button onClick={() => setShowLayerPanel(false)} className="text-slate-500 hover:text-slate-300 cursor-pointer p-1">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  </button>
-                </div>
-                <LayerPanel
-                  layers={layers}
-                  onLayerToggle={handleLayerToggle}
-                  onLayerOpacity={handleLayerOpacity}
-                  onLayerColor={handleLayerColor}
-                  onLayerRemove={handleLayerRemove}
-                  onLayerZoom={handleLayerZoom}
-                />
-              </div>
-            )}
-
 
             <MapSearch onFlyTo={(lat, lng) => flyToRef.current?.(lat, lng)} />
             <MapToolbar
@@ -497,10 +605,22 @@ export default function MapPage() {
               onToolChange={setActiveTool}
               onClear={handleClear}
               isRTL={isRTL}
+              globalExportData={{
+                title: "GeoSense AI — Comprehensive Global Report",
+                selectedArea: selectedArea.ha > 0 ? selectedArea : undefined,
+                coords: coords ?? undefined,
+                layers: layers.map(({ id: _id, ...rest }) => rest),
+                geoJsonFeatures: [
+                  ...(geoJsonData?.features ?? []),
+                  ...(combinedGeoJson?.features ?? []),
+                ].slice(0, 100),
+                timestamp: new Date().toISOString()
+              }}
             />
             <MapLayerBar
               onSatChange={(s) => changeSatRef.current?.(s)}
               onIdxChange={(i) => changeIdxRef.current?.(i)}
+              onOpacityChange={(o) => changeOpacityRef.current?.(o)}
             />
             {coords && (
               <CoordsPopup lat={coords.lat} lng={coords.lng} onClose={() => setCoords(null)} />
@@ -548,7 +668,9 @@ export default function MapPage() {
                 {captures.map((cap) => (
                   <div key={cap.id} className="group relative bg-[#0a1628]/95 backdrop-blur-md border border-white/10 rounded-xl overflow-hidden shadow-xl">
                     <div className="aspect-video bg-black/40">
-                      <img src={cap.url} className="w-full h-full object-cover" alt="Capture" />
+                      {cap?.url && (
+  <img src={cap.url} className="w-full h-full object-cover" />
+)}
                     </div>
                     <div className="p-2 flex items-center justify-between">
                       <span className="text-[0.55rem] text-slate-500">{new Date(cap.createdAt).toLocaleTimeString()}</span>

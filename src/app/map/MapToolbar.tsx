@@ -84,16 +84,20 @@ const TOOLS: { id: DrawTool; icon: React.ReactNode; tKey: "pointer" | "polygon" 
   },
 ];
 
+import ExportButton from "./ExportButton";
+
 export default function MapToolbar({
   activeTool,
   onToolChange,
   onClear,
   isRTL,
+  globalExportData,
 }: {
   activeTool: DrawTool;
   onToolChange: (t: DrawTool) => void;
   onClear: () => void;
   isRTL?: boolean;
+  globalExportData?: any;
 }) {
   const { t } = useLang();
 
@@ -146,6 +150,14 @@ export default function MapToolbar({
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Global Export button */}
+      <div className="bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-lg">
+        <ExportButton 
+          data={globalExportData || { title: "GeoSense AI — Global Report" }} 
+          compact 
+        />
       </div>
 
       {/* Zoom controls */}

@@ -58,6 +58,14 @@ interface MapViewToggleProps {
   onExtrusionConfig?: (cfg: { enabled: boolean; heightProperty?: string; defaultHeightM?: number }) => void;
   onFlyTo?: (lat: number, lng: number) => void;
   onClearCaptures: () => void;
+  layers: any[];
+  onLayerToggle: (id: string, visible: boolean) => void;
+  onLayerOpacity: (id: string, opacity: number) => void;
+  onLayerColor: (id: string, color: string) => void;
+  onLayerRemove: (id: string) => void;
+  onLayerRename: (id: string, newName: string) => void;
+  onLayerReorder?: (from: number, to: number) => void;
+  onLayerZoom: (id: string) => void;
 }
 
 type ViewMode = "2d" | "3d";
@@ -78,6 +86,14 @@ export default function MapViewToggle(props: MapViewToggleProps) {
       onExtrusionConfig={props.onExtrusionConfig}
       onFlyTo={props.onFlyTo}
       onClearCaptures={props.onClearCaptures}
+      layers={props.layers}
+      onLayerToggle={props.onLayerToggle}
+      onLayerOpacity={props.onLayerOpacity}
+      onLayerColor={props.onLayerColor}
+      onLayerRemove={props.onLayerRemove}
+      onLayerRename={props.onLayerRename}
+      onLayerReorder={props.onLayerReorder}
+      onLayerZoom={props.onLayerZoom}
     />
   );
 

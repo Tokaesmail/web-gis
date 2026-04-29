@@ -22,36 +22,15 @@ interface Props {
   onLayerOpacity: (id: string, opacity: number) => void;
   onLayerColor: (id: string, color: string) => void;
   onLayerRemove: (id: string) => void;
+  onLayerRename: (id: string, newName: string) => void;
+  onLayerReorder?: (from: number, to: number) => void;
   onLayerZoom: (id: string) => void;
-}
-
-// ─── Layer type badge ──────────────────────────────────────────────────────────
-function TypeBadge({ type }: { type: MapLayer["type"] }) {
-  const cfg = {
-    vector: { label: "V", bg: "rgba(0,212,255,0.12)", color: "#00d4ff", title: "Vector" },
-    raster: { label: "R", bg: "rgba(168,85,247,0.12)", color: "#a855f7", title: "Raster" },
-    tile:   { label: "T", bg: "rgba(251,146,60,0.12)", color: "#fb923c", title: "Tile" },
-    ndvi:   { label: "N", bg: "rgba(34,197,94,0.12)",  color: "#22c55e", title: "NDVI"   },
-  }[type];
-  return (
-    <span
-      title={cfg.title}
-      style={{
-        width: 20, height: 20, borderRadius: 5,
-        background: cfg.bg, color: cfg.color,
-        fontSize: 9, fontWeight: 700, letterSpacing: "0.04em",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        flexShrink: 0,
-      }}
-    >
-      {cfg.label}
-    </span>
-  );
+  onLayer3D?: (id: string) => void;
 }
 
 // ─── Single layer row ──────────────────────────────────────────────────────────
 function LayerRow({
-  layer, isRTL, onToggle, onOpacity, onColor, onRemove, onZoom,
+  layer, isRTL, onToggle, onOpacity, onColor, onRemove, onRename, onZoom, on3D, index, onMoveUp, onMoveDown, onDragReorder
 }: {
   layer: MapLayer;
   isRTL: boolean;
@@ -59,25 +38,91 @@ function LayerRow({
   onOpacity: (v: number) => void;
   onColor: (v: string) => void;
   onRemove: () => void;
+  onRename: (newName: string) => void;
   onZoom: () => void;
+  on3D?: () => void;
+  index: number;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  onDragReorder?: (from: number, to: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [showLayerName, setShowLayerName] = useState(false);
+  const typeLabel = {
+    vector: isRTL ? "متجه" : "Vector",
+    raster: isRTL ? "راستر" : "Raster",
+    tile: isRTL ? "بلاطات" : "Tile",
+    ndvi: "NDVI",
+  }[layer.type];
 
   return (
     <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/layer-index", String(index));
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const raw = e.dataTransfer.getData("text/layer-index");
+        const from = Number(raw);
+        if (!Number.isNaN(from) && from !== index) onDragReorder?.(from, index);
+      }}
       style={{
         background: "rgba(255,255,255,0.02)",
-        border: "1px solid rgba(255,255,255,0.06)",
+        border: dragOver ? "1px solid rgba(0,212,255,0.45)" : "1px solid rgba(255,255,255,0.06)",
         borderRadius: 10,
         overflow: "hidden",
         transition: "border-color .2s",
       }}
       onMouseEnter={(e) => (e.currentTarget.style.borderColor = "rgba(0,212,255,0.2)")}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)")}
+      onMouseLeave={(e) => {
+        if (!dragOver) e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
+      }}
     >
       {/* Header row */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px" }}>
+        {/* Drag handle (new) */}
+        <span
+          title={isRTL ? "اسحب لإعادة الترتيب" : "Drag to reorder"}
+          style={{ color: "#475569", flexShrink: 0, cursor: "grab", display: "inline-flex", alignItems: "center" }}
+        >
+          <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
+            <circle cx="2" cy="2" r="1.2" />
+            <circle cx="8" cy="2" r="1.2" />
+            <circle cx="2" cy="7" r="1.2" />
+            <circle cx="8" cy="7" r="1.2" />
+            <circle cx="2" cy="12" r="1.2" />
+            <circle cx="8" cy="12" r="1.2" />
+          </svg>
+        </span>
+
+        {/* Reorder controls */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+           <button onClick={(e) => { e.stopPropagation(); onMoveUp?.(); }} disabled={!onMoveUp} style={{ background: "none", border: "none", padding: 0, cursor: onMoveUp ? "pointer" : "default", color: onMoveUp ? "#475569" : "transparent" }}>
+             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="18 15 12 9 6 15"/></svg>
+           </button>
+           <button onClick={(e) => { e.stopPropagation(); onMoveDown?.(); }} disabled={!onMoveDown} style={{ background: "none", border: "none", padding: 0, cursor: onMoveDown ? "pointer" : "default", color: onMoveDown ? "#475569" : "transparent" }}>
+             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="6 9 12 15 18 9"/></svg>
+           </button>
+        </div>
+
         {/* Visibility toggle */}
+        <input
+          type="checkbox"
+          checked={layer.visible}
+          onChange={(e) => onToggle(e.target.checked)}
+          title={isRTL ? "إظهار/إخفاء" : "Show / Hide"}
+          style={{ accentColor: "#00d4ff", cursor: "pointer", margin: 0, flexShrink: 0 }}
+        />
         <button
           onClick={() => onToggle(!layer.visible)}
           style={{
@@ -101,7 +146,7 @@ function LayerRow({
 
         {/* Color swatch (vector only) */}
         {layer.type === "vector" && (
-          <label style={{ cursor: "pointer", flexShrink: 0 }}>
+          <label style={{ cursor: "pointer", flexShrink: 0 }} title={isRTL ? "تغيير اللون" : "Change Color"}>
             <div style={{
               width: 12, height: 12, borderRadius: 3,
               background: layer.color ?? "#00d4ff",
@@ -116,19 +161,49 @@ function LayerRow({
           </label>
         )}
 
-        <TypeBadge type={layer.type} />
-
-        {/* Name */}
-        <span style={{ flex: 1, fontSize: 12, color: layer.visible ? "#cbd5e1" : "#475569", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {isRTL ? layer.nameAr : layer.name}
+        <span
+          style={{
+            fontSize: 10,
+            color: "#94a3b8",
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(255,255,255,0.03)",
+            borderRadius: 999,
+            padding: "2px 7px",
+            lineHeight: 1.1,
+            flexShrink: 0,
+          }}
+        >
+          {typeLabel}
         </span>
+
+        <div style={{ flex: 1, minWidth: 0 }} />
 
         {layer.featureCount !== undefined && (
           <span style={{ fontSize: 10, color: "#475569", flexShrink: 0 }}>{layer.featureCount}</span>
         )}
 
+        <button
+          onClick={() => setShowLayerName((p) => !p)}
+          title={isRTL ? "عرض اسم اللاير" : "Show layer name"}
+          style={{ background: "none", border: "none", cursor: "pointer", color: showLayerName ? "#00d4ff" : "#475569", padding: 2, flexShrink: 0 }}
+          onMouseEnter={(e) => !showLayerName && (e.currentTarget.style.color = "#cbd5e1")}
+          onMouseLeave={(e) => !showLayerName && (e.currentTarget.style.color = "#475569")}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            style={{ transform: showLayerName ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }}
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+
         {/* Action buttons */}
-        <button onClick={onZoom} title="Zoom to" style={{ background: "none", border: "none", cursor: "pointer", color: "#475569", padding: 2, flexShrink: 0 }}
+        <button onClick={onZoom} title={isRTL ? "تركيز" : "Zoom to"} style={{ background: "none", border: "none", cursor: "pointer", color: "#475569", padding: 2, flexShrink: 0 }}
           onMouseEnter={(e) => (e.currentTarget.style.color = "#00d4ff")}
           onMouseLeave={(e) => (e.currentTarget.style.color = "#475569")}
         >
@@ -137,8 +212,39 @@ function LayerRow({
           </svg>
         </button>
 
-        <button onClick={() => setExpanded((p) => !p)} style={{ background: "none", border: "none", cursor: "pointer", color: "#475569", padding: 2, flexShrink: 0, transition: "transform .2s", transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        {layer.type === "vector" && on3D && (
+          <button onClick={on3D} title="3D View" style={{ background: "none", border: "none", cursor: "pointer", color: "#475569", padding: 2, flexShrink: 0 }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#fbbf24")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#475569")}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+          </button>
+        )}
+
+        <button 
+          onClick={() => {
+            const current = isRTL ? layer.nameAr : layer.name;
+            const next = window.prompt(isRTL ? "اسم جديد للاير" : "New layer name", current);
+            if (next && next.trim() && next.trim() !== current) onRename(next.trim());
+          }}
+          title={isRTL ? "إعادة تسمية" : "Rename"} 
+          style={{ background: "none", border: "none", cursor: "pointer", color: "#475569", padding: 2, flexShrink: 0 }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = "#00d4ff")}
+          onMouseLeave={(e) => (e.currentTarget.style.color = "#475569")}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+
+        <button 
+          onClick={() => setExpanded((p) => !p)} 
+          title={isRTL ? "إعدادات" : "Settings"} 
+          style={{ background: "none", border: "none", cursor: "pointer", color: expanded ? "#00d4ff" : "#475569", padding: 2, flexShrink: 0, transition: "transform .3s ease" }}
+          onMouseEnter={(e) => !expanded && (e.currentTarget.style.color = "#cbd5e1")}
+          onMouseLeave={(e) => !expanded && (e.currentTarget.style.color = "#475569")}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
 
         <button onClick={onRemove} style={{ background: "none", border: "none", cursor: "pointer", color: "#475569", padding: 2, flexShrink: 0 }}
@@ -149,7 +255,27 @@ function LayerRow({
         </button>
       </div>
 
-      {/* Expanded: opacity slider + source */}
+      {/* Expanded: opacity slider + source + Quick Theme */}
+      {showLayerName && (
+        <div style={{ padding: "0 10px 8px" }}>
+          <div
+            style={{
+              marginTop: 4,
+              fontSize: 11,
+              color: "#e2e8f0",
+              background: "rgba(255,255,255,0.03)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 8,
+              padding: "6px 8px",
+              lineHeight: 1.3,
+              wordBreak: "break-word",
+            }}
+          >
+            {isRTL ? layer.nameAr : layer.name}
+          </div>
+        </div>
+      )}
+
       {expanded && (
         <div style={{ padding: "0 10px 10px", borderTop: "1px solid rgba(255,255,255,0.04)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
@@ -165,8 +291,28 @@ function LayerRow({
               {Math.round(layer.opacity * 100)}%
             </span>
           </div>
+
+          {layer.type === "vector" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+               <span style={{ fontSize: 9, color: "#475569", textTransform: "uppercase", fontWeight: 700, width: 52 }}>Theme</span>
+               <div style={{ display: "flex", gap: 4 }}>
+                 {["#00c8ff", "#a78bfa", "#34d399", "#fbbf24", "#f87171"].map(c => (
+                   <button
+                     key={c}
+                     onClick={() => onColor(c)}
+                     style={{
+                       width: 14, height: 14, borderRadius: "50%",
+                       background: c, border: layer.color === c ? "2px solid #fff" : "1px solid rgba(255,255,255,0.2)",
+                       cursor: "pointer", padding: 0
+                     }}
+                   />
+                 ))}
+               </div>
+            </div>
+          )}
+
           {layer.source && (
-            <p style={{ margin: "6px 0 0", fontSize: 10, color: "#334155", lineHeight: 1.5 }}>
+            <p style={{ margin: "8px 0 0", fontSize: 9, color: "#334155", lineHeight: 1.4, fontStyle: "italic" }}>
               {layer.source}
             </p>
           )}
@@ -178,7 +324,7 @@ function LayerRow({
 
 // ─── Main panel ────────────────────────────────────────────────────────────────
 export default function LayerPanel({
-  layers, onLayerToggle, onLayerOpacity, onLayerColor, onLayerRemove, onLayerZoom,
+  layers, onLayerToggle, onLayerOpacity, onLayerColor, onLayerRemove, onLayerRename, onLayerReorder, onLayerZoom, onLayer3D,
 }: Props) {
   const { isRTL } = useLang();
 
@@ -221,7 +367,7 @@ export default function LayerPanel({
       </div>
 
       {/* Layer list */}
-      <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 5 }}>
+      <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
         {layers.length === 0 ? (
           <div style={{ textAlign: "center", padding: "32px 0", color: "#334155" }}>
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" style={{ margin: "0 auto 8px", display: "block", opacity: 0.5 }}>
@@ -231,18 +377,65 @@ export default function LayerPanel({
             <p style={{ fontSize: 10, margin: "4px 0 0", color: "#1e293b" }}>{isRTL ? "ارفع ملف GeoJSON للبدء" : "Upload a GeoJSON file to start"}</p>
           </div>
         ) : (
-          layers.map((layer) => (
-            <LayerRow
-              key={layer.id}
-              layer={layer}
-              isRTL={isRTL}
-              onToggle={(v) => onLayerToggle(layer.id, v)}
-              onOpacity={(v) => onLayerOpacity(layer.id, v)}
-              onColor={(v) => onLayerColor(layer.id, v)}
-              onRemove={() => onLayerRemove(layer.id)}
-              onZoom={() => onLayerZoom(layer.id)}
-            />
-          ))
+          <>
+            {/* Vector Section */}
+            {layers.some(l => l.type === "vector") && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em", padding: "0 4px", display: "flex", alignItems: "center", gap: 6 }}>
+                   <div style={{ height: 1, flex: 1, background: "rgba(255,255,255,0.05)" }} />
+                   {isRTL ? "البيانات المتجهة" : "Vector Data"}
+                   <div style={{ height: 1, flex: 1, background: "rgba(255,255,255,0.05)" }} />
+                </div>
+                {layers.map((layer, idx) => layer.type === "vector" && (
+                  <LayerRow
+                    key={layer.id}
+                    layer={layer}
+                    isRTL={isRTL}
+                    index={idx}
+                    onToggle={(v) => onLayerToggle(layer.id, v)}
+                    onOpacity={(v) => onLayerOpacity(layer.id, v)}
+                    onColor={(v) => onLayerColor(layer.id, v)}
+                    onRemove={() => onLayerRemove(layer.id)}
+                    onRename={(name) => onLayerRename(layer.id, name)}
+                    onMoveUp={idx > 0 ? () => onLayerReorder?.(idx, idx - 1) : undefined}
+                    onMoveDown={idx < layers.length - 1 ? () => onLayerReorder?.(idx, idx + 1) : undefined}
+                    onDragReorder={(from, to) => onLayerReorder?.(from, to)}
+                    onZoom={() => onLayerZoom(layer.id)}
+                    on3D={onLayer3D ? () => onLayer3D(layer.id) : undefined}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Raster/Tile Section */}
+            {layers.some(l => l.type !== "vector") && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                 <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em", padding: "0 4px", display: "flex", alignItems: "center", gap: 6 }}>
+                   <div style={{ height: 1, flex: 1, background: "rgba(255,255,255,0.05)" }} />
+                   {isRTL ? "بيانات الشبكة" : "Raster & Imagery"}
+                   <div style={{ height: 1, flex: 1, background: "rgba(255,255,255,0.05)" }} />
+                </div>
+                {layers.map((layer, idx) => layer.type !== "vector" && (
+                  <LayerRow
+                    key={layer.id}
+                    layer={layer}
+                    isRTL={isRTL}
+                    index={idx}
+                    onToggle={(v) => onLayerToggle(layer.id, v)}
+                    onOpacity={(v) => onLayerOpacity(layer.id, v)}
+                    onColor={(v) => onLayerColor(layer.id, v)}
+                    onRemove={() => onLayerRemove(layer.id)}
+                    onRename={(name) => onLayerRename(layer.id, name)}
+                    onMoveUp={idx > 0 ? () => onLayerReorder?.(idx, idx - 1) : undefined}
+                    onMoveDown={idx < layers.length - 1 ? () => onLayerReorder?.(idx, idx + 1) : undefined}
+                    onDragReorder={(from, to) => onLayerReorder?.(from, to)}
+                    onZoom={() => onLayerZoom(layer.id)}
+                    on3D={onLayer3D ? () => onLayer3D(layer.id) : undefined}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

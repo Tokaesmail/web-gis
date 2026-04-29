@@ -909,7 +909,7 @@ export default function LeafletMap({
         const def = SAT_LAYERS[satKey];
         if (baseTileRef.current)  map.removeLayer(baseTileRef.current);
         if (indexTileRef.current) { map.removeLayer(indexTileRef.current); indexTileRef.current = null; }
-
+        if (!def?.url) return;
         baseTileRef.current = L.tileLayer(def.url, {
           attribution:   def.attribution,
           maxZoom:       def.maxZoom,
@@ -924,7 +924,7 @@ export default function LeafletMap({
         if (indexTileRef.current) { map.removeLayer(indexTileRef.current); indexTileRef.current = null; }
         if (idxKey === "RGB") return;
         const tile = INDEX_TILES[idxKey];
-        if (!tile.url) return;
+        if (!tile?.url) return;
         indexTileRef.current = L.tileLayer(tile.url, {
           attribution: `${idxKey}`,
           maxZoom: tile.maxZoom, maxNativeZoom: tile.maxNativeZoom,
@@ -941,9 +941,13 @@ export default function LeafletMap({
       document.getElementById("map-zoom-out")?.addEventListener("click", () => map.zoomOut());
 
       flyToRef.current = (lat, lng) => {
-        map.flyTo([lat, lng], 13, { duration: 1.6 });
-        setTimeout(() => L.circleMarker([lat, lng], { radius: 9, color: "#00d4ff", fillColor: "#00d4ff", fillOpacity: 0.7, weight: 2 })
-          .addTo(map).bindPopup(`<b>📍 Location</b><br/>${lat.toFixed(5)}°N, ${lng.toFixed(5)}°E`).openPopup(), 1700);
+        const safeLat = Number(lat);
+        const safeLng = Number(lng);
+        if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return;
+
+        map.flyTo([safeLat, safeLng], 13, { duration: 1.6 });
+        setTimeout(() => L.circleMarker([safeLat, safeLng], { radius: 9, color: "#00d4ff", fillColor: "#00d4ff", fillOpacity: 0.7, weight: 2 })
+          .addTo(map).bindPopup(`<b>📍 Location</b><br/>${safeLat.toFixed(5)}°N, ${safeLng.toFixed(5)}°E`).openPopup(), 1700);
       };
 
       clearRef.current = () => {
@@ -970,6 +974,15 @@ export default function LeafletMap({
         const { lat, lng } = e.latlng;
         // throttle setState to avoid React re-renders on every click
         requestAnimationFrame(() => onCoordsUpdate(lat, lng));
+
+        // Trigger onFeatureClick with a virtual feature to update panels (Weather/NDVI) for any click
+        if (tool === "pointer") {
+          onFeatureClick?.({
+            type: "Feature",
+            geometry: { type: "Point", coordinates: [lng, lat] },
+            properties: { _virtual: true }
+          });
+        }
 
         // ── Image placement mode (always takes precedence) ───────────────────
         if (placingImageRef.current) {

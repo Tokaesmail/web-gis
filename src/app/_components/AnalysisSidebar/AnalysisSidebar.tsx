@@ -1,22 +1,21 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useLang } from "../translations";
 import JSONUploadModal from "./DataManagerPanel";
+import { exportToExcel, exportToPDF } from "../../../../lib/exportUtils";
 import { useMapDB } from "../../map/useMapDB";
+import LayerPanel, { MapLayer } from "../../map/LayerPanel";
+import ExportButton from "../../map/ExportButton";
 
 type PanelId =
   | "ndvi"
   | "weather"
   | "overview"
-  | "vra"
-  | "activity"
-  | "fieldManager"
-  | "notifications"
-  | "settings"
   | "analyses"
   | "layers"
-  | "captures";
+  | "captures"
+  | "crops";
 
 interface PanelItem {
   id: PanelId;
@@ -27,6 +26,17 @@ interface PanelItem {
 }
 
 const panels: PanelItem[] = [
+  {
+    id: "crops",
+    labelEn: "Crop Insight",
+    labelAr: "رؤية المحاصيل",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M11 20A7 7 0 0 1 4 13V5a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v8a7 7 0 0 1-7 7Z" />
+        <path d="M13 20a7 7 0 0 0 7-7V5a2 2 0 0 0-2-2h-5a2 2 0 0 0-2 2v8a7 7 0 0 0 7 7Z" />
+      </svg>
+    ),
+  },
   {
     id: "captures",
     labelEn: "Captures",
@@ -91,64 +101,6 @@ const panels: PanelItem[] = [
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
-      </svg>
-    ),
-  },
-  {
-    id: "vra",
-    labelEn: "VRA Maps",
-    labelAr: "خرائط VRA",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
-        <line x1="9" y1="3" x2="9" y2="18" /><line x1="15" y1="6" x2="15" y2="21" />
-      </svg>
-    ),
-  },
-  {
-    id: "activity",
-    labelEn: "Field Activity",
-    labelAr: "نشاط الحقل",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <polyline points="14 2 14 8 20 8" />
-        <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
-      </svg>
-    ),
-  },
-  {
-    id: "fieldManager",
-    labelEn: "Field Manager",
-    labelAr: "مدير الحقول",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-        <circle cx="9" cy="7" r="4" />
-        <path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
-      </svg>
-    ),
-  },
-  {
-    id: "notifications",
-    labelEn: "Notifications",
-    labelAr: "الإشعارات",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-      </svg>
-    ),
-    badge: "5",
-  },
-  {
-    id: "settings",
-    labelEn: "Settings",
-    labelAr: "الإعدادات",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
       </svg>
     ),
   },
@@ -224,22 +176,54 @@ function StackedBarChart({ data }: { data: { label: string; a: number; b: number
 }
 
 
+// ─── helper: extract midpoint coords from any GeoJSON geometry ────────────────
+function getMidCoords(feature?: GeoJSON.Feature | null): [number, number] | null {
+  const g = feature?.geometry as any;
+  if (!g?.coordinates) return null;
+  try {
+    if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
+    if (g.type === "LineString" || g.type === "MultiPoint") {
+      const mid = g.coordinates[Math.floor(g.coordinates.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    if (g.type === "Polygon" || g.type === "MultiLineString") {
+      const first = g.coordinates[0];
+      const mid = first[Math.floor(first.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    if (g.type === "MultiPolygon") {
+      const firstPoly = g.coordinates[0];
+      const firstRing = firstPoly[0];
+      const mid = firstRing[Math.floor(firstRing.length / 2)];
+      return [mid[1], mid[0]];
+    }
+    // Deep fallback
+    const findFirst = (c: any): [number, number] | null => {
+      if (Array.isArray(c) && typeof c[0] === "number") return [c[1], c[0]];
+      if (Array.isArray(c)) {
+        for (const sub of c) {
+          const res = findFirst(sub);
+          if (res) return res;
+        }
+      }
+      return null;
+    };
+    return findFirst(g.coordinates);
+  } catch (e) { return null; }
+}
+
+// ─── Skeleton row ─────────────────────────────────────────────────────────────
+function SkRow({ w = "w-full", h = "h-4" }: { w?: string; h?: string }) {
+  return <div className={`${h} ${w} rounded-md bg-white/[0.05] animate-pulse`} />;
+}
+
 // ─── NDVI Live Panel (data from selected feature coords) ──────────────────────
-function NDVILivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
+function NDVILivePanel({ feature, onExport }: { feature?: GeoJSON.Feature | null; onExport?: (data: any) => void }) {
   const [ndviData, setNdviData] = useState<any>(null);
   const [loading,  setLoading]  = useState(false);
 
   // derive midpoint coords from geometry
-  const coords: [number, number] | null = (() => {
-    if (!feature?.geometry) return null;
-    const g = feature.geometry as any;
-    if (g.type === "LineString" && g.coordinates?.length) {
-      const m = g.coordinates[Math.floor(g.coordinates.length / 2)];
-      return [m[1], m[0]];
-    }
-    if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
-    return null;
-  })();
+  const coords: [number, number] | null = useMemo(() => getMidCoords(feature), [feature]);
 
   useEffect(() => {
     if (!coords) return;
@@ -267,59 +251,92 @@ function NDVILivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
         const avgST = soilT.length ? soilT.reduce((a: number, b: number) => a + b, 0) / soilT.length : null;
         const latest = series[series.length - 1]?.value ?? 0;
         const prev   = series[series.length - 4]?.value ?? latest;
-        setNdviData({ series, latest, prev, avgSM, avgST });
+        
+        const data = { series, latest, prev, avgSM, avgST };
+        setNdviData(data);
+        
+        if (onExport) {
+            const ndviDataMap: Record<string, any> = {
+                "NDVI": { value: latest, min: Math.min(...series.map((s:any)=>s.value)), max: Math.max(...series.map((s:any)=>s.value)), mean: series.reduce((a:any,b:any)=>a+b.value,0)/series.length, trend: latest >= prev ? "up" : "down" }
+            };
+            onExport(ndviDataMap);
+        }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [coords?.[0], coords?.[1]]);
 
-  // ── No feature selected ───────────────────────────────────────────────────
+  // ── No feature selected — show static mock ────────────────────────────────
   if (!feature || !coords) {
+    const bars = [
+      { label: "23 Dec", value: 0.58 }, { label: "02 Jan", value: 0.61 },
+      { label: "12 Jan", value: 0.67 }, { label: "22 Jan", value: 0.70 },
+      { label: "01 Feb", value: 0.69 }, { label: "11 Feb", value: 0.72 },
+      { label: "16 Feb", value: 0.72 },
+    ];
+    const maxV = Math.max(...bars.map(b => b.value));
     return (
-      <div className="space-y-4">
-        {/* CTA */}
-        <div className="bg-emerald-400/[0.05] border border-emerald-400/20 rounded-xl p-5 flex flex-col items-center text-center gap-3">
-          <div className="w-12 h-12 rounded-full bg-emerald-400/10 border border-emerald-400/20 flex items-center justify-center">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="1.8">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-            </svg>
+      <div className="space-y-5">
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">Mean NDVI Index</p>
+          <p className="text-3xl font-semibold text-emerald-400">0.720</p>
+          <p className="text-[0.65rem] text-slate-500 mt-1">↑ 0.04 from last month</p>
+          <div className="mt-3 h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
+            <div className="h-full rounded-full bg-emerald-400" style={{ width: "72%" }} />
           </div>
-          <div>
-            <p className="text-sm font-semibold text-emerald-400 mb-1">Live NDVI Analysis</p>
-            <p className="text-[0.7rem] text-slate-400 leading-relaxed">
-              اضغط على أي خط كنتور أو feature على الخريطة لتحميل بيانات NDVI الحقيقية من Sentinel-2 عبر open-meteo
-            </p>
-          </div>
-          <div className="w-full h-px bg-white/[0.06]" />
-          <p className="text-[0.65rem] text-slate-500">Click any map feature to load live vegetation data</p>
         </div>
 
-        {/* NDVI Scale */}
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">NDVI Scale Reference</p>
-          <div className="h-3 rounded-full" style={{ background: "linear-gradient(to right,#8B0000,#FF4500,#FFD700,#ADFF2F,#006400)" }} />
-          <div className="flex justify-between mt-1.5">
-            {["-1 Water","","0","","+1 Dense"].map((l,i) => (
-              <span key={i} className="text-[0.52rem] text-slate-600">{l}</span>
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { label: "Avg", value: "0.682", color: "text-emerald-400" },
+            { label: "Min", value: "0.410", color: "text-amber-400" },
+            { label: "Max", value: "0.895", color: "text-emerald-500" },
+          ].map(s => (
+            <div key={s.label} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2 text-center">
+              <p className={`text-xs font-bold ${s.color}`}>{s.value}</p>
+              <p className="text-[0.55rem] text-slate-500 mt-0.5">{s.label}</p>
+            </div>
+          ))}
+        </div>
+
+        <div>
+          <div className="flex justify-between text-[0.6rem] text-slate-500 mb-1"><span>Low</span><span>NDVI Scale</span><span>High</span></div>
+          <div className="h-2.5 rounded-full" style={{ background: "linear-gradient(to right,#8B0000,#FF4500,#FFD700,#ADFF2F,#006400)" }} />
+          <div className="flex justify-between px-1 mt-1">
+             {["-1.0", "0.0", "0.2", "0.4", "0.6", "1.0"].map(v => <span key={v} className="text-[0.45rem] text-slate-600">{v}</span>)}
+          </div>
+        </div>
+
+        <div>
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-2">30-Day Timeline</p>
+          <div className="flex items-end gap-1 h-16">
+            {bars.map((b, i) => (
+              <div key={i} className="flex-1 flex flex-col items-center gap-0.5 group cursor-pointer">
+                <div className="relative w-full">
+                  <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
+                    <div className="bg-[#0a1628] border border-white/10 text-[0.6rem] text-slate-200 px-1.5 py-0.5 rounded whitespace-nowrap">{b.value}</div>
+                  </div>
+                  <div className="w-full rounded-sm group-hover:brightness-125 transition-all"
+                    style={{ height: `${(b.value / maxV) * 56}px`, background: b.label === "16 Feb" ? "#22d3ee" : "#22c55e88" }} />
+                </div>
+                <span className="text-[0.5rem] text-slate-600 whitespace-nowrap overflow-hidden" style={{ maxWidth: 28, textOverflow: "clip" }}>{b.label.slice(0, 6)}</span>
+              </div>
             ))}
           </div>
         </div>
 
-        {/* What you'll get */}
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4 space-y-2.5">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">After selecting a feature</p>
-          {[
-            { icon: "📈", label: "30-Day NDVI Timeline",       color: "text-emerald-400" },
-            { icon: "💧", label: "Soil Moisture & Temperature", color: "text-blue-400"   },
-            { icon: "🌿", label: "Health Distribution Chart",   color: "text-green-400"  },
-            { icon: "🛰️", label: "Sentinel-2 via open-meteo",  color: "text-cyan-400"   },
-          ].map(item => (
-            <div key={item.label} className="flex items-center gap-2.5">
-              <span className="text-base">{item.icon}</span>
-              <span className={`text-[0.7rem] ${item.color}`}>{item.label}</span>
-            </div>
-          ))}
+        <div>
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Health Distribution</p>
+          <div className="flex items-center justify-around">
+            {[{ v: 72, c: "#22c55e", bg: "rgba(34,197,94,0.12)", l: "Healthy" }, { v: 13, c: "#ef4444", bg: "rgba(239,68,68,0.12)", l: "Stressed" }, { v: 15, c: "#f59e0b", bg: "rgba(245,158,11,0.12)", l: "Moderate" }].map(d => (
+              <div key={d.l} className="flex flex-col items-center gap-1">
+                <DonutChart value={d.v} total={100} color={d.c} bg={d.bg} />
+                <p className="text-[0.62rem] text-slate-400">{d.l}</p>
+              </div>
+            ))}
+          </div>
         </div>
+        <p className="text-[0.58rem] text-slate-600 text-center">Click a contour line for live data</p>
       </div>
     );
   }
@@ -454,97 +471,6 @@ function NDVILivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
   );
 }
 
-// ─── helper: extract midpoint coords from any GeoJSON geometry ────────────────
-function getMidCoords(feature?: GeoJSON.Feature | null): [number, number] | null {
-  const g = feature?.geometry as any;
-  if (!g?.coordinates) return null;
-  try {
-    if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
-    if (g.type === "LineString" || g.type === "MultiPoint") {
-      const mid = g.coordinates[Math.floor(g.coordinates.length / 2)];
-      return [mid[1], mid[0]];
-    }
-    if (g.type === "Polygon" || g.type === "MultiLineString") {
-      const first = g.coordinates[0];
-      const mid = first[Math.floor(first.length / 2)];
-      return [mid[1], mid[0]];
-    }
-    if (g.type === "MultiPolygon") {
-      const firstPoly = g.coordinates[0];
-      const firstRing = firstPoly[0];
-      const mid = firstRing[Math.floor(firstRing.length / 2)];
-      return [mid[1], mid[0]];
-    }
-    // Deep fallback
-    const findFirst = (c: any): [number, number] | null => {
-      if (Array.isArray(c) && typeof c[0] === "number") return [c[1], c[0]];
-      if (Array.isArray(c)) {
-        for (const sub of c) {
-          const res = findFirst(sub);
-          if (res) return res;
-        }
-      }
-      return null;
-    };
-    return findFirst(g.coordinates);
-  } catch (e) { return null; }
-}
-
-// ─── Skeleton row ─────────────────────────────────────────────────────────────
-function SkRow({ w = "w-full", h = "h-4" }: { w?: string; h?: string }) {
-  return <div className={`${h} ${w} rounded-md bg-white/[0.05] animate-pulse`} />;
-}
-
-// ─── Captures Panel ───────────────────────────────────────────────────────────
-function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }) {
-  return (
-    <div className="space-y-4">
-      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-2 flex items-center justify-between">
-        <div>
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Active Captures</p>
-          <p className="text-xs text-slate-300">Images kept in memory</p>
-        </div>
-        {items.length > 0 && (
-          <button 
-            onClick={onClear}
-            className="text-[0.6rem] px-2 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20"
-          >
-            Clear All
-          </button>
-        )}
-      </div>
-
-      {items.length === 0 ? (
-        <div className="py-10 text-center opacity-40 text-[0.7rem]">No captures found. Draw a shape to capture.</div>
-      ) : (
-        <div className="space-y-4">
-          {items.map((it) => {
-            return (
-              <div key={it.id} className="group bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
-                <div className="relative aspect-video bg-black/40">
-                  <img src={it.url} alt="Capture" className="w-full h-full object-cover" />
-                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-2 gap-2">
-                    <button 
-                      onClick={() => window.open(it.url, '_blank')}
-                      className="px-3 py-1.5 bg-cyan-500 text-black text-[0.65rem] rounded-lg font-bold"
-                    >
-                      Open Full Size
-                    </button>
-                  </div>
-                </div>
-                <div className="p-2.5">
-                  <p className="text-[0.65rem] text-slate-200 font-medium truncate">{new Date(it.createdAt).toLocaleString()}</p>
-                  <p className="text-[0.55rem] text-slate-500 mt-0.5">In-memory blob session</p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Overview Live Panel ──────────────────────────────────────────────────────
 function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
   const coords = getMidCoords(feature);
@@ -574,7 +500,7 @@ function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
 
   // all extra properties from the API (exclude the known ones already displayed)
   const extraProps = Object.entries(p).filter(
-    ([k]) => !["Contour", "Id", "OBJECTID", "Shape_Length"].includes(k)
+    ([k]) => !["Contour", "Id", "OBJECTID", "Shape_Length", "_color", "_fillColor"].includes(k)
   );
 
   return (
@@ -771,40 +697,229 @@ function WeatherLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
     </div>
   );
 }
+
+// ─── Captures Panel ───────────────────────────────────────────────────────────
+function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }) {
+  return (
+    <div className="space-y-4">
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-2 flex items-center justify-between">
+        <div>
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Active Captures</p>
+          <p className="text-xs text-slate-300">Images kept in memory</p>
+        </div>
+        {items.length > 0 && (
+          <button 
+            onClick={onClear}
+            className="text-[0.6rem] px-2 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20"
+          >
+            Clear All
+          </button>
+        )}
+      </div>
+
+      {items.length === 0 ? (
+        <div className="py-10 text-center opacity-40 text-[0.7rem]">No captures found. Draw a shape to capture.</div>
+      ) : (
+        <div className="space-y-4">
+          {items.map((it) => {
+            return (
+              <div key={it.id} className="group bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
+                <div className="relative aspect-video bg-black/40">
+                  {it?.url && (
+          <img src={it.url} className="w-full h-full object-cover" />
+  )}
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-2 gap-2">
+                    <button 
+                      onClick={() => {
+  if (it?.url) window.open(it.url, '_blank');
+}}
+                      className="px-3 py-1.5 bg-cyan-500 text-black text-[0.65rem] rounded-lg font-bold"
+                    >
+                      Open Full Size
+                    </button>
+                  </div>
+                </div>
+                <div className="p-2.5">
+                  <p className="text-[0.65rem] text-slate-200 font-medium truncate">{new Date(it.createdAt).toLocaleString()}</p>
+                  <p className="text-[0.55rem] text-slate-500 mt-0.5">In-memory blob session</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Panel Contents ───────────────────────────────────────────────────────────
+
 function PanelContent({
   id,
   selectedFeature,
   uploadedGeoJsonMap,
   captures,
+  onGeoJSONUpload,
   onDeleteGeoJSON,
   onOpen3D,
   onFlyTo,
   onClearCaptures,
+  layers,
+  onLayerToggle,
+  onLayerOpacity,
+  onLayerColor,
+  onLayerRemove,
+  onLayerRename,
+  onLayerReorder,
+  onLayerZoom,
+  onLayer3D,
 }: {
   id: PanelId;
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
   captures: any[];
+  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string, isUpdate?: boolean) => void;
   onDeleteGeoJSON?: (fileName: string) => void;
   onOpen3D?: (fileName: string) => void;
   onFlyTo?: (lat: number, lng: number) => void;
   onClearCaptures: () => void;
+  layers: MapLayer[];
+  onLayerToggle: (id: string, visible: boolean) => void;
+  onLayerOpacity: (id: string, opacity: number) => void;
+  onLayerColor: (id: string, color: string) => void;
+  onLayerRemove: (id: string) => void;
+  onLayerRename: (id: string, newName: string) => void;
+  onLayerReorder?: (from: number, to: number) => void;
+  onLayerZoom: (id: string) => void;
+  onLayer3D?: (id: string) => void;
 }) {
+  const [ndviExportData, setNdviExportData] = useState<any>(null);
+  const { t, isRTL } = useLang();
 
   // ── NDVI ──
   if (id === "ndvi") {
-    return <NDVILivePanel feature={selectedFeature} />;
+    const coords = getMidCoords(selectedFeature);
+
+    const exportBundle = {
+        coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+        ndviData: ndviExportData,
+        title: "NDVI Vegetation Index Analysis"
+    };
+
+    return (
+        <div className="space-y-4">
+            <NDVILivePanel feature={selectedFeature} onExport={setNdviExportData} />
+            {selectedFeature && <ExportButton data={exportBundle} />}
+        </div>
+    );
   }
 
   // ── OVERVIEW ──
   if (id === "overview") {
-    return <OverviewLivePanel feature={selectedFeature} />;
+    const p = selectedFeature?.properties ?? {};
+    const coords = getMidCoords(selectedFeature);
+    
+    const exportData = {
+      coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+      layers: layers.map(({ id: _id, ...rest }) => rest),
+      geoJsonFeatures: selectedFeature ? [selectedFeature] : undefined,
+    };
+
+    return (
+      <div className="space-y-4">
+        <OverviewLivePanel feature={selectedFeature} />
+        
+        {selectedFeature && (
+          <div className="flex gap-2">
+            <ExportButton data={exportData} />
+          </div>
+        )}
+      </div>
+    );
   }
 
   // ── WEATHER ──
   if (id === "weather") {
-    return <WeatherLivePanel feature={selectedFeature} />;
+    const coords = getMidCoords(selectedFeature);
+    const exportData = {
+      title: "Weather Report",
+      coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+      timestamp: new Date().toISOString()
+    };
+
+    return (
+      <div className="space-y-4">
+        <WeatherLivePanel feature={selectedFeature} />
+        {selectedFeature && <ExportButton data={exportData} />}
+      </div>
+    );
+  }
+
+  // ── CROPS ──
+  if (id === "crops") {
+    const cropData = {
+      cropType: "Corn",
+      health: "good",
+      coverage: 87,
+      estimatedYield: "12.4 t/ha",
+      recommendation: "Soil moisture is optimal. Monitor for pests in the NW sector."
+    };
+
+    const exportData = {
+      cropAnalysis: cropData,
+      selectedArea: { name: "Corn Field Z32", ha: 27.4 }
+    };
+
+    return (
+      <div className="space-y-4">
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">{t.fieldInsights} (EOS)</p>
+          <div className="flex items-center gap-3">
+            <div className="text-2xl">🌽</div>
+            <div>
+              <p className="text-sm font-bold text-slate-200">Corn Field · Z32</p>
+              <p className="text-[0.6rem] text-slate-500">Stem elongation stage</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { l: t.soilMoisture, v: "42%", c: "text-blue-400" },
+            { l: t.biomass, v: "High", c: "text-emerald-400" },
+            { l: t.sowing, v: "12 Apr", c: "text-slate-300" },
+            { l: t.harvestEst, v: "25 Aug", c: "text-amber-400" },
+          ].map(it => (
+            <div key={it.l} className="bg-white/[0.03] border border-white/[0.05] rounded-lg p-2">
+              <p className={`text-xs font-bold ${it.c}`}>{it.v}</p>
+              <p className="text-[0.55rem] text-slate-500 mt-0.5">{it.l}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 space-y-3">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">{t.growthPrediction}</p>
+          <div className="relative h-12 flex items-end gap-1">
+             {[30, 45, 60, 55, 75, 90, 85].map((h, i) => (
+               <div key={i} className="flex-1 bg-cyan-400/20 rounded-t-sm transition-all hover:bg-cyan-400/40" style={{ height: `${h}%` }} />
+             ))}
+          </div>
+          <div className="flex justify-between text-[0.55rem] text-slate-600 px-1">
+            <span>May</span><span>Jun</span><span>Jul</span><span>Aug</span>
+          </div>
+        </div>
+
+        <div className="bg-amber-400/[0.05] border border-amber-400/20 rounded-xl p-3 flex gap-3">
+           <div className="text-lg">⚠️</div>
+           <div>
+             <p className="text-[0.65rem] font-bold text-amber-400">{t.scoutingRequired}</p>
+             <p className="text-[0.58rem] text-slate-400 mt-0.5">Potential water stress detected in North-West sector.</p>
+           </div>
+        </div>
+
+        <ExportButton data={exportData} />
+      </div>
+    );
   }
 
   // ── CAPTURES ──
@@ -814,113 +929,18 @@ function PanelContent({
 
   // ── LAYERS ──
   if (id === "layers") {
-    const files = Object.keys(uploadedGeoJsonMap || {});
-
-    const exportLayerCSV = (fileName: string, geojson: any) => {
-      if (!geojson?.features?.length) return;
-      const allProps = new Set<string>();
-      geojson.features.forEach((f: any) => Object.keys(f.properties ?? {}).forEach((k: string) => allProps.add(k)));
-      const headers = ["geometry_type", ...Array.from(allProps)];
-      const rows = [headers, ...geojson.features.slice(0, 500).map((f: any) => [
-        f.geometry?.type ?? "",
-        ...Array.from(allProps).map(k => String((f.properties ?? {})[k as string] ?? "")),
-      ])];
-      const csv = "\uFEFF" + rows.map((r: any[]) => r.map((c: any) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
-      a.download = fileName.replace(/\.geojson?$/i, "") + "_export.csv";
-      a.click();
-    };
-
     return (
-      <div className="space-y-3">
-        {/* Header */}
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 flex items-center justify-between">
-          <div>
-            <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Uploaded Layers</p>
-            <p className="text-xs text-slate-300">{files.length} {files.length === 1 ? "file" : "files"} loaded</p>
-          </div>
-          <div className="flex flex-col gap-0.5 text-[0.55rem] text-slate-600">
-            <span><span className="text-cyan-400">●</span> Fly to</span>
-            <span><span className="text-orange-400">●</span> 3D View</span>
-            <span><span className="text-emerald-400">●</span> Export CSV</span>
-          </div>
-        </div>
-
-        {files.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-10 gap-2 opacity-40">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            <p className="text-[0.68rem]">No files uploaded yet</p>
-            <p className="text-[0.6rem] text-slate-600">Use the ↑ button below to upload</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {files.map((fileName) => {
-              const geojson = uploadedGeoJsonMap![fileName];
-              const count   = geojson?.features?.length ?? 0;
-              return (
-                <div key={fileName} className="bg-white/[0.03] border border-white/[0.07] hover:border-cyan-400/20 rounded-xl p-3 transition-all">
-                  {/* Name + count */}
-                  <div className="flex items-center gap-2.5 mb-2.5">
-                    <div className="w-7 h-7 rounded-lg bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polygon points="12 2 2 7 12 12 22 7 12 2"/>
-                        <polyline points="2 17 12 22 22 17"/>
-                        <polyline points="2 12 12 17 22 12"/>
-                      </svg>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[0.73rem] font-medium text-slate-200 truncate">{fileName}</p>
-                      <p className="text-[0.6rem] text-slate-500">{count.toLocaleString()} features</p>
-                    </div>
-                  </div>
-
-                  {/* Action buttons — always visible */}
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => { const c = getMidCoords(geojson?.features?.[0]); if (c) onFlyTo?.(c[0], c[1]); }}
-                      title="Fly to"
-                      className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 text-cyan-400 hover:bg-cyan-400/20 transition-all cursor-pointer text-[0.62rem] font-semibold"
-                    >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2m8-10h2M2 12h2"/></svg>
-                      Fly
-                    </button>
-
-                    <button
-                      onClick={() => onOpen3D?.(fileName)}
-                      title="View in 3D"
-                      className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg border border-orange-400/30 bg-orange-400/10 text-orange-400 hover:bg-orange-400/20 transition-all cursor-pointer text-[0.62rem] font-semibold"
-                    >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m21 8-9-4-9 4 9 4 9-4z"/><path d="m21 12-9 4-9-4"/><path d="m21 16-9 4-9-4"/></svg>
-                      3D
-                    </button>
-
-                    <button
-                      onClick={() => exportLayerCSV(fileName, geojson)}
-                      title="Export as CSV"
-                      className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-400 hover:bg-emerald-400/20 transition-all cursor-pointer text-[0.62rem] font-semibold"
-                    >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                      CSV
-                    </button>
-
-                    <button
-                      onClick={() => onDeleteGeoJSON?.(fileName)}
-                      title="Delete layer"
-                      className="w-[30px] h-[30px] flex items-center justify-center rounded-lg border border-red-400/30 bg-red-400/10 text-red-400 hover:bg-red-400/20 transition-all cursor-pointer shrink-0"
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+      <LayerPanel
+        layers={layers}
+        onLayerToggle={onLayerToggle}
+        onLayerOpacity={onLayerOpacity}
+        onLayerColor={onLayerColor}
+        onLayerRemove={onLayerRemove}
+        onLayerRename={onLayerRename}
+        onLayerReorder={onLayerReorder}
+        onLayerZoom={onLayerZoom}
+        onLayer3D={onLayer3D}
+      />
     );
   }
 
@@ -1036,11 +1056,20 @@ export default function AnalysisSidebar({
   activePanel: controlledActivePanel,
   onActivePanelChange,
   onClearCaptures,
+  layers,
+  onLayerToggle,
+  onLayerOpacity,
+  onLayerColor,
+  onLayerRemove,
+  onLayerRename,
+  onLayerReorder,
+  onLayerZoom,
+  onLayer3D,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
   captures: any[];
-  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string) => void;
+  onGeoJSONUpload?: (geojson: GeoJSON.FeatureCollection, fileName: string, isUpdate?: boolean) => void;
   onDeleteGeoJSON?: (fileName: string) => void;
   onOpen3D?: (fileName: string) => void;
   onStartImageOverlay?: (file: File) => void;
@@ -1050,6 +1079,15 @@ export default function AnalysisSidebar({
   activePanel?: PanelId | null;
   onActivePanelChange?: (id: PanelId | null) => void;
   onClearCaptures: () => void;
+  layers: MapLayer[];
+  onLayerToggle: (id: string, visible: boolean) => void;
+  onLayerOpacity: (id: string, opacity: number) => void;
+  onLayerColor: (id: string, color: string) => void;
+  onLayerRemove: (id: string) => void;
+  onLayerRename: (id: string, newName: string) => void;
+  onLayerReorder?: (from: number, to: number) => void;
+  onLayerZoom: (id: string) => void;
+  onLayer3D?: (id: string) => void;
 }) {
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -1090,12 +1128,12 @@ export default function AnalysisSidebar({
         <div
           className="h-full overflow-hidden transition-all duration-300 ease-in-out"
           style={{
-            width: activePanel ? 280 : 0,
+            width: activePanel ? 340 : 0,
             pointerEvents: activePanel ? "all" : "none",
             opacity: activePanel ? 1 : 0,
           }}
         >
-          <div className="h-full w-[280px] bg-[#070f1e]/97 backdrop-blur-xl border-l border-white/[0.08] flex flex-col overflow-hidden shadow-[-8px_0_32px_rgba(0,0,0,0.4)]">
+          <div className="h-full w-[340px] bg-[#070f1e]/97 backdrop-blur-xl border-l border-white/[0.08] flex flex-col overflow-hidden shadow-[-8px_0_32px_rgba(0,0,0,0.4)]">
             {/* Panel header */}
             <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-white/[0.06] shrink-0">
               <div className="flex items-center gap-2.5">
@@ -1106,35 +1144,15 @@ export default function AnalysisSidebar({
                   {isRTL ? activeItem?.labelAr : activeItem?.labelEn}
                 </span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => {
-                    if (activePanel === "layers") {
-                      const files = Object.keys(uploadedGeoJsonMap || {});
-                      const csv = "\uFEFF" + "File,Features\n" + files.map(f => `"${f}","${(uploadedGeoJsonMap?.[f]?.features?.length ?? 0)}"`).join("\n");
-                      const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" })); a.download = `layers_${Date.now()}.csv`; a.click();
-                    }
-                  }}
-                  title="Export panel data"
-                  className="flex items-center gap-1 px-2 py-1 rounded-md border border-cyan-400/40 bg-cyan-400/12 text-cyan-400 hover:bg-cyan-400/25 transition-all cursor-pointer text-[0.62rem] font-bold"
-                  style={{ pointerEvents: "all" }}
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                  </svg>
-                  Export
-                </button>
-                <button
-                  onClick={() => togglePanel(activePanel as PanelId)}
-                  className="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/[0.07] rounded-md transition-all cursor-pointer"
-                  style={{ pointerEvents: "all" }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path d="M18 6 6 18M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
+              <button
+                onClick={() => togglePanel(activePanel as PanelId)}
+                className="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/[0.07] rounded-md transition-all cursor-pointer"
+                style={{ pointerEvents: "all" }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
             </div>
 
             {/* Panel body */}
@@ -1145,10 +1163,20 @@ export default function AnalysisSidebar({
                   selectedFeature={selectedFeature}
                   uploadedGeoJsonMap={uploadedGeoJsonMap}
                   captures={captures}
+                  onGeoJSONUpload={onGeoJSONUpload}
                   onDeleteGeoJSON={onDeleteGeoJSON}
                   onOpen3D={onOpen3D}
                   onFlyTo={onFlyTo}
                   onClearCaptures={onClearCaptures}
+                  layers={layers}
+                  onLayerToggle={onLayerToggle}
+                  onLayerOpacity={onLayerOpacity}
+                  onLayerColor={onLayerColor}
+                  onLayerRemove={onLayerRemove}
+                  onLayerRename={onLayerRename}
+                  onLayerReorder={onLayerReorder}
+                  onLayerZoom={onLayerZoom}
+                  onLayer3D={onLayer3D}
                 />
               )}
             </div>
@@ -1207,7 +1235,6 @@ export default function AnalysisSidebar({
           {/* ── Upload GeoJSON button ── */}
           <div className="relative group w-full flex justify-center">
             <button
-              id="tour-upload"
               onClick={() => setUploadOpen((p) => !p)}
               className={`
                 relative w-9 h-9 rounded-lg flex items-center justify-center
