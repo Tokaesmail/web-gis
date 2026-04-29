@@ -524,15 +524,13 @@ export default function LeafletMap({
         geoJsonLayerRef.current = null;
       }
     };
-  }, [geoJsonData, mapReady]);
+  }, [geoJsonData, mapReady, geoJsonFitBounds, geoJsonStyle, onFeatureClick]);
 
   // ── Extra GeoJSON layer (شيكات الجامعات) ─────────────────────────────────
   useEffect(() => {
     const map = mapInstanceRef.current;
     const L   = LRef.current;
     if (!map || !L) return;
-
-    const isFirstLoad = !extraGeoJsonLayerRef.current;
 
     // امسح القديمة
     if (extraGeoJsonLayerRef.current) {
@@ -544,13 +542,14 @@ export default function LeafletMap({
     const layer = L.geoJSON(extraGeoJsonData, {
       style: (feature: any) => {
         const p   = feature?.properties ?? {};
+        const layerOpacity = typeof p._opacity === "number" ? Math.max(0, Math.min(1, p._opacity)) : 1;
 
         // ── University service areas ───────────────────────────────────────────
         if (p._layerType === "university" || p.FromBreak !== undefined) {
           const uc  = p._fillColor
             ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
             : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
-          return { color: uc.stroke, weight: 1.8, opacity: 0.9, fillColor: uc.fill, fillOpacity: 0.22 };
+          return { color: uc.stroke, weight: 1.8, opacity: 0.9 * layerOpacity, fillColor: uc.fill, fillOpacity: 0.22 * layerOpacity };
         }
 
         // ── GeoJSON مرفوع من اليوزر — لون افتراضي سيان ────────────────────────
@@ -559,9 +558,9 @@ export default function LeafletMap({
         return {
           color:       customColor,
           weight:      2,
-          opacity:     0.9,
+          opacity:     0.9 * layerOpacity,
           fillColor:   customFill,
-          fillOpacity: 0.2,
+          fillOpacity: 0.2 * layerOpacity,
         };
       },
       onEachFeature: (feature: any, lyr: any) => {
@@ -625,15 +624,7 @@ export default function LeafletMap({
     layer.addTo(map);
     extraGeoJsonLayerRef.current = layer;
 
-    // ── Fly to uploaded GeoJSON bounds ONLY on first load (for restored data) ──
-    if (isFirstLoad) {
-      try {
-        const bounds = layer.getBounds();
-        if (bounds.isValid()) {
-          map.flyToBounds(bounds, { padding: [50, 50], maxZoom: 16, duration: 1.2 });
-        }
-      } catch (_) {}
-    }
+    // Keep the map view stable while layer controls re-render this data.
 
     console.log("✅ University polygons layer added");
 

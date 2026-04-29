@@ -131,7 +131,13 @@ export default function MapPage() {
       if (!layer.visible) return;
 
       if (layer.id === "universities" && uniData?.features) {
-        features.push(...uniData.features);
+        features.push(...uniData.features.map((f: any) => ({
+          ...f,
+          properties: {
+            ...f.properties,
+            _opacity: layer.opacity,
+          },
+        })));
       } else if (layer.id.startsWith("uploaded_")) {
         const fileName = layer.id.replace("uploaded_", "");
         const gj = uploadedGeoJsonMap[fileName];
@@ -159,6 +165,16 @@ export default function MapPage() {
     );
     return { type: "FeatureCollection", features } as any;
   }, [uploadedGeoJsonMap]);
+
+  const contourLayer = useMemo(() => layers.find((l) => l.id === "contours"), [layers]);
+  const contourGeoJsonStyle = useMemo(() => {
+    const opacity = contourLayer?.opacity ?? 1;
+    return {
+      color: contourLayer?.color ?? "#00d4ff",
+      opacity: 0.85 * opacity,
+      fillOpacity: 0.08 * opacity,
+    };
+  }, [contourLayer?.color, contourLayer?.opacity]);
 
   // ── Stable callbacks ──────────────────────────────────────────────────────
   const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json", isUpdate: boolean = false) => {
@@ -318,8 +334,9 @@ export default function MapPage() {
 
   const handleLayerOpacity = useCallback((id: string, opacity: number) => {
     setLayers((prev) => prev.map((l) => l.id === id ? { ...l, opacity } : l));
-    changeOpacityRef.current?.(opacity);
-  }, []);
+    const layerType = layers.find((l) => l.id === id)?.type;
+    if (layerType !== "vector") changeOpacityRef.current?.(opacity);
+  }, [layers]);
 
 
   const handleLayerColor   = useCallback((id: string, color: string) => {
@@ -563,9 +580,11 @@ export default function MapPage() {
             onIdxChange={(h) => { changeIdxRef.current = h; }}
               onOpacityChangeRegister={(h) => { changeOpacityRef.current = h; }}
             onImagePlacerRegister={(h) => { startImagePlacementRef.current = h; }}
-            geoJsonData={geoJsonData}
+            geoJsonData={contourLayer?.visible ? geoJsonData : null}
             extraGeoJsonData={combinedGeoJson}
             latestGeoJson={latestGeoJson}
+            geoJsonStyle={contourGeoJsonStyle}
+            geoJsonFitBounds={false}
             extrusionConfig={extrusionCfg || { enabled: false }}
             onFeatureClick={setSelectedFeature}
           />
