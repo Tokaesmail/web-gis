@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useSession } from "next-auth/react";
+import { toast } from "sonner";
 import { useLang } from "../_components/translations";
 import AnalysisSidebar from "../_components/AnalysisSidebar/AnalysisSidebar";
 import AIAssistant from "../_components/AIAssistant/AIAssistant";
@@ -19,9 +21,11 @@ import ExportButton from "./ExportButton";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
+const LAYER_SETTINGS_STORAGE_PREFIX = "gis_layer_settings_v1";
 
 export default function MapPage() {
   const { t, isRTL } = useLang();
+  const { data: session, status: sessionStatus } = useSession();
   const [aiOpen,           setAiOpen]           = useState(false);
   const [isFullscreen,     setIsFullscreen]      = useState(false);
   const [activeTool,       setActiveTool]        = useState<DrawTool>("pointer");
@@ -30,7 +34,7 @@ export default function MapPage() {
   const [captureUrl,       setCaptureUrl]        = useState<string | null>(null);
   const [captures,         setCaptures]          = useState<any[]>([]);
   const [selectedFeature,  setSelectedFeature]   = useState<any>(null);
-  const [view3D,           setView3D]            = useState<{ lat: number; lng: number; name?: string } | null>(null);
+  const [view3D,           setView3D]            = useState<{ lat: number; lng: number; name?: string; geojson?: GeoJSON.FeatureCollection } | null>(null);
   const [activePanel,      setActivePanel]       = useState<string | null>("overview");
 
   const [geoJsonData,     setGeoJsonData]     = useState<any>(null);
@@ -42,6 +46,7 @@ export default function MapPage() {
   const [uploadedGeoJsonMap, setUploadedGeoJsonMap] = useState<Record<string, any>>({});
   const [latestGeoJson,   setLatestGeoJson]   = useState<any>(null);
   const [extrusionCfg,    setExtrusionCfg]    = useState<any>(null);
+  const [layerSettingsLoaded, setLayerSettingsLoaded] = useState(false);
 
   // ── Layer panel state ────────────────────────────────────────────────────
   const [layers, setLayers] = useState<MapLayer[]>([
@@ -64,6 +69,15 @@ export default function MapPage() {
   const lastClickTimeRef = useRef<number>(0);
 
   const isRestored = useRef(false);
+  const isLayerSettingsHydrating = useRef(false);
+  const layerSettingsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remoteLayerSettingsUnsupported = useRef(false);
+
+  const layerSettingsStorageKey = useMemo(() => {
+    const user = session?.user as any;
+    const accountKey = user?.id ?? user?.email ?? "guest";
+    return `${LAYER_SETTINGS_STORAGE_PREFIX}:${accountKey}`;
+  }, [session?.user]);
 
   // ── 1. localStorage restore ───────────────────────────────────────────────
   useEffect(() => {
@@ -88,13 +102,11 @@ export default function MapPage() {
   useEffect(() => {
     let isMounted = true;
     const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://gis-back-chi.vercel.app";
-    const token = typeof window !== "undefined"
-      ? (localStorage.getItem("gis_token") || localStorage.getItem("token") || "")
-      : "";
+    const token = (session?.user as any)?.accessToken as string | undefined;
 
     setGeoJsonLoading(true);
     fetch(`${BASE_URL}/gis/contours`, {
-      headers: { "Accept-Encoding": "gzip, deflate, br", ...(token ? { token } : {}) },
+      headers: { "Accept-Encoding": "gzip, deflate, br", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     })
       .then((r) => r.json())
       .then((data) => { if (isMounted) { setGeoJsonData(data); setGeoJsonError(null); } })
@@ -102,7 +114,102 @@ export default function MapPage() {
       .finally(() => { if (isMounted) setGeoJsonLoading(false); });
 
     return () => { isMounted = false; };
-  }, []);
+  }, [session?.user]);
+
+  useEffect(() => {
+    if (sessionStatus === "loading") return;
+    if (sessionStatus !== "authenticated") {
+      setLayerSettingsLoaded(true);
+      return;
+    }
+
+    let cancelled = false;
+    isLayerSettingsHydrating.current = true;
+
+    try {
+      const raw = localStorage.getItem(layerSettingsStorageKey);
+      const savedLayers = raw ? JSON.parse(raw)?.layers : null;
+      if (Array.isArray(savedLayers)) {
+        setLayers((prev) => {
+          const byId = new Map(savedLayers.map((layer: MapLayer) => [layer.id, layer]));
+          const merged = prev.map((layer) => byId.has(layer.id) ? { ...layer, ...byId.get(layer.id) } : layer);
+          const existing = new Set(merged.map((layer) => layer.id));
+          const extra = savedLayers.filter((layer: MapLayer) => layer?.id && !existing.has(layer.id));
+          return [...extra, ...merged];
+        });
+      }
+    } catch {
+      // Ignore malformed local fallback data.
+    }
+
+    fetch("/api/gis/layer-settings", { cache: "no-store" })
+      .then((res) => {
+        if (res.status === 404 || res.status === 405 || res.status === 501) {
+          remoteLayerSettingsUnsupported.current = true;
+        }
+        return res.ok ? res.json() : null;
+      })
+      .then((payload) => {
+        if (cancelled) return;
+        const savedLayers = payload?.data?.layers ?? payload?.layers;
+        if (Array.isArray(savedLayers)) {
+          setLayers((prev) => {
+            const byId = new Map(savedLayers.map((layer: MapLayer) => [layer.id, layer]));
+            const merged = prev.map((layer) => byId.has(layer.id) ? { ...layer, ...byId.get(layer.id) } : layer);
+            const existing = new Set(merged.map((layer) => layer.id));
+            const extra = savedLayers.filter((layer: MapLayer) => layer?.id && !existing.has(layer.id));
+            return [...extra, ...merged];
+          });
+        }
+      })
+      .catch(() => {
+        // The app can still run if the account-settings endpoint is not available.
+      })
+      .finally(() => {
+        if (!cancelled) {
+          isLayerSettingsHydrating.current = false;
+          setLayerSettingsLoaded(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      isLayerSettingsHydrating.current = false;
+    };
+  }, [layerSettingsStorageKey, sessionStatus]);
+
+  useEffect(() => {
+    if (!layerSettingsLoaded || isLayerSettingsHydrating.current) return;
+    if (sessionStatus !== "authenticated") return;
+
+    if (layerSettingsSaveTimer.current) clearTimeout(layerSettingsSaveTimer.current);
+    layerSettingsSaveTimer.current = setTimeout(async () => {
+      try {
+        localStorage.setItem(layerSettingsStorageKey, JSON.stringify({ layers, updatedAt: new Date().toISOString() }));
+      } catch {
+        // Local fallback is best-effort only.
+      }
+
+      if (remoteLayerSettingsUnsupported.current) return;
+
+      try {
+        const res = await fetch("/api/gis/layer-settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ layers }),
+        });
+        if (res.status === 404 || res.status === 405 || res.status === 501) {
+          remoteLayerSettingsUnsupported.current = true;
+        }
+      } catch {
+        // Keep the UI calm: changes are already stored in the per-account fallback.
+      }
+    }, 650);
+
+    return () => {
+      if (layerSettingsSaveTimer.current) clearTimeout(layerSettingsSaveTimer.current);
+    };
+  }, [layerSettingsStorageKey, layers, layerSettingsLoaded, sessionStatus]);
 
   // ── 3. Universities ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -222,9 +329,21 @@ export default function MapPage() {
     });
   }, []);
 
-  const handleOpen3D = useCallback((fileName: string) => {
-    const geojson = uploadedGeoJsonMap[fileName];
-    if (!geojson?.features) return;
+  const handleOpen3D = useCallback((layerOrFileName?: string) => {
+    const fileName = layerOrFileName?.startsWith("uploaded_")
+      ? layerOrFileName.replace("uploaded_", "")
+      : layerOrFileName;
+    const layer = layers.find((item) => item.id === layerOrFileName);
+    const geojson =
+      layerOrFileName === "universities" ? uniData :
+      layerOrFileName === "contours" ? geoJsonData :
+      fileName ? uploadedGeoJsonMap[fileName] :
+      null;
+
+    if (!geojson?.features) {
+      setView3D({ ...lastCoordsRef.current, name: layerOrFileName });
+      return;
+    }
 
     // Find the first feature with valid geometry
     const feat = geojson.features.find((f: any) => f.geometry);
@@ -266,9 +385,14 @@ export default function MapPage() {
 
     const center = getCenter(feat.geometry);
     if (center) {
-      setView3D({ lat: center[0], lng: center[1], name: fileName });
+      setView3D({
+        lat: center[0],
+        lng: center[1],
+        name: layer?.name ?? fileName,
+        geojson,
+      });
     }
-  }, [uploadedGeoJsonMap]);
+  }, [geoJsonData, layers, uniData, uploadedGeoJsonMap]);
 
   // Sync uploadedGeoJsonMap to localStorage
   useEffect(() => {
@@ -355,12 +479,18 @@ export default function MapPage() {
   const handleLayerRename = useCallback((id: string, newName: string) => {
     if (id.startsWith("uploaded_")) {
       const oldName = id.replace("uploaded_", "");
+      const safeName = newName.trim();
+      if (!safeName || safeName === oldName) return;
       setUploadedGeoJsonMap((prev) => {
         if (!prev[oldName]) return prev;
+        if (prev[safeName]) {
+          toast.error(isRTL ? "اسم اللاير موجود بالفعل" : "A layer with this name already exists");
+          return prev;
+        }
         const next = { ...prev };
         const data = next[oldName];
         delete next[oldName];
-        next[newName] = data;
+        next[safeName] = data;
         return next;
       });
     } else {
@@ -368,7 +498,7 @@ export default function MapPage() {
         prev.map((l) => (l.id === id ? { ...l, name: newName, nameAr: newName } : l))
       );
     }
-  }, []);
+  }, [isRTL]);
 
   const handleLayerRemove  = useCallback((id: string) => {
     setLayers((prev) => prev.filter((l) => l.id !== id));
@@ -516,8 +646,9 @@ export default function MapPage() {
     handleLayerOpacity,
     handleLayerColor,
     handleLayerRemove,
+    handleLayerRename,
+    handleLayerReorder,
     handleLayerZoom,
-    handleOpen3D,
   ]);
 
   const toggle2DButton = useMemo(() => (
@@ -726,7 +857,7 @@ export default function MapPage() {
             onClose={handleClose3D}
             toggleButton={toggle2DButton}
             sidebarSlot={sharedSidebar}
-            uploadedGeoJson={mergedUploadedGeoJson}
+            uploadedGeoJson={view3D.geojson ?? mergedUploadedGeoJson}
           />
         )}
 

@@ -49,6 +49,8 @@ function LayerRow({
   const [expanded, setExpanded] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [showLayerName, setShowLayerName] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(isRTL ? layer.nameAr : layer.name);
   const typeLabel = {
     vector: isRTL ? "متجه" : "Vector",
     raster: isRTL ? "راستر" : "Raster",
@@ -225,9 +227,8 @@ function LayerRow({
 
         <button 
           onClick={() => {
-            const current = isRTL ? layer.nameAr : layer.name;
-            const next = window.prompt(isRTL ? "اسم جديد للاير" : "New layer name", current);
-            if (next && next.trim() && next.trim() !== current) onRename(next.trim());
+            setDraftName(isRTL ? layer.nameAr : layer.name);
+            setIsRenaming(true);
           }}
           title={isRTL ? "إعادة تسمية" : "Rename"} 
           style={{ background: "none", border: "none", cursor: "pointer", color: "#475569", padding: 2, flexShrink: 0 }}
@@ -273,6 +274,87 @@ function LayerRow({
           >
             {isRTL ? layer.nameAr : layer.name}
           </div>
+        </div>
+      )}
+
+      {isRenaming && (
+        <div style={{ padding: "0 10px 10px", borderTop: "1px solid rgba(255,255,255,0.04)" }}>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const next = draftName.trim();
+              const current = (isRTL ? layer.nameAr : layer.name).trim();
+              if (next && next !== current) onRename(next);
+              setIsRenaming(false);
+            }}
+            style={{
+              marginTop: 9,
+              display: "grid",
+              gap: 8,
+              padding: 10,
+              borderRadius: 10,
+              background: "linear-gradient(135deg, rgba(0,212,255,0.08), rgba(15,23,42,0.55))",
+              border: "1px solid rgba(0,212,255,0.18)",
+            }}
+          >
+            <label style={{ display: "grid", gap: 6 }}>
+              <span style={{ fontSize: 10, color: "#67e8f9", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                {isRTL ? "تعديل اسم اللاير" : "Rename layer"}
+              </span>
+              <input
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setIsRenaming(false);
+                }}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  background: "rgba(2,6,23,0.72)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 8,
+                  color: "#e2e8f0",
+                  outline: "none",
+                  padding: "8px 10px",
+                  fontSize: 12,
+                }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={() => setIsRenaming(false)}
+                style={{
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  background: "rgba(255,255,255,0.04)",
+                  color: "#94a3b8",
+                  borderRadius: 8,
+                  padding: "6px 10px",
+                  fontSize: 11,
+                  cursor: "pointer",
+                }}
+              >
+                {isRTL ? "إلغاء" : "Cancel"}
+              </button>
+              <button
+                type="submit"
+                disabled={!draftName.trim()}
+                style={{
+                  border: "1px solid rgba(0,212,255,0.28)",
+                  background: draftName.trim() ? "#00d4ff" : "rgba(0,212,255,0.18)",
+                  color: draftName.trim() ? "#03101d" : "#64748b",
+                  borderRadius: 8,
+                  padding: "6px 10px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: draftName.trim() ? "pointer" : "not-allowed",
+                }}
+              >
+                {isRTL ? "حفظ" : "Save"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
