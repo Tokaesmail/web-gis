@@ -13,7 +13,7 @@ import { useMapCanvas }      from "./useMapCanvas";
 import { useLang }           from "../_components/translations";
 import {
   DrawTool, SAT_LAYERS, INDEX_TILES,
-  SatKey, IdxKey, LatLngPoint, CaptureMetadata,
+  SatKey, IdxKey, LatLngPoint, CaptureMetadata, CaptureResult,
 } from "./mapTypes_proxy";
 
 type ExtrusionConfig = {
@@ -46,7 +46,7 @@ interface Props {
   onOpacityChangeRegister?: (handler: (o: number) => void) => void;
   /** register an image placement workflow (2 clicks to place image) */
   onImagePlacerRegister?: (handler: (file: File) => void) => void;
-  onCapture?:     (url: string) => void;
+  onCapture?:     (capture: CaptureResult) => void;
   /** callback لما يضغط على GeoJSON feature */
   onFeatureClick?: (feature: GeoJSON.Feature) => void;
   /** GeoJSON data لعرضها على الخريطة */
@@ -692,10 +692,15 @@ export default function LeafletMap({
     coordinates: LatLngPoint[], metadata: CaptureMetadata
   ) => {
     try {
-      const { smallUrl, smallBlob, largeBlob } = await capture(canvas, map, L, coordinates, metadata);
-      onCapture?.(smallUrl);
+      const captureResult = await capture(canvas, map, L, coordinates, metadata);
+      const { smallBlob, largeBlob, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
+      onCapture?.(captureResult);
       // بنبعت coordinates و metadata للباك — مفيش ألوان
-      const res = await sendToBackend(smallBlob, largeBlob, coordinates, metadata);
+      const res = await sendToBackend(smallBlob, largeBlob, coordinates, metadata, {
+        viewportCoordinates,
+        selectedBounds,
+        viewportBounds,
+      });
       if (res.ok) console.log("✅ Backend:", await res.json());
     } catch (err) {
       console.error("❌ Capture error:", err);
@@ -1156,9 +1161,14 @@ export default function LeafletMap({
               lastCoordsRef.current = [centerCoord, { lat, lng }];
               lastToolRef.current   = "circle";
               const metadata: CaptureMetadata = { areaName: "Drawn Circle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
-            const { smallUrl, smallBlob, largeBlob } = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata);
-              onCapture?.(smallUrl);
-              const res = await sendToBackend(smallBlob, largeBlob, [centerCoord, { lat, lng }], metadata);
+            const captureResult = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata);
+              const { smallBlob, largeBlob, selectedCoordinates, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
+              onCapture?.(captureResult);
+              const res = await sendToBackend(smallBlob, largeBlob, selectedCoordinates, metadata, {
+                viewportCoordinates,
+                selectedBounds,
+                viewportBounds,
+              });
               if (res.ok) console.log("✅ Backend:", await res.json());
             }
             drawPointsRef.current = [];

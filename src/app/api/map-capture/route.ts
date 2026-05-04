@@ -12,20 +12,28 @@ export async function POST(req: NextRequest) {
     const form = await req.formData();
 
     // ② استخرج الـ 3 حاجات اللي بعتناهم من LeafletMap
-    const imageFile   = form.get("image")       as File   | null;
-    const coordsRaw   = form.get("coordinates") as string | null;
-    const metaRaw     = form.get("metadata")    as string | null;
+    const smallImageFile = form.get("smallImage") as File | null;
+    const largeImageFile = form.get("largeImage") as File | null;
+    const imageFile      = smallImageFile ?? (form.get("image") as File | null);
+    const coordsRaw      = form.get("coordinates") as string | null;
+    const viewportRaw    = form.get("viewportCoordinates") as string | null;
+    const selectedBoundsRaw = form.get("selectedBounds") as string | null;
+    const viewportBoundsRaw = form.get("viewportBounds") as string | null;
+    const metaRaw        = form.get("metadata") as string | null;
 
     // تأكد إن الداتا وصلت
     if (!imageFile || !coordsRaw || !metaRaw) {
       return NextResponse.json(
-        { error: "Missing required fields: image, coordinates, metadata" },
+        { error: "Missing required fields: smallImage, coordinates, metadata" },
         { status: 400 }
       );
     }
 
     // ③ حوّل الـ JSON strings لـ objects
     const coordinates = JSON.parse(coordsRaw);
+    const viewportCoordinates = viewportRaw ? JSON.parse(viewportRaw) : null;
+    const selectedBounds = selectedBoundsRaw ? JSON.parse(selectedBoundsRaw) : null;
+    const viewportBounds = viewportBoundsRaw ? JSON.parse(viewportBoundsRaw) : null;
     // مثال: [{ lat: 29.1, lng: 30.5 }, { lat: 29.2, lng: 30.6 }, ...]
 
     const metadata = JSON.parse(metaRaw);
@@ -45,8 +53,10 @@ export async function POST(req: NextRequest) {
     // ─────────────────────────────────────────────────────────────────────
 
     console.log("📍 Coordinates received:", coordinates.length, "points");
+    console.log("Viewport coordinates received:", viewportCoordinates?.length ?? 0, "points");
     console.log("📋 Metadata:", metadata);
-    console.log("🖼️  Image size:", imageFile.size, "bytes");
+    console.log("Small image size:", imageFile.size, "bytes");
+    console.log("Large image size:", largeImageFile?.size ?? 0, "bytes");
 
     // ⑤ رد على الـ Frontend بالنتايج
     return NextResponse.json({
@@ -56,6 +66,8 @@ export async function POST(req: NextRequest) {
       areaName:    metadata.areaName,
       areaSizeHa:  metadata.areaSizeHa,
       pointsCount: coordinates.length,
+      selectedBounds,
+      viewportBounds,
       // ── لما الـ Backend يبقى جاهز هتبعتي النتايج الحقيقية هنا ──
       // ndvi:     0.72,
       // ndwi:     0.31,

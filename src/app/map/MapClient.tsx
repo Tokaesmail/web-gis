@@ -7,7 +7,7 @@ import { useLang } from "../_components/translations";
 import AnalysisSidebar from "../_components/AnalysisSidebar/AnalysisSidebar";
 import AIAssistant from "../_components/AIAssistant/AIAssistant";
 
-import { DrawTool, SatKey, IdxKey } from "./mapTypes_proxy";
+import { DrawTool, SatKey, IdxKey, CaptureResult } from "./mapTypes_proxy";
 import MapNavbar from "./MapNavbar";
 import MapToolbar from "./MapToolbar";
 import MapSearch from "./MapSearch";
@@ -422,6 +422,7 @@ export default function MapPage() {
     setCaptures((prev) => {
       prev.forEach(c => {
         try { URL.revokeObjectURL(c.url); } catch (e) {}
+        try { URL.revokeObjectURL(c.largeUrl); } catch (e) {}
       });
       return [];
     });
@@ -435,18 +436,30 @@ export default function MapPage() {
     setView3D((prev) => prev ? null : { ...lastCoordsRef.current });
   }, []);
 
-  const handleCapture = useCallback((url: string) => {
-    setCaptureUrl(url);
+  const handleCapture = useCallback((capture: CaptureResult) => {
+    setCaptureUrl(capture.smallUrl);
     setCaptures((prev) => [
-      { id: Date.now(), url, createdAt: new Date().toISOString() },
+      {
+        id: Date.now(),
+        url: capture.smallUrl,
+        largeUrl: capture.largeUrl,
+        selectedCoordinates: capture.selectedCoordinates,
+        viewportCoordinates: capture.viewportCoordinates,
+        selectedBounds: capture.selectedBounds,
+        viewportBounds: capture.viewportBounds,
+        metadata: capture.metadata,
+        createdAt: capture.metadata.capturedAt,
+      },
       ...prev,
     ]);
   }, []);
 
   const handleDeleteCapture = useCallback((id: number, url: string) => {
     try { URL.revokeObjectURL(url); } catch (e) {}
+    const cap = captures.find((c) => c.id === id);
+    try { if (cap?.largeUrl) URL.revokeObjectURL(cap.largeUrl); } catch (e) {}
     setCaptures((prev) => prev.filter((c) => c.id !== id));
-  }, []);
+  }, [captures]);
 
   // ── Layer panel handlers ──────────────────────────────────────────────────
   const handleLayerToggle  = useCallback((id: string, visible: boolean) => {
@@ -615,6 +628,7 @@ export default function MapPage() {
         setCaptures((prev) => {
           prev.forEach(c => {
             try { URL.revokeObjectURL(c.url); } catch (e) {}
+            try { URL.revokeObjectURL(c.largeUrl); } catch (e) {}
           });
           return [];
         });
@@ -813,7 +827,15 @@ export default function MapPage() {
                 ${isRTL ? "left-16" : "right-16"}`}>
                 <div className="flex items-center justify-between bg-[#0a1628]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-2 sticky top-0 z-10">
                   <span className="text-[0.65rem] font-bold text-cyan-400 uppercase tracking-wider">Captures ({captures.length})</span>
-                  <button onClick={() => setCaptures([])} className="text-[0.6rem] text-slate-500 hover:text-red-400 cursor-pointer">Clear</button>
+                  <button onClick={() => {
+                    setCaptures((prev) => {
+                      prev.forEach(c => {
+                        try { URL.revokeObjectURL(c.url); } catch (e) {}
+                        try { URL.revokeObjectURL(c.largeUrl); } catch (e) {}
+                      });
+                      return [];
+                    });
+                  }} className="text-[0.6rem] text-slate-500 hover:text-red-400 cursor-pointer">Clear</button>
                 </div>
                 {captures.map((cap) => (
                   <div key={cap.id} className="group relative bg-[#0a1628]/95 backdrop-blur-md border border-white/10 rounded-xl overflow-hidden shadow-xl">
@@ -825,7 +847,7 @@ export default function MapPage() {
                     <div className="p-2 flex items-center justify-between">
                       <span className="text-[0.55rem] text-slate-500">{new Date(cap.createdAt).toLocaleTimeString()}</span>
                       <button 
-                        onClick={() => window.open(cap.url, '_blank')}
+                        onClick={() => window.open(cap.largeUrl ?? cap.url, '_blank')}
                         className="text-[0.55rem] font-bold text-cyan-400 hover:underline cursor-pointer"
                       >
                         View

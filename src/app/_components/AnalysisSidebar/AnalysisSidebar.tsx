@@ -699,6 +699,11 @@ function WeatherLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
 }
 
 // ─── Captures Panel ───────────────────────────────────────────────────────────
+function formatCaptureBounds(bounds: any) {
+  if (!bounds) return "No coordinates";
+  return `N ${Number(bounds.north).toFixed(6)}, S ${Number(bounds.south).toFixed(6)}, E ${Number(bounds.east).toFixed(6)}, W ${Number(bounds.west).toFixed(6)}`;
+}
+
 function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }) {
   return (
     <div className="space-y-4">
@@ -722,26 +727,46 @@ function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }
       ) : (
         <div className="space-y-4">
           {items.map((it) => {
+            const smallUrl = it.url ?? it.smallUrl;
+            const largeUrl = it.largeUrl ?? it.url;
             return (
               <div key={it.id} className="group bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
-                <div className="relative aspect-video bg-black/40">
-                  {it?.url && (
-          <img src={it.url} className="w-full h-full object-cover" />
-  )}
-                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-2 gap-2">
-                    <button 
-                      onClick={() => {
-  if (it?.url) window.open(it.url, '_blank');
-}}
-                      className="px-3 py-1.5 bg-cyan-500 text-black text-[0.65rem] rounded-lg font-bold"
+                <div className="grid grid-cols-2 gap-px bg-white/[0.06]">
+                  <div className="relative aspect-video bg-black/40">
+                    {smallUrl && (
+                      <img src={smallUrl} className="w-full h-full object-cover" />
+                    )}
+                    <button
+                      onClick={() => smallUrl && window.open(smallUrl, "_blank")}
+                      className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[0.52rem] text-cyan-300 border border-white/10"
                     >
-                      Open Full Size
+                      Selected
+                    </button>
+                  </div>
+                  <div className="relative aspect-video bg-black/40">
+                    {largeUrl && (
+                      <img src={largeUrl} className="w-full h-full object-cover" />
+                    )}
+                    <button
+                      onClick={() => largeUrl && window.open(largeUrl, "_blank")}
+                      className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[0.52rem] text-cyan-300 border border-white/10"
+                    >
+                      Full Map
                     </button>
                   </div>
                 </div>
                 <div className="p-2.5">
                   <p className="text-[0.65rem] text-slate-200 font-medium truncate">{new Date(it.createdAt).toLocaleString()}</p>
-                  <p className="text-[0.55rem] text-slate-500 mt-0.5">In-memory blob session</p>
+                  <div className="mt-2 space-y-1.5">
+                    <div>
+                      <p className="text-[0.52rem] uppercase tracking-wider text-cyan-400/80">Selected coordinates</p>
+                      <p className="text-[0.55rem] leading-snug text-slate-400 break-words">{formatCaptureBounds(it.selectedBounds)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[0.52rem] uppercase tracking-wider text-cyan-400/80">Full map coordinates</p>
+                      <p className="text-[0.55rem] leading-snug text-slate-400 break-words">{formatCaptureBounds(it.viewportBounds)}</p>
+                    </div>
+                  </div>
                 </div>
               </div>
             );

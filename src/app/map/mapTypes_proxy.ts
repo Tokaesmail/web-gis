@@ -14,6 +14,25 @@ export interface CaptureMetadata {
   capturedAt: string;
 }
 
+export interface CaptureBounds {
+  north: number;
+  south: number;
+  east:  number;
+  west:  number;
+}
+
+export interface CaptureResult {
+  smallUrl: string;
+  largeUrl: string;
+  smallBlob: Blob;
+  largeBlob: Blob;
+  selectedCoordinates: LatLngPoint[];
+  viewportCoordinates: LatLngPoint[];
+  selectedBounds: CaptureBounds;
+  viewportBounds: CaptureBounds;
+  metadata: CaptureMetadata;
+}
+
 // ─── Satellite Layers ─────────────────────────────────────────────────────────
 // URL بتاخد ?source= عشان الـ proxy يعرف يجيب إيه
 // لازم نستخدم الـ proxy لجميع الطبقات عشان الـ CORS وقت الـ Capture

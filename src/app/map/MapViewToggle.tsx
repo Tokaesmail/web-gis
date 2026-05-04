@@ -22,7 +22,7 @@ import Mapbox3DView   from "./Mapbox3DView";
 import AnalysisSidebar from "../_components/AnalysisSidebar/AnalysisSidebar";
 
 // ── أي props مشتركة بين الاتنين ──────────────────────────────────────────────
-import type { DrawTool, SatKey, IdxKey } from "./mapTypes_proxy";
+import type { DrawTool, SatKey, IdxKey, CaptureResult } from "./mapTypes_proxy";
 import type { GeoJSON } from "geojson";
 
 interface MapViewToggleProps {
@@ -34,7 +34,7 @@ interface MapViewToggleProps {
   clearRef:       React.MutableRefObject<(() => void) | null>;
   onSatChange:    (handler: (sat: SatKey) => void) => void;
   onIdxChange:    (handler: (idx: IdxKey) => void) => void;
-  onCapture?:     (url: string) => void;
+  onCapture?:     (capture: CaptureResult) => void;
   onFeatureClick?: (feature: GeoJSON.Feature) => void;
   geoJsonData?:   GeoJSON.FeatureCollection | GeoJSON.Feature | null;
   extraGeoJsonData?: GeoJSON.FeatureCollection | GeoJSON.Feature | null;
