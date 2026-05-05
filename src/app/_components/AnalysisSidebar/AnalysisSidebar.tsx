@@ -704,7 +704,20 @@ function formatCaptureBounds(bounds: any) {
   return `N ${Number(bounds.north).toFixed(6)}, S ${Number(bounds.south).toFixed(6)}, E ${Number(bounds.east).toFixed(6)}, W ${Number(bounds.west).toFixed(6)}`;
 }
 
-function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }) {
+function CapturesPanel({
+  items,
+  onClear,
+  onDelete,
+}: {
+  items: any[];
+  onClear: () => void;
+  onDelete?: (id: number, url: string) => void;
+}) {
+  const openCaptureImage = (url?: string) => {
+    if (!url) return;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
   return (
     <div className="space-y-4">
       <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-2 flex items-center justify-between">
@@ -734,10 +747,19 @@ function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }
                 <div className="grid grid-cols-2 gap-px bg-white/[0.06]">
                   <div className="relative aspect-video bg-black/40">
                     {smallUrl && (
-                      <img src={smallUrl} className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => openCaptureImage(smallUrl)}
+                        className="block w-full h-full cursor-zoom-in"
+                        title="Open selected capture"
+                        aria-label="Open selected capture"
+                      >
+                        <img src={smallUrl} alt="Selected capture" className="w-full h-full object-cover" />
+                      </button>
                     )}
                     <button
-                      onClick={() => smallUrl && window.open(smallUrl, "_blank")}
+                      type="button"
+                      onClick={() => openCaptureImage(smallUrl)}
                       className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[0.52rem] text-cyan-300 border border-white/10"
                     >
                       Selected
@@ -745,10 +767,19 @@ function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }
                   </div>
                   <div className="relative aspect-video bg-black/40">
                     {largeUrl && (
-                      <img src={largeUrl} className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => openCaptureImage(largeUrl)}
+                        className="block w-full h-full cursor-zoom-in"
+                        title="Open full map capture"
+                        aria-label="Open full map capture"
+                      >
+                        <img src={largeUrl} alt="Full map capture" className="w-full h-full object-cover" />
+                      </button>
                     )}
                     <button
-                      onClick={() => largeUrl && window.open(largeUrl, "_blank")}
+                      type="button"
+                      onClick={() => openCaptureImage(largeUrl)}
                       className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[0.52rem] text-cyan-300 border border-white/10"
                     >
                       Full Map
@@ -756,7 +787,24 @@ function CapturesPanel({ items, onClear }: { items: any[], onClear: () => void }
                   </div>
                 </div>
                 <div className="p-2.5">
-                  <p className="text-[0.65rem] text-slate-200 font-medium truncate">{new Date(it.createdAt).toLocaleString()}</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[0.65rem] text-slate-200 font-medium truncate">{new Date(it.createdAt).toLocaleString()}</p>
+                    {onDelete && (
+                      <button
+                        type="button"
+                        onClick={() => onDelete(it.id, smallUrl ?? largeUrl ?? "")}
+                        className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                        title="Delete this capture"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                          <path d="M3 6h18" />
+                          <path d="M8 6V4h8v2" />
+                          <path d="M19 6l-1 14H6L5 6" />
+                          <path d="M10 11v5M14 11v5" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                   <div className="mt-2 space-y-1.5">
                     <div>
                       <p className="text-[0.52rem] uppercase tracking-wider text-cyan-400/80">Selected coordinates</p>
@@ -789,6 +837,7 @@ function PanelContent({
   onOpen3D,
   onFlyTo,
   onClearCaptures,
+  onDeleteCapture,
   layers,
   onLayerToggle,
   onLayerOpacity,
@@ -808,6 +857,7 @@ function PanelContent({
   onOpen3D?: (fileName: string) => void;
   onFlyTo?: (lat: number, lng: number) => void;
   onClearCaptures: () => void;
+  onDeleteCapture?: (id: number, url: string) => void;
   layers: MapLayer[];
   onLayerToggle: (id: string, visible: boolean) => void;
   onLayerOpacity: (id: string, opacity: number) => void;
@@ -949,7 +999,7 @@ function PanelContent({
 
   // ── CAPTURES ──
   if (id === "captures") {
-    return <CapturesPanel items={captures} onClear={onClearCaptures} />;
+    return <CapturesPanel items={captures} onClear={onClearCaptures} onDelete={onDeleteCapture} />;
   }
 
   // ── LAYERS ──
@@ -1081,6 +1131,7 @@ export default function AnalysisSidebar({
   activePanel: controlledActivePanel,
   onActivePanelChange,
   onClearCaptures,
+  onDeleteCapture,
   layers,
   onLayerToggle,
   onLayerOpacity,
@@ -1104,6 +1155,7 @@ export default function AnalysisSidebar({
   activePanel?: PanelId | null;
   onActivePanelChange?: (id: PanelId | null) => void;
   onClearCaptures: () => void;
+  onDeleteCapture?: (id: number, url: string) => void;
   layers: MapLayer[];
   onLayerToggle: (id: string, visible: boolean) => void;
   onLayerOpacity: (id: string, opacity: number) => void;
@@ -1153,12 +1205,12 @@ export default function AnalysisSidebar({
         <div
           className="h-full overflow-hidden transition-all duration-300 ease-in-out"
           style={{
-            width: activePanel ? 340 : 0,
+            width: activePanel ? "min(340px, calc(100vw - 52px))" : 0,
             pointerEvents: activePanel ? "all" : "none",
             opacity: activePanel ? 1 : 0,
           }}
         >
-          <div className="h-full w-[340px] bg-[#070f1e]/97 backdrop-blur-xl border-l border-white/[0.08] flex flex-col overflow-hidden shadow-[-8px_0_32px_rgba(0,0,0,0.4)]">
+          <div className="h-full w-[min(340px,calc(100vw-52px))] bg-[#070f1e]/97 backdrop-blur-xl border-l border-white/[0.08] flex flex-col overflow-hidden shadow-[-8px_0_32px_rgba(0,0,0,0.4)]">
             {/* Panel header */}
             <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-white/[0.06] shrink-0">
               <div className="flex items-center gap-2.5">
@@ -1193,6 +1245,7 @@ export default function AnalysisSidebar({
                   onOpen3D={onOpen3D}
                   onFlyTo={onFlyTo}
                   onClearCaptures={onClearCaptures}
+                  onDeleteCapture={onDeleteCapture}
                   layers={layers}
                   onLayerToggle={onLayerToggle}
                   onLayerOpacity={onLayerOpacity}

@@ -300,7 +300,7 @@ export default function JSONUploadModal({
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div
-      className="fixed inset-0 z-[3500] flex items-center justify-center"
+      className="fixed inset-0 z-[3500] flex items-center justify-center p-3 sm:p-0"
       style={{ pointerEvents: "all" }}
       onClick={(e) => {
         if (e.target === e.currentTarget) {
@@ -311,10 +311,10 @@ export default function JSONUploadModal({
     >
       <div className="absolute inset-0 bg-black/55 backdrop-blur-sm" />
 
-      <div className="relative z-10 w-[480px] max-h-[88vh] flex flex-col bg-[#060d1b] border border-white/[0.1] rounded-2xl shadow-[0_32px_96px_rgba(0,0,0,0.8)] overflow-hidden">
+      <div className="relative z-10 w-full max-w-[480px] max-h-[88dvh] flex flex-col bg-[#060d1b] border border-white/[0.1] rounded-2xl shadow-[0_32px_96px_rgba(0,0,0,0.8)] overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 pt-5 pb-4 border-b border-white/[0.07] shrink-0">
+        <div className="flex items-center justify-between gap-3 px-4 sm:px-5 pt-4 sm:pt-5 pb-4 border-b border-white/[0.07] shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -340,7 +340,7 @@ export default function JSONUploadModal({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4 custom-scroll">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 custom-scroll">
 
           
 
@@ -362,7 +362,7 @@ export default function JSONUploadModal({
               onDragLeave={() => setDragOver(false)}
               onDrop={onDrop}
               onClick={() => inputRef.current?.click()}
-              className={`flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-200 py-14 px-6 select-none
+              className={`flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-200 py-10 sm:py-14 px-4 sm:px-6 select-none
                 ${dragOver ? "border-cyan-400/70 bg-cyan-400/[0.07] scale-[1.01]" : "border-white/[0.1] bg-white/[0.02] hover:border-white/[0.22] hover:bg-white/[0.04]"}`}
             >
               <div className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all duration-200 ${dragOver ? "bg-cyan-400/20 scale-110" : "bg-white/[0.05]"}`}>
@@ -437,7 +437,7 @@ export default function JSONUploadModal({
                 </div>
 
                 {/* Stats */}
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   {[
                     { v: total, label: "Features", color: "text-cyan-400" },
                     { v: Object.keys(counts).length, label: "Geom Types", color: "text-violet-400" },
@@ -520,7 +520,7 @@ export default function JSONUploadModal({
                   </div>
 
                   {extrudeEnabled && (
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <div className="bg-black/20 border border-white/[0.06] rounded-lg p-2.5">
                         <p className="text-[0.58rem] text-slate-500 mb-1">Height property</p>
                         <input
@@ -616,7 +616,7 @@ export default function JSONUploadModal({
                 </div>
 
                 {/* Stats */}
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   {[
                     { v: rows, label: isArr ? "Rows" : "Objects", color: "text-amber-400" },
                     { v: keys, label: "Fields", color: "text-violet-400" },
@@ -666,7 +666,7 @@ export default function JSONUploadModal({
         </div>
 
         {/* Footer */}
-        <div className="shrink-0 px-5 py-4 border-t border-white/[0.07] flex items-center gap-3">
+        <div className="shrink-0 px-4 sm:px-5 py-4 border-t border-white/[0.07] flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           {parsed ? (
             <>
               <button

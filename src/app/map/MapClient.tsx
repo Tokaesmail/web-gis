@@ -455,11 +455,14 @@ export default function MapPage() {
   }, []);
 
   const handleDeleteCapture = useCallback((id: number, url: string) => {
-    try { URL.revokeObjectURL(url); } catch (e) {}
-    const cap = captures.find((c) => c.id === id);
-    try { if (cap?.largeUrl) URL.revokeObjectURL(cap.largeUrl); } catch (e) {}
-    setCaptures((prev) => prev.filter((c) => c.id !== id));
-  }, [captures]);
+    setCaptures((prev) => {
+      const cap = prev.find((c) => c.id === id);
+      try { URL.revokeObjectURL(url); } catch (e) {}
+      try { if (cap?.largeUrl) URL.revokeObjectURL(cap.largeUrl); } catch (e) {}
+      return prev.filter((c) => c.id !== id);
+    });
+    setCaptureUrl((current) => (current === url ? null : current));
+  }, []);
 
   // ── Layer panel handlers ──────────────────────────────────────────────────
   const handleLayerToggle  = useCallback((id: string, visible: boolean) => {
@@ -633,6 +636,7 @@ export default function MapPage() {
           return [];
         });
       }}
+      onDeleteCapture={handleDeleteCapture}
       layers={layers}
       onLayerToggle={handleLayerToggle}
       onLayerOpacity={handleLayerOpacity}
@@ -654,6 +658,7 @@ export default function MapPage() {
     handleExtrusionConfig,
     handleFlyTo,
     handleClose3D,
+    handleDeleteCapture,
     activePanel,
     layers,
     handleLayerToggle,
@@ -682,7 +687,7 @@ export default function MapPage() {
   }, []);
 
   return (
-    <div className={`flex flex-col w-full h-screen bg-[#040d1a] overflow-hidden ${isRTL ? "font-arabic" : ""}`}>
+    <div className={`flex flex-col w-full h-[100dvh] min-h-[100dvh] bg-[#040d1a] overflow-hidden ${isRTL ? "font-arabic" : ""}`}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600&family=Noto+Sans+Arabic:wght@400;600&display=swap');
         body { font-family: 'DM Sans', sans-serif; margin: 0; }
@@ -739,7 +744,7 @@ export default function MapPage() {
         {!view3D && (
           <>
             {/* ── Top-left controls bar ── */}
-            <div className="absolute top-3 left-3 z-[1100] flex items-center gap-2 flex-wrap">
+            <div className={`absolute top-3 z-[1100] flex max-w-[calc(100vw-72px)] items-center gap-2 overflow-x-auto app-scroll pb-1 pointer-events-auto ${isRTL ? "right-3" : "left-3"}`}>
               {/* 3D View */}
               <button
                 onClick={handleToggleView}
@@ -792,8 +797,8 @@ export default function MapPage() {
 
             {/* ── Area / Feature Info Overlay ── */}
             {selectedArea.ha > 0 && (
-              <div className={`absolute bottom-24 z-[1000] px-4 py-3 bg-[#0a1628]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl animate-fadeUp flex items-center gap-4 pointer-events-auto
-                ${isRTL ? "left-20" : "right-20"}`}>
+              <div className={`absolute bottom-32 sm:bottom-24 z-[1000] max-w-[calc(100vw-96px)] px-3 sm:px-4 py-3 bg-[#0a1628]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl animate-fadeUp flex items-center gap-3 sm:gap-4 pointer-events-auto
+                ${isRTL ? "left-16 sm:left-20" : "right-16 sm:right-20"}`}>
                 <div className="w-10 h-10 rounded-xl bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18" />
@@ -823,8 +828,8 @@ export default function MapPage() {
 
             {/* ── Capture Sidebar Preview ── */}
             {captures.length > 0 && (
-              <div className={`absolute top-20 z-[1000] w-48 space-y-3 animate-fadeUp max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto
-                ${isRTL ? "left-16" : "right-16"}`}>
+              <div className={`absolute top-[4.5rem] sm:top-20 z-[1000] w-[min(12rem,calc(100vw-5rem))] space-y-3 animate-fadeUp max-h-[46vh] sm:max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto
+                ${isRTL ? "left-14 sm:left-16" : "right-14 sm:right-16"}`}>
                 <div className="flex items-center justify-between bg-[#0a1628]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-2 sticky top-0 z-10">
                   <span className="text-[0.65rem] font-bold text-cyan-400 uppercase tracking-wider">Captures ({captures.length})</span>
                   <button onClick={() => {
@@ -841,21 +846,32 @@ export default function MapPage() {
                   <div key={cap.id} className="group relative bg-[#0a1628]/95 backdrop-blur-md border border-white/10 rounded-xl overflow-hidden shadow-xl">
                     <div className="aspect-video bg-black/40">
                       {cap?.url && (
-  <img src={cap.url} className="w-full h-full object-cover" />
-)}
+                        <button
+                          type="button"
+                          onClick={() => window.open(cap.largeUrl ?? cap.url, "_blank", "noopener,noreferrer")}
+                          className="block w-full h-full cursor-zoom-in"
+                          title="Open capture"
+                          aria-label="Open capture"
+                        >
+                          <img src={cap.url} alt="Map capture" className="w-full h-full object-cover" />
+                        </button>
+                      )}
                     </div>
                     <div className="p-2 flex items-center justify-between">
                       <span className="text-[0.55rem] text-slate-500">{new Date(cap.createdAt).toLocaleTimeString()}</span>
                       <button 
-                        onClick={() => window.open(cap.largeUrl ?? cap.url, '_blank')}
+                        type="button"
+                        onClick={() => window.open(cap.largeUrl ?? cap.url, "_blank", "noopener,noreferrer")}
                         className="text-[0.55rem] font-bold text-cyan-400 hover:underline cursor-pointer"
                       >
                         View
                       </button>
                     </div>
                     <button 
+                      type="button"
                       onClick={() => handleDeleteCapture(cap.id, cap.url)}
                       className="absolute top-1 right-1 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center text-white/60 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                      aria-label="Delete capture"
                     >
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M18 6 6 18M6 6l12 12"/></svg>
                     </button>

@@ -11,7 +11,7 @@ export default function AITriggerButton({
     <button
       onClick={onClick}
       title="AI Assistant"
-      className={`absolute bottom-5 right-60px z-1000 w-10 h-10 rounded-xl flex items-center justify-center cursor-pointer transition-all shadow-lg pointer-events-auto
+      className={`absolute bottom-24 right-3 sm:bottom-5 sm:right-[60px] z-1000 w-10 h-10 rounded-xl flex items-center justify-center cursor-pointer transition-all shadow-lg pointer-events-auto
         ${active
           ? "bg-cyan-400 text-[#040d1a] shadow-[0_0_20px_rgba(0,212,255,0.5)]"
           : "bg-[#0a1628]/95 backdrop-blur-md border border-white/10 text-slate-400 hover:text-cyan-400 hover:border-cyan-400/30"}`}

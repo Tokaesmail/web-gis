@@ -192,6 +192,7 @@ export default function AboutSection() {
   return (
     <section
       id="about"
+      className="about-section"
       dir={isRTL ? "rtl" : "ltr"}
       style={{
         background: "#040d1a",
@@ -209,7 +210,7 @@ export default function AboutSection() {
         .anim-fiu { animation: fadeInUp .4s ease both; }
       `}</style>
 
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 24px" }}>
+      <div className="about-container" style={{ maxWidth: 1100, margin: "0 auto", padding: "0 24px" }}>
 
         {/* ── Section label ── */}
         <div style={{ display:"flex", justifyContent:"center", marginBottom:20 }}>
@@ -234,7 +235,7 @@ export default function AboutSection() {
         </p>
 
         {/* ── Tab switcher ── */}
-        <div style={{ display:"flex", justifyContent:"center", gap:4, marginBottom:48, background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:14, padding:5, width:"fit-content", margin:"0 auto 48px" }}>
+        <div className="about-tabs app-scroll" style={{ display:"flex", justifyContent:"center", gap:4, marginBottom:48, background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:14, padding:5, width:"fit-content", margin:"0 auto 48px" }}>
           {tabs.map((t) => (
             <button
               key={t.id}
@@ -259,7 +260,7 @@ export default function AboutSection() {
         {/* ── Tab content ── */}
         <div
           key={active}
-          className="anim-fiu"
+          className="anim-fiu about-content"
           style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:48, alignItems:"center" }}
         >
           {/* Left: text */}
@@ -280,7 +281,7 @@ export default function AboutSection() {
           </div>
 
           {/* Right: visual mock */}
-          <div style={{
+          <div className="about-visual-card" style={{
             background:"rgba(7,15,30,0.8)",
             border:"1px solid rgba(255,255,255,0.07)",
             borderRadius:18,
@@ -301,7 +302,7 @@ export default function AboutSection() {
         </div>
 
         {/* ── Stats strip ── */}
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginTop:72 }}>
+        <div className="about-stats" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginTop:72 }}>
           {stats.map((s) => (
             <div
               key={s.labelEn}

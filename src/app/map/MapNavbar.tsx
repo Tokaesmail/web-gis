@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useLang } from "../_components/translations";
 
 export default function MapNavbar({
@@ -12,15 +13,15 @@ export default function MapNavbar({
   const { t, toggleLang, lang } = useLang();
 
   return (
-    <nav className="h-12 flex items-center justify-between px-4 bg-[#040d1a]/95 backdrop-blur-xl border-b border-white/[0.07] shrink-0 z-1100 relative">
-      <a href="/" className="flex items-center gap-2 no-underline">
+    <nav className="h-12 flex items-center justify-between gap-2 px-3 sm:px-4 bg-[#040d1a]/95 backdrop-blur-xl border-b border-white/[0.07] shrink-0 z-1100 relative">
+      <Link href="/" className="flex min-w-0 items-center gap-2 no-underline">
         <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_#22d3ee] animate-pulse" />
-        <span className="text-cyan-400 font-semibold tracking-wide text-[0.85rem]">
+        <span className="truncate text-cyan-400 font-semibold tracking-wide text-[0.78rem] sm:text-[0.85rem]">
           {t.projectName}
         </span>
-      </a>
+      </Link>
 
-      <div className="flex items-center gap-1.5 text-[0.72rem] text-slate-500">
+      <div className="hidden sm:flex items-center gap-1.5 text-[0.72rem] text-slate-500">
         <span className="text-slate-400">{t.navMap}</span>
         <span>/</span>
         <span className="text-slate-300">World Explorer</span>

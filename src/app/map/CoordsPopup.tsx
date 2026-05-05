@@ -10,8 +10,8 @@ export default function CoordsPopup({
   onClose: () => void;
 }) {
   return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-1000 pointer-events-auto animate-fadeUp mb-7">
-      <div className="flex items-center gap-3 bg-[#0a1628]/98 backdrop-blur-xl border border-cyan-400/30 rounded-xl px-4 py-2.5 shadow-[0_8px_32px_rgba(0,212,255,0.15)]">
+    <div className="absolute bottom-32 sm:bottom-4 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-1000 pointer-events-auto animate-fadeUp sm:mb-7">
+      <div className="mx-auto flex w-fit max-w-full flex-wrap items-center justify-center gap-2 sm:gap-3 bg-[#0a1628]/98 backdrop-blur-xl border border-cyan-400/30 rounded-xl px-3 sm:px-4 py-2.5 shadow-[0_8px_32px_rgba(0,212,255,0.15)]">
         <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee]" />
         <span className="text-[0.74rem] font-mono text-cyan-400">{lat.toFixed(6)}°N</span>
         <span className="text-slate-600">·</span>

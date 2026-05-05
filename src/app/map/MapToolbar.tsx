@@ -101,10 +101,12 @@ export default function MapToolbar({
 }) {
   const { t } = useLang();
 
+  const desktopSide = isRTL ? "sm:left-auto sm:right-4" : "sm:left-4 sm:right-auto";
+
   return (
-    <div className={`absolute top-1/2 -translate-y-1/2 z-1000 flex flex-col gap-1.5 pointer-events-auto ${isRTL ? "right-4" : "left-4"}`}>
+    <div className={`absolute left-2 right-2 bottom-20 sm:bottom-auto sm:top-1/2 sm:-translate-y-1/2 z-1000 flex flex-row sm:flex-col gap-1.5 pointer-events-auto ${desktopSide}`}>
       {/* Drawing tools */}
-      <div className="flex flex-col gap-1 bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-lg">
+      <div className="flex flex-row sm:flex-col gap-1 bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-lg overflow-x-auto app-scroll">
         {TOOLS.map((tool) => (
           <div key={tool.id} className="relative group">
             <button
@@ -161,7 +163,7 @@ export default function MapToolbar({
       </div>
 
       {/* Zoom controls */}
-      <div className="flex flex-col gap-0.5 bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-lg">
+      <div className="flex flex-row sm:flex-col gap-0.5 bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-lg">
         <button
           id="map-zoom-in"
           className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-white/0.08 transition-all cursor-pointer text-lg font-light">

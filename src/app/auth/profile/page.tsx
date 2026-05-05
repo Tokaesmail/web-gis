@@ -26,23 +26,23 @@ export default async function ProfilePage() {
 
       {/* Avatar + info */}
       <div className="bg-white/[0.03] border border-white/[0.08] rounded-2xl p-5 space-y-4">
-        <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4">
           <div className="w-14 h-14 rounded-2xl bg-cyan-400/15 border border-cyan-400/20 flex items-center justify-center text-lg font-bold text-cyan-400">
             {initials}
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-base font-medium text-slate-100">{user.username}</p>
-            <p className="text-sm text-slate-500">{user.email}</p>
+            <p className="text-sm text-slate-500 break-all">{user.email}</p>
           </div>
           {/* Verified badge */}
-          <div className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[0.65rem] font-medium border ${user.is_verified ? "bg-emerald-400/10 border-emerald-400/20 text-emerald-400" : "bg-yellow-400/10 border-yellow-400/20 text-yellow-400"}`}>
+          <div className={`sm:ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[0.65rem] font-medium border ${user.is_verified ? "bg-emerald-400/10 border-emerald-400/20 text-emerald-400" : "bg-yellow-400/10 border-yellow-400/20 text-yellow-400"}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${user.is_verified ? "bg-emerald-400" : "bg-yellow-400"}`} />
             {user.is_verified ? "Verified" : "Unverified"}
           </div>
         </div>
 
         {/* Details grid */}
-        <div className="grid grid-cols-2 gap-3 pt-3 border-t border-white/[0.06]">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-white/[0.06]">
           {[
             { label: "User ID", value: user.id?.slice(0, 8) + "..." },
             { label: "Status", value: user.is_active ? "Active" : "Inactive" },
@@ -115,7 +115,7 @@ export default async function ProfilePage() {
       </div>
 
       {/* Logout buttons — use client components so signOut() works correctly */}
-      <div className="grid grid-cols-2 gap-3 pt-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
         <LogoutButton />
         <LogoutAllButton logoutAllAction={logoutAllAction} />
       </div>

@@ -45,7 +45,7 @@ export default function MapSearch({
   };
 
   return (
-    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-1000 w-340px sm:w-460px pointer-events-auto">
+    <div className="absolute top-16 xl:top-4 left-2 right-16 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-1000 w-auto sm:w-[460px] pointer-events-auto">
       <div
         className={`flex items-center gap-2.5 bg-[#0a1628]/95 backdrop-blur-md border rounded-xl px-3.5 py-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.5)] transition-all
           ${focused ? "border-cyan-400/50 shadow-[0_0_0_3px_rgba(0,212,255,0.08)]" : "border-white/10"}`}
@@ -79,14 +79,14 @@ export default function MapSearch({
             </svg>
           </button>
         )}
-        <div className="shrink-0 flex items-center gap-1 border border-white/10 rounded-md px-2 py-0.5">
+        <div className="hidden min-[380px]:flex shrink-0 items-center gap-1 border border-white/10 rounded-md px-2 py-0.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
           <span className="text-[0.65rem] text-slate-400">LIVE</span>
         </div>
       </div>
 
       {open && (
-        <div className="mt-1.5 bg-[#0a1628]/98 backdrop-blur-md border border-white/10 rounded-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)] overflow-hidden max-h-280px overflow-y-auto">
+        <div className="mt-1.5 bg-[#0a1628]/98 backdrop-blur-md border border-white/10 rounded-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)] overflow-hidden max-h-[280px] overflow-y-auto app-scroll">
           {results.map((r, i) => (
             <button
               key={i}

@@ -45,7 +45,7 @@ export default async function SessionsPage() {
 
             return (
               <div key={session._id ?? session.id ?? i}
-                className={`flex items-start gap-4 bg-white/[0.03] border rounded-xl p-4 ${isCurrentDevice ? "border-cyan-400/20" : "border-white/[0.07]"}`}>
+                className={`flex flex-col sm:flex-row sm:items-start gap-4 bg-white/[0.03] border rounded-xl p-4 ${isCurrentDevice ? "border-cyan-400/20" : "border-white/[0.07]"}`}>
                 {/* Device icon */}
                 <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isCurrentDevice ? "bg-cyan-400/10 text-cyan-400" : "bg-white/[0.04] text-slate-500"}`}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -56,7 +56,7 @@ export default async function SessionsPage() {
                 {/* Info */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-sm font-medium text-slate-200 truncate">
+                    <p className="text-sm font-medium text-slate-200 truncate max-w-full">
                       {session.userAgent?.split(" ")[0] ?? `Session ${i + 1}`}
                     </p>
                     {isCurrentDevice && (
@@ -76,9 +76,9 @@ export default async function SessionsPage() {
 
                 {/* Revoke button */}
                 {!isCurrentDevice && (
-                  <form action={async (data) => { await revokeSessionAction(data); }}>
+                  <form action={async (data) => { await revokeSessionAction(data); }} className="w-full sm:w-auto">
                     <input type="hidden" name="sessionId" value={session._id ?? session.id} />
-                    <button type="submit" className="text-[0.68rem] text-red-400 hover:text-red-300 bg-red-500/8 hover:bg-red-500/15 border border-red-500/15 hover:border-red-500/25 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer whitespace-nowrap">
+                    <button type="submit" className="w-full sm:w-auto text-[0.68rem] text-red-400 hover:text-red-300 bg-red-500/8 hover:bg-red-500/15 border border-red-500/15 hover:border-red-500/25 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer whitespace-nowrap">
                         Revoke
                     </button>
                     </form>

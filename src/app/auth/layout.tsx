@@ -7,7 +7,7 @@ export const metadata: Metadata = {
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-[#030912] flex">
+    <div className="safe-screen bg-[#030912] flex overflow-x-hidden">
       {/* ── Left decorative panel ── */}
       <div className="hidden lg:flex lg:w-[42%] relative overflow-hidden flex-col justify-between p-12">
         {/* Grid background */}
@@ -93,14 +93,14 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
       </div>
 
       {/* ── Right: form area ── */}
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-12 relative">
+      <div className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-8 sm:py-12 relative overflow-y-auto app-scroll">
         {/* Mobile logo */}
         <div className="lg:hidden flex items-center gap-2 mb-8">
           <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_#22d3ee]" />
           <span className="text-cyan-400 font-semibold tracking-wide text-sm">GeoSense AI</span>
         </div>
 
-        <div className="w-full max-w-[420px]">
+        <div className="w-full max-w-[420px] min-w-0">
           {children}
         </div>
       </div>

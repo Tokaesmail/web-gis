@@ -111,23 +111,23 @@ export default function Hero() {
       `}</style>
 
       <Particles />
-      <div className={`min-h-screen bg-[#040d1a] text-slate-100 ${isRTL ? "font-arabic" : ""}`} dir={isRTL ? "rtl" : "ltr"}>
+      <div className={`safe-screen bg-[#040d1a] text-slate-100 overflow-x-hidden ${isRTL ? "font-arabic" : ""}`} dir={isRTL ? "rtl" : "ltr"}>
 
         {/* NAVBAR */}
-        <nav className={`fixed inset-x-0 top-0 z-50 h-16 flex items-center justify-between px-6 lg:px-12 blur-nav border-b border-white/[0.07] ${scrolled ? "bg-[#040d1a]/90" : "bg-[#040d1a]/50"}`}>
-          <Link href="#" className="flex items-center gap-2.5 no-underline">
+        <nav className={`fixed inset-x-0 top-0 z-50 min-h-16 flex items-center justify-between gap-3 px-3 sm:px-6 lg:px-12 py-2 blur-nav border-b border-white/[0.07] ${scrolled ? "bg-[#040d1a]/90" : "bg-[#040d1a]/50"}`}>
+          <Link href="#" className="flex min-w-0 items-center gap-2.5 no-underline">
             <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_10px_#22d3ee] anim-blink" />
-            <span className="text-cyan-400 font-semibold tracking-wide text-[0.95rem]">{t.projectName}</span>
+            <span className="truncate text-cyan-400 font-semibold tracking-wide text-[0.82rem] sm:text-[0.95rem]">{t.projectName}</span>
           </Link>
 
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             <button onClick={handleMapClick} className="hidden sm:block text-slate-400 hover:text-cyan-400 text-sm px-3 py-2 rounded-md bg-transparent cursor-pointer">
               {t.navMap}
             </button>
             <Link href="#about" className="hidden sm:block text-slate-400 hover:text-cyan-400 text-sm px-3 py-2 rounded-md no-underline">
               {t.navAbout}
             </Link>
-            <button onClick={() => setLang(lang === "en" ? "ar" : "en")} className="border border-white/10 hover:border-cyan-400/40 text-slate-400 hover:text-cyan-400 text-xs tracking-wider px-3 py-1.5 rounded-md bg-transparent mx-1.5">
+            <button onClick={() => setLang(lang === "en" ? "ar" : "en")} className="border border-white/10 hover:border-cyan-400/40 text-slate-400 hover:text-cyan-400 text-xs tracking-wider px-2.5 sm:px-3 py-1.5 rounded-md bg-transparent sm:mx-1.5">
               {lang === "en" ? "عربي" : "EN"}
             </button>
 
@@ -138,15 +138,15 @@ export default function Hero() {
                 <span className="hidden sm:flex items-center gap-1.5 text-sm text-slate-300">
                   <span>Hi, <span className="text-cyan-400 mx-1 font-medium">{username.split(" ")[0]}</span></span>
                 </span>
-                <button onClick={() => signOut({ callbackUrl: "/" })} className="flex items-center gap-1.5 border border-red-500/30 text-red-400 hover:bg-red-500/10 hover:border-red-400/50 text-sm px-3 py-1.5 rounded-md transition-all cursor-pointer">
+                <button onClick={() => signOut({ callbackUrl: "/" })} className="flex items-center gap-1.5 border border-red-500/30 text-red-400 hover:bg-red-500/10 hover:border-red-400/50 text-sm px-2.5 sm:px-3 py-1.5 rounded-md transition-all cursor-pointer">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
                   </svg>
-                  <span>Sign Out</span>
+                  <span className="hidden sm:inline">Sign Out</span>
                 </button>
               </div>
             ) : (
-              <Link href="/auth/login" className="flex items-center gap-1.5 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-400/10 hover:border-cyan-400 text-sm px-4 py-1.5 rounded-md no-underline transition-all">
+              <Link href="/auth/login" className="flex items-center gap-1.5 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-400/10 hover:border-cyan-400 text-sm px-2.5 sm:px-4 py-1.5 rounded-md no-underline transition-all">
                 <UserIcon />
                 <span>{t.navLogin}</span>
               </Link>
@@ -155,12 +155,12 @@ export default function Hero() {
         </nav>
 
         {/* HERO */}
-        <section className="relative min-h-screen flex items-center justify-center pt-16 overflow-hidden px-6 lg:px-12">
+        <section className="relative safe-screen flex items-center justify-center pt-20 sm:pt-16 overflow-hidden px-4 sm:px-6 lg:px-12">
           <div className="absolute inset-0 geo-grid" />
           <div className="absolute -left-32 top-1/4 w-120 h-120 rounded-full pointer-events-none" style={{ background: "radial-gradient(circle, rgba(59,130,246,0.1) 0%, transparent 70%)" }} />
           <div className="absolute -right-24 bottom-16 w-90 h-90 rounded-full pointer-events-none" style={{ background: "radial-gradient(circle, rgba(0,212,255,0.08) 0%, transparent 70%)" }} />
 
-          <div className="relative z-10 max-w-6xl w-full grid grid-cols-1 lg:grid-cols-2 gap-10 lg:gap-16 items-center py-20">
+          <div className="relative z-10 max-w-6xl w-full grid grid-cols-1 lg:grid-cols-2 gap-10 lg:gap-16 items-center py-14 sm:py-20">
             <div className="flex flex-col">
               <div className="fu-0 self-start flex items-center gap-2 bg-cyan-400/[0.07] border border-cyan-400/20 text-cyan-400 text-[0.7rem] tracking-widest uppercase px-3 py-1.5 rounded-full mb-7">
                 <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee] anim-blink" />
@@ -176,15 +176,15 @@ export default function Hero() {
               <p className={`fu-2 text-slate-400 leading-relaxed mb-3 ${isRTL ? "text-base font-arabic" : "text-sm font-light"}`}>{t.heroSubtitle}</p>
               <p className={`fu-3 text-slate-500 leading-relaxed mb-10 ${isRTL ? "text-sm font-arabic" : "text-xs font-light"}`}>{t.heroSub2}</p>
 
-              <div className="fu-4 flex flex-wrap gap-3">
+              <div className="fu-4 flex w-full flex-col sm:flex-row flex-wrap gap-3">
                 <button 
                   onClick={handleMapClick} 
-                  className={`btn-glow text-[#040d1a] font-semibold text-sm px-6 py-3 rounded-lg flex items-center gap-2 cursor-pointer ${isRTL ? "font-arabic" : ""}`}
+                  className={`btn-glow justify-center text-[#040d1a] font-semibold text-sm px-6 py-3 rounded-lg flex items-center gap-2 cursor-pointer ${isRTL ? "font-arabic" : ""}`}
                 >
                   <MapIcon />
                   {t.heroBtnMap}
                 </button>
-                <Link href="https://github.com/Tokaesmail/web-gis" target="_blank" rel="noopener noreferrer" className={`bg-transparent text-slate-300 hover:text-cyan-400 hover:border-cyan-400/50 hover:bg-cyan-400/6 border border-white/10 text-sm px-6 py-3 rounded-lg flex items-center gap-2 no-underline transition-all duration-200 ${isRTL ? "font-arabic" : "font-light"}`}>
+                <Link href="https://github.com/Tokaesmail/web-gis" target="_blank" rel="noopener noreferrer" className={`justify-center bg-transparent text-slate-300 hover:text-cyan-400 hover:border-cyan-400/50 hover:bg-cyan-400/6 border border-white/10 text-sm px-6 py-3 rounded-lg flex items-center gap-2 no-underline transition-all duration-200 ${isRTL ? "font-arabic" : "font-light"}`}>
                   <GithubIcon />
                   {t.heroBtnGithub}
                 </Link>

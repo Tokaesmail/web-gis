@@ -225,8 +225,8 @@ export default function Mapbox3DView({
       `}</style>
 
       {/* ── Top bar ── */}
-      <div className="flex items-center justify-between px-4 py-2.5 bg-[#0a1628]/95 backdrop-blur-md border-b border-white/10 z-10 flex-shrink-0">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 py-2.5 bg-[#0a1628]/95 backdrop-blur-md border-b border-white/10 z-10 flex-shrink-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <button
             onClick={onClose}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0d1f3c] border border-white/10 hover:border-cyan-400/40 text-slate-400 hover:text-cyan-400 transition-all text-xs cursor-pointer"
@@ -239,14 +239,14 @@ export default function Mapbox3DView({
 
           {toggleButton}
 
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-            <span className="text-sm text-white font-medium">{featureName ?? "3D Terrain View"}</span>
-            <span className="text-xs text-slate-500 font-mono">{lat.toFixed(4)}, {lng.toFixed(4)}</span>
+            <span className="truncate text-sm text-white font-medium">{featureName ?? "3D Terrain View"}</span>
+            <span className="hidden sm:inline text-xs text-slate-500 font-mono">{lat.toFixed(4)}, {lng.toFixed(4)}</span>
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-400/10 border border-cyan-400/20">
+        <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-400/10 border border-cyan-400/20">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#00d4ff" strokeWidth="2.5">
             <path d="M3 17l4-8 4 4 4-6 4 10" />
           </svg>
@@ -290,7 +290,7 @@ export default function Mapbox3DView({
         {/* View Controls — pointer-events-auto على الـ panel بس مش على الـ map */}
         {!loading && !error && (
           <div
-            className="absolute bottom-6 left-4 z-20 flex flex-col gap-3 bg-[#0a1628]/95 backdrop-blur-md border border-white/10 rounded-xl p-4 w-52 shadow-lg"
+            className="absolute bottom-3 left-3 right-3 sm:right-auto sm:bottom-6 sm:left-4 z-20 flex flex-col gap-3 bg-[#0a1628]/95 backdrop-blur-md border border-white/10 rounded-xl p-3 sm:p-4 sm:w-52 shadow-lg"
             style={{ pointerEvents: "all" }}
           >
             <p className="text-[0.65rem] text-slate-500 uppercase tracking-widest font-medium">View Controls</p>
