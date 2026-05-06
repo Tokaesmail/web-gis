@@ -66,9 +66,9 @@ interface Props {
 
 // ── ألوان كل أداة — للعرض فقط، مش بتتبعت للباك ──────────────────────────────
 const TOOL_COLORS = {
-  polygon:   { stroke: "#00c8ff", fill: "rgba(0,200,255,0.18)" },
-  rectangle: { stroke: "#a78bfa", fill: "rgba(167,139,250,0.18)" },
-  circle:    { stroke: "#34d399", fill: "rgba(52,211,153,0.18)" },
+  polygon:   { stroke: "#00c8ff", fill: "transparent" },
+  rectangle: { stroke: "#a78bfa", fill: "transparent" },
+  circle:    { stroke: "#34d399", fill: "transparent" },
   measure:   { stroke: "#fbbf24", fill: "rgba(251,191,36,0.1)" },
   marker:    { stroke: "#f97316", fill: "rgba(249,115,22,0.85)" },
 };
@@ -714,7 +714,7 @@ export default function LeafletMap({
     if (closeBtnRef.current)  closeBtnRef.current.style.display = "none";
 
     const c    = TOOL_COLORS.polygon;
-    const poly = L.polygon(pts, { color: c.stroke, weight: 2, fillColor: c.stroke, fillOpacity: 0.18 }).addTo(map);
+    const poly = L.polygon(pts, { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
     drawLayersRef.current.push(poly);
     const area = parseFloat((Math.abs(pts.reduce((acc: number, p: [number, number], i: number) => {
       const j = (i + 1) % pts.length;
@@ -1118,7 +1118,7 @@ export default function LeafletMap({
             drawLayersRef.current.push(L.circleMarker([lat, lng], { radius: 4, color: c.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map));
           } else {
             const p1   = drawPointsRef.current[0];
-            const rect = L.rectangle([p1, [lat, lng]], { color: c.stroke, weight: 2, fillColor: c.stroke, fillOpacity: 0.18 }).addTo(map);
+            const rect = L.rectangle([p1, [lat, lng]], { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
             const area = parseFloat((Math.abs(p1[0] - lat) * Math.abs(p1[1] - lng) * 12345).toFixed(1));
             rect.bindPopup(`📐 ${t.rectangle} · ≈ ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(rect);
@@ -1147,7 +1147,7 @@ export default function LeafletMap({
           } else {
             const center = drawPointsRef.current[0];
             const radius = map.distance(center, [lat, lng]);
-            const circ   = L.circle(center, { radius, color: c.stroke, weight: 2, fillColor: c.stroke, fillOpacity: 0.18 }).addTo(map);
+            const circ   = L.circle(center, { radius, color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
             const area   = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
             circ.bindPopup(`🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(circ);
@@ -1193,10 +1193,10 @@ export default function LeafletMap({
           if (tool === "polygon" || tool === "measure")
             tempLayerRef.current = L.polyline([...pts, cur], { color: cp[tool].stroke, weight: 1.5, dashArray: "4 4", opacity: 0.7 }).addTo(map);
           if (tool === "rectangle")
-            tempLayerRef.current = L.rectangle([pts[0], cur], { color: cp.rectangle.stroke, weight: 1.5, dashArray: "4 4", fillOpacity: 0.08 }).addTo(map);
+            tempLayerRef.current = L.rectangle([pts[0], cur], { color: cp.rectangle.stroke, weight: 1.5, dashArray: "4 4", fillColor: cp.rectangle.fill, fillOpacity: 0 }).addTo(map);
           if (tool === "circle") {
             const r = map.distance(pts[0], cur);
-            tempLayerRef.current = L.circle(pts[0], { radius: r, color: cp.circle.stroke, weight: 1.5, dashArray: "4 4", fillOpacity: 0.07 }).addTo(map);
+            tempLayerRef.current = L.circle(pts[0], { radius: r, color: cp.circle.stroke, weight: 1.5, dashArray: "4 4", fillColor: cp.circle.fill, fillOpacity: 0 }).addTo(map);
           }
         });
       });

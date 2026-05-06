@@ -17,12 +17,6 @@ export function useMapCanvas() {
     const ctx = canvas.getContext("2d");
     if (!ctx || px.length < 3) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.save();
-    ctx.beginPath(); ctx.moveTo(px[0].x, px[0].y);
-    px.slice(1).forEach((p) => ctx.lineTo(p.x, p.y));
-    ctx.closePath(); ctx.clip();
-    ctx.fillStyle = "rgba(0,200,255,0.2)"; ctx.fill();
-    ctx.restore();
     ctx.beginPath(); ctx.moveTo(px[0].x, px[0].y);
     px.slice(1).forEach((p) => ctx.lineTo(p.x, p.y));
     ctx.closePath(); ctx.strokeStyle = "#00c8ff"; ctx.lineWidth = 2; ctx.stroke();
@@ -34,8 +28,6 @@ export function useMapCanvas() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const x = Math.min(p1.x, p2.x), y = Math.min(p1.y, p2.y);
     const w = Math.abs(p2.x - p1.x), h = Math.abs(p2.y - p1.y);
-    ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-    ctx.fillStyle = "rgba(167,139,250,0.2)"; ctx.fill(); ctx.restore();
     ctx.beginPath(); ctx.rect(x, y, w, h);
     ctx.strokeStyle = "#a78bfa"; ctx.lineWidth = 2; ctx.stroke();
   }, []);
@@ -44,8 +36,6 @@ export function useMapCanvas() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.save(); ctx.beginPath(); ctx.arc(center.x, center.y, radiusPx, 0, Math.PI * 2); ctx.clip();
-    ctx.fillStyle = "rgba(52,211,153,0.2)"; ctx.fill(); ctx.restore();
     ctx.beginPath(); ctx.arc(center.x, center.y, radiusPx, 0, Math.PI * 2);
     ctx.strokeStyle = "#34d399"; ctx.lineWidth = 2; ctx.stroke();
   }, []);
