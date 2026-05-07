@@ -107,6 +107,7 @@ export default function LeafletMap({
   const mapInstanceRef = useRef<any>(null);
   const activeToolRef  = useRef<DrawTool>(activeTool);
   const drawLayersRef  = useRef<any[]>([]);
+  const draftLayersRef = useRef<any[]>([]);
   const tempLayerRef   = useRef<any>(null);
   const drawPointsRef  = useRef<[number, number][]>([]);
   const baseTileRef    = useRef<any>(null);
@@ -156,6 +157,24 @@ export default function LeafletMap({
     if (!st) return;
     clearImagePlacementHint();
     placingImageRef.current = null;
+  };
+
+  const cancelCurrentDrawing = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    draftLayersRef.current.forEach((layer) => {
+      try { map.removeLayer(layer); } catch (_) {}
+    });
+    drawLayersRef.current = drawLayersRef.current.filter((layer) => !draftLayersRef.current.includes(layer));
+    draftLayersRef.current = [];
+
+    if (tempLayerRef.current) {
+      try { map.removeLayer(tempLayerRef.current); } catch (_) {}
+      tempLayerRef.current = null;
+    }
+    drawPointsRef.current = [];
+    if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
   };
 
   const persistImageOverlays = () => {
@@ -295,37 +314,24 @@ export default function LeafletMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onImagePlacerRegister, mapReady]);
 
-  // Escape handler: cancels image placement or finishes drawings
+  // Escape cancels only the in-progress interaction.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (placingImageRef.current) {
-          stopImagePlacement();
-        } else if (drawPointsRef.current.length > 0) {
-          const map = mapInstanceRef.current;
-          const L = LRef.current;
-          if (!map || !L) return;
+      if (e.key !== "Escape") return;
+      e.preventDefault();
 
-          const tool = activeToolRef.current;
-          if (tool === "polygon") {
-            if (drawPointsRef.current.length >= 3) {
-              finishPolygon(map, L);
-            } else {
-              toast.error(isRTL ? "يرجى رسم 3 نقاط على الأقل" : "Please draw at least 3 points");
-            }
-          } else if (tool === "measure") {
-            if (drawPointsRef.current.length >= 2) {
-              finishMeasure(map, L);
-            } else {
-              toast.error(isRTL ? "يرجى رسم نقطتين على الأقل" : "Please draw at least 2 points");
-            }
-          }
-        }
+      if (placingImageRef.current) {
+        stopImagePlacement();
+        return;
+      }
+
+      if (drawPointsRef.current.length > 0) {
+        cancelCurrentDrawing();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [isRTL]);
+  }, []);
 
   const drawExtrusions = () => {
     const map = mapInstanceRef.current;
@@ -737,6 +743,7 @@ export default function LeafletMap({
       };
       await handleCapture(canvasRef.current, map, L, coordinates, metadata);
     }
+    draftLayersRef.current = [];
     drawPointsRef.current = [];
   };
 
@@ -766,6 +773,7 @@ export default function LeafletMap({
       };
       await handleCapture(canvasRef.current, map, L, coordinates, metadata);
     }
+    draftLayersRef.current = [];
     drawPointsRef.current = [];
   };
 
@@ -948,7 +956,7 @@ export default function LeafletMap({
 
       clearRef.current = () => {
         drawLayersRef.current.forEach((l) => map.removeLayer(l));
-        drawLayersRef.current = []; drawPointsRef.current = [];
+        drawLayersRef.current = []; draftLayersRef.current = []; drawPointsRef.current = [];
         lastCoordsRef.current = []; lastToolRef.current = "pointer";
         if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
         if (canvasRef.current) clearCanvas(canvasRef.current);
@@ -1067,7 +1075,7 @@ export default function LeafletMap({
           const c   = TOOL_COLORS.polygon;
 
           if (pts.length === 0) {
-            toast(isRTL ? "اضغط Esc لإنهاء الرسم وعرض النتائج" : "Press Esc to finish drawing and see results", {
+            toast(isRTL ? "اضغط Esc لإلغاء الرسم الحالي" : "Press Esc to cancel the current drawing", {
               icon: "⌨️",
               duration: 5000,
             });
@@ -1081,14 +1089,14 @@ export default function LeafletMap({
             if (dist < 15) { finishPolygon(map, L); return; }
           }
           pts.push([lat, lng]);
-          drawLayersRef.current.push(
-            L.circleMarker([lat, lng], {
+          const marker = L.circleMarker([lat, lng], {
               radius: pts.length === 1 ? 6 : 4,
               color: c.stroke,
               fillColor: pts.length === 1 ? c.stroke : "#fff",
               fillOpacity: 1, weight: 2,
-            }).addTo(map)
-          );
+            }).addTo(map);
+          drawLayersRef.current.push(marker);
+          draftLayersRef.current.push(marker);
           if (pts.length >= 3 && closeBtnRef.current) closeBtnRef.current.style.display = "block";
           return;
         }
@@ -1097,15 +1105,15 @@ export default function LeafletMap({
         if (tool === "measure") {
           const pts = drawPointsRef.current;
           if (pts.length === 0) {
-            toast(isRTL ? "اضغط Esc لإنهاء القياس وعرض النتائج" : "Press Esc to finish measuring and see results", {
+            toast(isRTL ? "اضغط Esc لإلغاء القياس الحالي" : "Press Esc to cancel the current measurement", {
               icon: "📏",
               duration: 5000,
             });
           }
           pts.push([lat, lng]);
-          drawLayersRef.current.push(
-            L.circleMarker([lat, lng], { radius: 4, color: TOOL_COLORS.measure.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map)
-          );
+          const marker = L.circleMarker([lat, lng], { radius: 4, color: TOOL_COLORS.measure.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map);
+          drawLayersRef.current.push(marker);
+          draftLayersRef.current.push(marker);
           if (pts.length >= 2 && closeBtnRef.current) closeBtnRef.current.style.display = "block";
           return;
         }
@@ -1115,7 +1123,9 @@ export default function LeafletMap({
           const c = TOOL_COLORS.rectangle;
           if (!drawPointsRef.current.length) {
             drawPointsRef.current.push([lat, lng]);
-            drawLayersRef.current.push(L.circleMarker([lat, lng], { radius: 4, color: c.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map));
+            const marker = L.circleMarker([lat, lng], { radius: 4, color: c.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map);
+            drawLayersRef.current.push(marker);
+            draftLayersRef.current.push(marker);
           } else {
             const p1   = drawPointsRef.current[0];
             const rect = L.rectangle([p1, [lat, lng]], { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
@@ -1133,6 +1143,7 @@ export default function LeafletMap({
               const metadata: CaptureMetadata = { areaName: "Drawn Rectangle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
               await handleCapture(canvasRef.current, map, L, coordinates, metadata);
             }
+            draftLayersRef.current = [];
             drawPointsRef.current = [];
             if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
           }
