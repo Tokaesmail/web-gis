@@ -7,7 +7,7 @@ import { useLang } from "../_components/translations";
 import AnalysisSidebar from "../_components/AnalysisSidebar/AnalysisSidebar";
 import AIAssistant from "../_components/AIAssistant/AIAssistant";
 
-import { DrawTool, SatKey, IdxKey, CaptureResult } from "./mapTypes_proxy";
+import { DrawTool, SatKey, IdxKey, CaptureResult, CaptureTarget } from "./mapTypes_proxy";
 import MapNavbar from "./MapNavbar";
 import MapToolbar from "./MapToolbar";
 import MapSearch from "./MapSearch";
@@ -22,6 +22,26 @@ import ExportButton from "./ExportButton";
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
 const LAYER_SETTINGS_STORAGE_PREFIX = "gis_layer_settings_v1";
+const MAX_LOCAL_GEOJSON_STORAGE_CHARS = 2_000_000;
+
+function persistUploadedGeoJSON(map: Record<string, any>, onSkipped?: () => void) {
+  try {
+    const payload = JSON.stringify(map);
+    if (payload.length > MAX_LOCAL_GEOJSON_STORAGE_CHARS) {
+      localStorage.removeItem(UPLOADED_GEOJSON_STORAGE_KEY);
+      onSkipped?.();
+      return false;
+    }
+
+    localStorage.setItem(UPLOADED_GEOJSON_STORAGE_KEY, payload);
+    return true;
+  } catch (error) {
+    console.warn("Uploaded GeoJSON could not be saved locally:", error);
+    try { localStorage.removeItem(UPLOADED_GEOJSON_STORAGE_KEY); } catch {}
+    onSkipped?.();
+    return false;
+  }
+}
 
 export default function MapPage() {
   const { t, isRTL } = useLang();
@@ -29,6 +49,7 @@ export default function MapPage() {
   const [aiOpen,           setAiOpen]           = useState(false);
   const [isFullscreen,     setIsFullscreen]      = useState(false);
   const [activeTool,       setActiveTool]        = useState<DrawTool>("pointer");
+  const [captureTarget,    setCaptureTarget]     = useState<CaptureTarget>("small");
   const [selectedArea,     setSelectedArea]      = useState({ name: "Selected Area", ha: 0 });
   const [coords,           setCoords]            = useState<{ lat: number; lng: number } | null>(null);
   const [captureUrl,       setCaptureUrl]        = useState<string | null>(null);
@@ -72,6 +93,7 @@ export default function MapPage() {
   const isLayerSettingsHydrating = useRef(false);
   const layerSettingsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const remoteLayerSettingsUnsupported = useRef(false);
+  const storageWarningShownRef = useRef(false);
 
   const layerSettingsStorageKey = useMemo(() => {
     const user = session?.user as any;
@@ -324,7 +346,7 @@ export default function MapPage() {
     setUploadedGeoJsonMap((prev) => {
       const next = { ...prev };
       delete next[fileName];
-      localStorage.setItem(UPLOADED_GEOJSON_STORAGE_KEY, JSON.stringify(next));
+      persistUploadedGeoJSON(next);
       return next;
     });
   }, []);
@@ -397,8 +419,16 @@ export default function MapPage() {
   // Sync uploadedGeoJsonMap to localStorage
   useEffect(() => {
     if (!isRestored.current) return;
-    localStorage.setItem(UPLOADED_GEOJSON_STORAGE_KEY, JSON.stringify(uploadedGeoJsonMap));
-  }, [uploadedGeoJsonMap]);
+    persistUploadedGeoJSON(uploadedGeoJsonMap, () => {
+      if (storageWarningShownRef.current || Object.keys(uploadedGeoJsonMap).length === 0) return;
+      storageWarningShownRef.current = true;
+      toast.warning(
+        isRTL
+          ? "الملف كبير، هيظهر على الخريطة لكنه مش هيتحفظ محليًا بعد تحديث الصفحة."
+          : "This GeoJSON is large, so it will display now but will not be stored after refresh."
+      );
+    });
+  }, [uploadedGeoJsonMap, isRTL]);
 
   const handleExtrusionConfig = useCallback((cfg: any) => {
     setExtrusionCfg(cfg);
@@ -437,11 +467,15 @@ export default function MapPage() {
   }, []);
 
   const handleCapture = useCallback((capture: CaptureResult) => {
-    setCaptureUrl(capture.smallUrl);
+    const displayUrl = capture.smallUrl ?? capture.largeUrl;
+    if (!displayUrl) return;
+    setCaptureUrl(displayUrl);
     setCaptures((prev) => [
       {
         id: Date.now(),
-        url: capture.smallUrl,
+        type: capture.captureTarget,
+        url: displayUrl,
+        smallUrl: capture.smallUrl,
         largeUrl: capture.largeUrl,
         selectedCoordinates: capture.selectedCoordinates,
         viewportCoordinates: capture.viewportCoordinates,
@@ -468,7 +502,7 @@ export default function MapPage() {
   const handleLayerToggle  = useCallback((id: string, visible: boolean) => {
     setLayers((prev) => prev.map((l) => l.id === id ? { ...l, visible } : l));
     // Wire to map tile changes where applicable
-    if (id === "satellite" && visible) changeSatRef.current?.("esri_sat" as any);
+    if (id === "satellite" && visible) changeSatRef.current?.("Default");
     if (id === "ndvi-tile" && visible) changeIdxRef.current?.("NDVI" as any);
   }, []);
 
@@ -576,6 +610,51 @@ export default function MapPage() {
     }
   }, [uploadedGeoJsonMap]);
 
+  const handleSatellitePreview = useCallback((config: {
+    source: "sentinel-2" | "landsat";
+    satKey: SatKey;
+    band: IdxKey;
+    dateFrom: string;
+    dateTo: string;
+    cloudCover: number;
+    opacity: number;
+  }) => {
+    changeSatRef.current?.(config.satKey);
+    changeIdxRef.current?.(config.band);
+    changeOpacityRef.current?.(config.opacity);
+
+    const layerName = config.source === "sentinel-2" ? "Sentinel-2 Preview" : "Landsat Preview";
+    const sourceLabel = `${layerName} | ${config.band} | ${config.dateFrom} to ${config.dateTo} | cloud <= ${config.cloudCover}%`;
+
+    setLayers((prev) => {
+      const hasSatelliteLayer = prev.some((layer) => layer.id === "satellite");
+      const next = hasSatelliteLayer
+        ? prev.map((layer) =>
+            layer.id === "satellite"
+              ? { ...layer, name: layerName, nameAr: layerName, visible: true, opacity: config.opacity, source: sourceLabel }
+              : layer
+          )
+        : [
+            {
+              id: "satellite",
+              name: layerName,
+              nameAr: layerName,
+              type: "raster" as const,
+              visible: true,
+              opacity: config.opacity,
+              source: sourceLabel,
+            },
+            ...prev,
+          ];
+
+      return next.map((layer) =>
+        layer.id === "ndvi-tile"
+          ? { ...layer, visible: config.band !== "RGB", opacity: config.opacity }
+          : layer
+      );
+    });
+  }, []);
+
   // Sync uploaded GeoJSON as layers
   useEffect(() => {
     const uploadedIds = Object.keys(uploadedGeoJsonMap).map(name => `uploaded_${name}`);
@@ -646,6 +725,7 @@ export default function MapPage() {
       onLayerReorder={handleLayerReorder}
       onLayerZoom={handleLayerZoom}
       onLayer3D={handleOpen3D}
+      onSatellitePreview={handleSatellitePreview}
     />
   ), [
     selectedFeature,
@@ -668,6 +748,7 @@ export default function MapPage() {
     handleLayerRename,
     handleLayerReorder,
     handleLayerZoom,
+    handleSatellitePreview,
   ]);
 
   const toggle2DButton = useMemo(() => (
@@ -716,6 +797,7 @@ export default function MapPage() {
         >
           <LeafletMap
             activeTool={activeTool}
+            captureTarget={captureTarget}
             onAreaSelected={(name, area) => {
               setSelectedArea({ name, ha: area });
             }}
@@ -762,6 +844,25 @@ export default function MapPage() {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>
                 {isRTL ? "الطبقات" : "Layers"}
               </button>
+
+              <div className="flex items-center rounded-lg border border-white/10 bg-[#0d1f3c] p-0.5">
+                {(["small", "large"] as CaptureTarget[]).map((target) => (
+                  <button
+                    key={target}
+                    type="button"
+                    onClick={() => setCaptureTarget(target)}
+                    className={`px-2.5 py-1 text-[0.65rem] font-bold uppercase transition-all ${
+                      captureTarget === target
+                        ? "rounded-md bg-cyan-400 text-[#040d1a]"
+                        : "text-slate-400 hover:text-cyan-400"
+                    }`}
+                    title={target === "small" ? "Select cropped small image" : "Select full-screen large image"}
+                    aria-pressed={captureTarget === target}
+                  >
+                    {target === "small" ? "Small" : "Large"}
+                  </button>
+                ))}
+              </div>
 
               <span className="px-2 py-1 rounded-md bg-[#0a1628]/80 border border-white/[0.06] text-slate-500 text-[0.65rem] select-none hidden sm:block">
                 {isRTL ? "دبل كليك للـ 3D" : "Double-click → 3D"}
@@ -848,12 +949,17 @@ export default function MapPage() {
                       {cap?.url && (
                         <button
                           type="button"
-                          onClick={() => window.open(cap.largeUrl ?? cap.url, "_blank", "noopener,noreferrer")}
-                          className="block w-full h-full cursor-zoom-in"
+                          onClick={() => window.open(cap.largeUrl ?? cap.smallUrl ?? cap.url, "_blank", "noopener,noreferrer")}
+                          className="relative block w-full h-full cursor-zoom-in"
                           title="Open capture"
                           aria-label="Open capture"
                         >
                           <img src={cap.url} alt="Map capture" className="w-full h-full object-cover" />
+                          <span className={`absolute left-1 top-1 rounded px-1.5 py-0.5 text-[0.5rem] font-bold uppercase ${
+                            cap.type === "large" ? "bg-fuchsia-400 text-[#040d1a]" : "bg-cyan-400 text-[#040d1a]"
+                          }`}>
+                            {cap.type === "large" ? "Large" : "Small"}
+                          </span>
                         </button>
                       )}
                     </div>
@@ -861,7 +967,7 @@ export default function MapPage() {
                       <span className="text-[0.55rem] text-slate-500">{new Date(cap.createdAt).toLocaleTimeString()}</span>
                       <button 
                         type="button"
-                        onClick={() => window.open(cap.largeUrl ?? cap.url, "_blank", "noopener,noreferrer")}
+                        onClick={() => window.open(cap.largeUrl ?? cap.smallUrl ?? cap.url, "_blank", "noopener,noreferrer")}
                         className="text-[0.55rem] font-bold text-cyan-400 hover:underline cursor-pointer"
                       >
                         View

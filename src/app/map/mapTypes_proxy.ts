@@ -1,6 +1,7 @@
 // ─── mapTypes.ts ──────────────────────────────────────────────────────────────
 
 export type DrawTool = "pointer" | "polygon" | "rectangle" | "circle" | "measure" | "marker";
+export type CaptureTarget = "small" | "large";
 
 export interface LatLngPoint {
   lat: number;
@@ -22,10 +23,11 @@ export interface CaptureBounds {
 }
 
 export interface CaptureResult {
-  smallUrl: string;
-  largeUrl: string;
-  smallBlob: Blob;
-  largeBlob: Blob;
+  captureTarget: CaptureTarget;
+  smallUrl?: string;
+  largeUrl?: string;
+  smallBlob?: Blob;
+  largeBlob?: Blob;
   selectedCoordinates: LatLngPoint[];
   viewportCoordinates: LatLngPoint[];
   selectedBounds: CaptureBounds;

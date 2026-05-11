@@ -22,12 +22,13 @@ import Mapbox3DView   from "./Mapbox3DView";
 import AnalysisSidebar from "../_components/AnalysisSidebar/AnalysisSidebar";
 
 // ── أي props مشتركة بين الاتنين ──────────────────────────────────────────────
-import type { DrawTool, SatKey, IdxKey, CaptureResult } from "./mapTypes_proxy";
+import type { DrawTool, SatKey, IdxKey, CaptureResult, CaptureTarget } from "./mapTypes_proxy";
 import type { GeoJSON } from "geojson";
 
 interface MapViewToggleProps {
   // ── LeafletMap props ──
   activeTool:     DrawTool;
+  captureTarget?: CaptureTarget;
   onAreaSelected: (name: string, area: number) => void;
   onCoordsUpdate: (lat: number, lng: number) => void;
   flyToRef:       React.MutableRefObject<((lat: number, lng: number) => void) | null>;
@@ -170,6 +171,7 @@ export default function MapViewToggle(props: MapViewToggleProps) {
       {/* Leaflet map fills the container */}
       <LeafletMap
         activeTool={props.activeTool}
+        captureTarget={props.captureTarget ?? "small"}
         onAreaSelected={props.onAreaSelected}
         onCoordsUpdate={props.onCoordsUpdate}
         flyToRef={props.flyToRef}

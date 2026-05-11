@@ -7,8 +7,10 @@ import { exportToExcel, exportToPDF } from "../../../../lib/exportUtils";
 import { useMapDB } from "../../map/useMapDB";
 import LayerPanel, { MapLayer } from "../../map/LayerPanel";
 import ExportButton from "../../map/ExportButton";
+import { IdxKey, SatKey } from "../../map/mapTypes_proxy";
 
 type PanelId =
+  | "satellite"
   | "ndvi"
   | "weather"
   | "overview"
@@ -26,6 +28,21 @@ interface PanelItem {
 }
 
 const panels: PanelItem[] = [
+  {
+    id: "satellite",
+    labelEn: "Satellite Data",
+    labelAr: "بيانات الأقمار",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M13.5 6.5 17 3l4 4-3.5 3.5" />
+        <path d="m3 21 7.8-7.8" />
+        <path d="m9 15 6-6" />
+        <path d="m7 11 6 6" />
+        <path d="M15 3h6v6" />
+      </svg>
+    ),
+    badge: "S2",
+  },
   {
     id: "crops",
     labelEn: "Crop Insight",
@@ -827,6 +844,196 @@ function CapturesPanel({
 
 // ─── Panel Contents ───────────────────────────────────────────────────────────
 
+type SatellitePreviewConfig = {
+  source: "sentinel-2" | "landsat";
+  satKey: SatKey;
+  band: IdxKey;
+  dateFrom: string;
+  dateTo: string;
+  cloudCover: number;
+  opacity: number;
+};
+
+function SatelliteDataPanel({
+  selectedFeature,
+  onPreview,
+}: {
+  selectedFeature?: GeoJSON.Feature | null;
+  onPreview?: (config: SatellitePreviewConfig) => void;
+}) {
+  const [source, setSource] = useState<"sentinel-2" | "landsat">("sentinel-2");
+  const [dateFrom, setDateFrom] = useState("2026-04-10");
+  const [dateTo, setDateTo] = useState("2026-05-10");
+  const [cloudCover, setCloudCover] = useState(20);
+  const [band, setBand] = useState<IdxKey>("RGB");
+  const [opacity, setOpacity] = useState(86);
+  const [isLoading, setIsLoading] = useState(false);
+  const [previewReady, setPreviewReady] = useState(false);
+
+  const coords = getMidCoords(selectedFeature);
+  const satKey: SatKey = source === "sentinel-2" ? "Sentinel-2" : "Default";
+  const sourceMeta = {
+    "sentinel-2": { title: "Sentinel-2", subtitle: "Primary source", resolution: "10m", cadence: "5 days", color: "#22d3ee" },
+    landsat: { title: "Landsat", subtitle: "Secondary source", resolution: "30m", cadence: "16 days", color: "#f59e0b" },
+  }[source];
+
+  const bandOptions: { key: IdxKey; label: string; desc: string; color: string }[] = [
+    { key: "RGB", label: "RGB", desc: "Default true color", color: "#e2e8f0" },
+    { key: "NDVI", label: "NDVI", desc: "Vegetation vigor", color: "#22c55e" },
+    { key: "NDWI", label: "NDWI", desc: "Water signal", color: "#38bdf8" },
+    { key: "NDMI", label: "NDMI", desc: "Moisture stress", color: "#a78bfa" },
+    { key: "SWIR", label: "SWIR", desc: "Dryness view", color: "#fb923c" },
+  ];
+
+  const scenes = [
+    { id: "S2A-20260507", cloud: 8, score: 96, date: "2026-05-07" },
+    { id: "S2B-20260430", cloud: 14, score: 88, date: "2026-04-30" },
+    { id: "LC09-20260424", cloud: 18, score: 81, date: "2026-04-24" },
+  ].filter((scene) => scene.cloud <= cloudCover);
+
+  const handlePreview = () => {
+    setIsLoading(true);
+    setPreviewReady(false);
+    window.setTimeout(() => {
+      onPreview?.({ source, satKey, band, dateFrom, dateTo, cloudCover, opacity: opacity / 100 });
+      setPreviewReady(true);
+      setIsLoading(false);
+    }, 700);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Satellite Data Integration</p>
+            <p className="text-xs text-slate-300 mt-1">Dynamic imagery query controls for AOI preview</p>
+          </div>
+          <div className="text-right shrink-0">
+            <p className="text-lg font-semibold" style={{ color: sourceMeta.color }}>{sourceMeta.resolution}</p>
+            <p className="text-[0.58rem] text-slate-500">{sourceMeta.cadence}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        {([
+          { key: "sentinel-2" as const, title: "Sentinel-2", sub: "Primary", color: "#22d3ee" },
+          { key: "landsat" as const, title: "Landsat", sub: "Secondary", color: "#f59e0b" },
+        ]).map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => setSource(item.key)}
+            className={`rounded-lg border p-3 text-left transition-all cursor-pointer ${
+              source === item.key ? "bg-white/[0.07] border-cyan-400/35" : "bg-white/[0.025] border-white/[0.06] hover:border-white/[0.14]"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full" style={{ background: item.color, boxShadow: `0 0 8px ${item.color}` }} />
+              <span className="text-xs font-semibold text-slate-200">{item.title}</span>
+            </div>
+            <p className="text-[0.58rem] text-slate-500 mt-1">{item.sub}</p>
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <label className="space-y-1">
+          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">From</span>
+          <input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} className="w-full rounded-lg bg-[#020817]/70 border border-white/[0.08] px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
+        </label>
+        <label className="space-y-1">
+          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">To</span>
+          <input type="date" value={dateTo} min={dateFrom} onChange={(e) => setDateTo(e.target.value)} className="w-full rounded-lg bg-[#020817]/70 border border-white/[0.08] px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
+        </label>
+      </div>
+
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Cloud cover threshold</span>
+          <span className="text-xs font-semibold text-cyan-300">{cloudCover}%</span>
+        </div>
+        <input type="range" min={0} max={80} value={cloudCover} onChange={(e) => setCloudCover(Number(e.target.value))} className="w-full accent-cyan-400" />
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Band selection</p>
+        <div className="grid grid-cols-2 gap-2">
+          {bandOptions.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => setBand(item.key)}
+              className={`rounded-lg border px-3 py-2 text-left transition-all cursor-pointer ${
+                band === item.key ? "bg-cyan-400/10 border-cyan-400/35" : "bg-white/[0.025] border-white/[0.06] hover:border-white/[0.14]"
+              }`}
+            >
+              <span className="text-xs font-bold" style={{ color: item.color }}>{item.label}</span>
+              <span className="block text-[0.55rem] text-slate-500 mt-0.5 truncate">{item.desc}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">AOI filtering</p>
+            <p className="text-[0.65rem] text-slate-400 mt-1">
+              {coords ? `AOI center ${coords[0].toFixed(4)}, ${coords[1].toFixed(4)}` : "No AOI selected. Using current map preview."}
+            </p>
+          </div>
+          <span className={`shrink-0 rounded-full px-2 py-1 text-[0.55rem] font-semibold ${
+            coords ? "bg-emerald-400/10 text-emerald-300 border border-emerald-400/20" : "bg-amber-400/10 text-amber-300 border border-amber-400/20"
+          }`}>
+            {coords ? "AOI" : "MAP"}
+          </span>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Preview opacity</p>
+          <span className="text-[0.65rem] text-slate-400">{opacity}%</span>
+        </div>
+        <input type="range" min={25} max={100} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} className="w-full accent-cyan-400" />
+      </div>
+
+      <button type="button" onClick={handlePreview} disabled={isLoading} className="w-full h-10 rounded-lg bg-cyan-400 text-[#03101d] text-xs font-bold hover:bg-cyan-300 disabled:opacity-60 disabled:cursor-wait transition-colors cursor-pointer">
+        {isLoading ? "Fetching preview..." : "Preview on Map"}
+      </button>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Matching scenes</p>
+          <span className="text-[0.58rem] text-slate-500">{scenes.length} found</span>
+        </div>
+        {scenes.length ? scenes.map((scene) => (
+          <div key={scene.id} className="flex items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+            <div className="w-8 h-8 rounded-md border border-white/[0.08] bg-gradient-to-br from-slate-700 via-emerald-800 to-cyan-700" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[0.68rem] text-slate-200 truncate">{scene.id}</p>
+              <p className="text-[0.55rem] text-slate-500">{scene.date} | cloud {scene.cloud}%</p>
+            </div>
+            <span className="text-[0.62rem] text-emerald-300">{scene.score}</span>
+          </div>
+        )) : (
+          <div className="rounded-lg border border-amber-400/18 bg-amber-400/[0.05] px-3 py-2 text-[0.65rem] text-amber-200">
+            No scenes match the current cloud threshold.
+          </div>
+        )}
+      </div>
+
+      {previewReady && (
+        <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2 text-[0.65rem] text-emerald-200">
+          Preview layer updated: {sourceMeta.title} | {band} | {dateFrom} to {dateTo}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PanelContent({
   id,
   selectedFeature,
@@ -847,6 +1054,7 @@ function PanelContent({
   onLayerReorder,
   onLayerZoom,
   onLayer3D,
+  onSatellitePreview,
 }: {
   id: PanelId;
   selectedFeature?: GeoJSON.Feature | null;
@@ -867,9 +1075,14 @@ function PanelContent({
   onLayerReorder?: (from: number, to: number) => void;
   onLayerZoom: (id: string) => void;
   onLayer3D?: (id: string) => void;
+  onSatellitePreview?: (config: SatellitePreviewConfig) => void;
 }) {
   const [ndviExportData, setNdviExportData] = useState<any>(null);
   const { t, isRTL } = useLang();
+
+  if (id === "satellite") {
+    return <SatelliteDataPanel selectedFeature={selectedFeature} onPreview={onSatellitePreview} />;
+  }
 
   // ── NDVI ──
   if (id === "ndvi") {
@@ -1141,6 +1354,7 @@ export default function AnalysisSidebar({
   onLayerReorder,
   onLayerZoom,
   onLayer3D,
+  onSatellitePreview,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
@@ -1165,6 +1379,7 @@ export default function AnalysisSidebar({
   onLayerReorder?: (from: number, to: number) => void;
   onLayerZoom: (id: string) => void;
   onLayer3D?: (id: string) => void;
+  onSatellitePreview?: (config: SatellitePreviewConfig) => void;
 }) {
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -1255,6 +1470,7 @@ export default function AnalysisSidebar({
                   onLayerReorder={onLayerReorder}
                   onLayerZoom={onLayerZoom}
                   onLayer3D={onLayer3D}
+                  onSatellitePreview={onSatellitePreview}
                 />
               )}
             </div>

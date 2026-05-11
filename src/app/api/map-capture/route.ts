@@ -14,17 +14,18 @@ export async function POST(req: NextRequest) {
     // ② استخرج الـ 3 حاجات اللي بعتناهم من LeafletMap
     const smallImageFile = form.get("smallImage") as File | null;
     const largeImageFile = form.get("largeImage") as File | null;
-    const imageFile      = smallImageFile ?? (form.get("image") as File | null);
+    const imageFile      = smallImageFile ?? largeImageFile ?? (form.get("image") as File | null);
     const coordsRaw      = form.get("coordinates") as string | null;
     const viewportRaw    = form.get("viewportCoordinates") as string | null;
     const selectedBoundsRaw = form.get("selectedBounds") as string | null;
     const viewportBoundsRaw = form.get("viewportBounds") as string | null;
     const metaRaw        = form.get("metadata") as string | null;
+    const captureTarget  = form.get("captureTarget") as string | null;
 
     // تأكد إن الداتا وصلت
     if (!imageFile || !coordsRaw || !metaRaw) {
       return NextResponse.json(
-        { error: "Missing required fields: smallImage, coordinates, metadata" },
+        { error: "Missing required fields: image, coordinates, metadata" },
         { status: 400 }
       );
     }
@@ -65,6 +66,7 @@ export async function POST(req: NextRequest) {
       // ── الداتا اللي بترجعيها للـ Frontend ──
       areaName:    metadata.areaName,
       areaSizeHa:  metadata.areaSizeHa,
+      captureTarget,
       pointsCount: coordinates.length,
       selectedBounds,
       viewportBounds,

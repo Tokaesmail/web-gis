@@ -6,7 +6,7 @@
 
 import { useCallback } from "react";
 import { useMapDB }    from "./useMapDB";
-import { LatLngPoint, CaptureMetadata, CaptureResult, CaptureBounds } from "./mapTypes_proxy";
+import { LatLngPoint, CaptureMetadata, CaptureResult, CaptureBounds, CaptureTarget } from "./mapTypes_proxy";
 
 export function useMapCanvas() {
   const blobToUrl = (blob: Blob) => URL.createObjectURL(blob);
@@ -95,7 +95,8 @@ export function useMapCanvas() {
     mapInstance:   any,
     L:             any,
     coordinates:   LatLngPoint[],
-    metadata:      CaptureMetadata
+    metadata:      CaptureMetadata,
+    captureTarget: CaptureTarget = "small"
   ): Promise<CaptureResult> => {
 
     const size     = mapInstance.getSize();
@@ -139,10 +140,24 @@ export function useMapCanvas() {
     // ② ارسم الـ overlay
     ctx.drawImage(overlayCanvas, 0, 0);
 
-    // Capture large Blob
-    const largeBlob: Blob = await new Promise((res, rej) =>
-      combined.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/png")
-    );
+    const viewportCoordinates = getViewportCoordinates(mapInstance);
+
+    if (captureTarget === "large") {
+      const largeBlob: Blob = await new Promise((res, rej) =>
+        combined.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/png")
+      );
+
+      return {
+        captureTarget,
+        largeUrl: blobToUrl(largeBlob),
+        largeBlob,
+        selectedCoordinates: coordinates,
+        viewportCoordinates,
+        selectedBounds: getBoundsFromCoordinates(coordinates),
+        viewportBounds: getBoundsFromCoordinates(viewportCoordinates),
+        metadata,
+      };
+    }
 
     // ③ Crop
     const px   = coordinates.map((p) => mapInstance.latLngToContainerPoint(L.latLng(p.lat, p.lng)));
@@ -177,13 +192,10 @@ export function useMapCanvas() {
     );
 
     const smallUrl = blobToUrl(smallBlob);
-    const largeUrl = blobToUrl(largeBlob);
-    const viewportCoordinates = getViewportCoordinates(mapInstance);
     return {
+      captureTarget,
       smallUrl,
-      largeUrl,
       smallBlob,
-      largeBlob,
       selectedCoordinates: coordinates,
       viewportCoordinates,
       selectedBounds: getBoundsFromCoordinates(coordinates),
@@ -199,7 +211,8 @@ export function useMapCanvas() {
     L:             any,
     center:        LatLngPoint,
     radiusMeters:  number,
-    metadata:      CaptureMetadata
+    metadata:      CaptureMetadata,
+    captureTarget: CaptureTarget = "small"
   ): Promise<CaptureResult> => {
     const points: LatLngPoint[] = Array.from({ length: 32 }, (_, i) => {
       const angle = (i / 32) * Math.PI * 2;
@@ -208,21 +221,22 @@ export function useMapCanvas() {
         lng: center.lng + (radiusMeters / (111320 * Math.cos(center.lat * Math.PI / 180))) * Math.cos(angle),
       };
     });
-    return capture(overlayCanvas, mapInstance, L, points, metadata);
+    return capture(overlayCanvas, mapInstance, L, points, metadata, captureTarget);
   }, [capture]);
 
   // ── Send to Backend ───────────────────────────────────────────────────────
   const sendToBackend = useCallback(async (
-    smallBlob:   Blob,
-    largeBlob:   Blob,
+    smallBlob:   Blob | null | undefined,
+    largeBlob:   Blob | null | undefined,
     coordinates: LatLngPoint[],
     metadata:    CaptureMetadata,
     captureInfo?: Pick<CaptureResult, "viewportCoordinates" | "selectedBounds" | "viewportBounds">,
+    captureTarget: CaptureTarget = "small",
     endpoint     = "/api/map-capture"
   ): Promise<Response> => {
     const form = new FormData();
-    form.append("smallImage",  smallBlob,                 "small_capture.png");
-    form.append("largeImage",  largeBlob,                 "large_capture.png");
+    if (smallBlob) form.append("smallImage",  smallBlob,  "small_capture.png");
+    if (largeBlob) form.append("largeImage",  largeBlob,  "large_capture.png");
     form.append("coordinates", JSON.stringify(coordinates));
     if (captureInfo?.viewportCoordinates) {
       form.append("viewportCoordinates", JSON.stringify(captureInfo.viewportCoordinates));
@@ -234,6 +248,7 @@ export function useMapCanvas() {
       form.append("viewportBounds", JSON.stringify(captureInfo.viewportBounds));
     }
     form.append("metadata",    JSON.stringify(metadata));
+    form.append("captureTarget", captureTarget);
     return fetch(endpoint, { method: "POST", body: form });
   }, []);
 

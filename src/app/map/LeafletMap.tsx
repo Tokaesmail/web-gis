@@ -13,7 +13,7 @@ import { useMapCanvas }      from "./useMapCanvas";
 import { useLang }           from "../_components/translations";
 import {
   DrawTool, SAT_LAYERS, INDEX_TILES,
-  SatKey, IdxKey, LatLngPoint, CaptureMetadata, CaptureResult,
+  SatKey, IdxKey, LatLngPoint, CaptureMetadata, CaptureResult, CaptureTarget,
 } from "./mapTypes_proxy";
 
 type ExtrusionConfig = {
@@ -37,6 +37,7 @@ interface GeoJSONStyle {
 
 interface Props {
   activeTool:     DrawTool;
+  captureTarget:  CaptureTarget;
   onAreaSelected: (name: string, area: number) => void;
   onCoordsUpdate: (lat: number, lng: number) => void;
   flyToRef:       React.MutableRefObject<((lat: number, lng: number) => void) | null>;
@@ -92,7 +93,7 @@ function getUniversityColor(from: number, to: number): { fill: string; stroke: s
 }
 
 export default function LeafletMap({
-  activeTool, onAreaSelected, onCoordsUpdate,
+  activeTool, captureTarget, onAreaSelected, onCoordsUpdate,
   flyToRef, clearRef, onSatChange, onIdxChange, onOpacityChangeRegister, onCapture,
   geoJsonData, extraGeoJsonData, latestGeoJson, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
   onImagePlacerRegister,
@@ -698,7 +699,7 @@ export default function LeafletMap({
     coordinates: LatLngPoint[], metadata: CaptureMetadata
   ) => {
     try {
-      const captureResult = await capture(canvas, map, L, coordinates, metadata);
+      const captureResult = await capture(canvas, map, L, coordinates, metadata, captureTarget);
       const { smallBlob, largeBlob, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
       onCapture?.(captureResult);
       // بنبعت coordinates و metadata للباك — مفيش ألوان
@@ -706,7 +707,7 @@ export default function LeafletMap({
         viewportCoordinates,
         selectedBounds,
         viewportBounds,
-      });
+      }, captureTarget);
       if (res.ok) console.log("✅ Backend:", await res.json());
     } catch (err) {
       console.error("❌ Capture error:", err);
@@ -1172,14 +1173,14 @@ export default function LeafletMap({
               lastCoordsRef.current = [centerCoord, { lat, lng }];
               lastToolRef.current   = "circle";
               const metadata: CaptureMetadata = { areaName: "Drawn Circle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
-            const captureResult = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata);
+            const captureResult = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata, captureTarget);
               const { smallBlob, largeBlob, selectedCoordinates, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
               onCapture?.(captureResult);
               const res = await sendToBackend(smallBlob, largeBlob, selectedCoordinates, metadata, {
                 viewportCoordinates,
                 selectedBounds,
                 viewportBounds,
-              });
+              }, captureTarget);
               if (res.ok) console.log("✅ Backend:", await res.json());
             }
             drawPointsRef.current = [];
