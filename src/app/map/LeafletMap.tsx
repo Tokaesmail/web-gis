@@ -47,6 +47,13 @@ interface Props {
   onOpacityChangeRegister?: (handler: (o: number) => void) => void;
   /** register an image placement workflow (2 clicks to place image) */
   onImagePlacerRegister?: (handler: (file: File) => void) => void;
+  onRasterOverlayRegister?: (handler: (config: {
+    name: string;
+    dataUrl: string;
+    bounds: [[number, number], [number, number]];
+    opacity: number;
+    coords: { lat: number; lng: number };
+  }) => void) => void;
   onCapture?:     (capture: CaptureResult) => void;
   /** callback لما يضغط على GeoJSON feature */
   onFeatureClick?: (feature: GeoJSON.Feature) => void;
@@ -97,6 +104,7 @@ export default function LeafletMap({
   flyToRef, clearRef, onSatChange, onIdxChange, onOpacityChangeRegister, onCapture,
   geoJsonData, extraGeoJsonData, latestGeoJson, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
   onImagePlacerRegister,
+  onRasterOverlayRegister,
   extrusionGeoJson,
   extrusionConfig,
 }: Props) {
@@ -129,6 +137,7 @@ export default function LeafletMap({
   const [mapReady, setMapReady] = useState(false);
   const imagePaneReadyRef = useRef(false);
   const imageOverlaysRef = useRef<{ id: string; name: string; src: string; bounds: [[number, number], [number, number]]; layer: any }[]>([]);
+  const rasterOverlayRef = useRef<any>(null);
   const placingImageRef = useRef<{
     file: File;
     src: string; // data URL (persistent across refresh)
@@ -314,6 +323,32 @@ export default function LeafletMap({
     onImagePlacerRegister((file: File) => startImagePlacement(file));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onImagePlacerRegister, mapReady]);
+
+  useEffect(() => {
+    if (!onRasterOverlayRegister) return;
+    onRasterOverlayRegister((config) => {
+      const map = mapInstanceRef.current;
+      const L = LRef.current;
+      if (!map || !L || !config.dataUrl) return;
+      if (rasterOverlayRef.current) {
+        try { map.removeLayer(rasterOverlayRef.current); } catch (_) {}
+        rasterOverlayRef.current = null;
+      }
+      const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
+      rasterOverlayRef.current = L.imageOverlay(config.dataUrl, bounds, {
+        opacity: config.opacity,
+        pane: "imagePane",
+      }).addTo(map);
+      map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 14, duration: 0.8 });
+      L.circleMarker([config.coords.lat, config.coords.lng], {
+        radius: 7,
+        color: "#22d3ee",
+        fillColor: "#22d3ee",
+        fillOpacity: 0.75,
+        weight: 2,
+      }).addTo(map).bindPopup(`<b>${config.name}</b><br/>${config.coords.lat.toFixed(5)}, ${config.coords.lng.toFixed(5)}`);
+    });
+  }, [onRasterOverlayRegister, mapReady]);
 
   // Escape cancels only the in-progress interaction.
   useEffect(() => {
@@ -968,6 +1003,10 @@ export default function LeafletMap({
           try { map.removeLayer(ov.layer); } catch (_) {}
         });
         imageOverlaysRef.current = [];
+        if (rasterOverlayRef.current) {
+          try { map.removeLayer(rasterOverlayRef.current); } catch (_) {}
+          rasterOverlayRef.current = null;
+        }
         try { localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY); } catch (_) {}
         refreshOverlaysUi();
         stopImagePlacement();

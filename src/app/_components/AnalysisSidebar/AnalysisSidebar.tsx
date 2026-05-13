@@ -11,6 +11,7 @@ import { IdxKey, SatKey } from "../../map/mapTypes_proxy";
 
 type PanelId =
   | "satellite"
+  | "raster"
   | "ndvi"
   | "weather"
   | "overview"
@@ -42,6 +43,19 @@ const panels: PanelItem[] = [
       </svg>
     ),
     badge: "S2",
+  },
+  {
+    id: "raster",
+    labelEn: "Raster Calculator",
+    labelAr: "Raster Calculator",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M4 4h16v16H4z" />
+        <path d="M4 10h16M10 4v16" />
+        <path d="m14 15 4-4M14 11l4 4" />
+      </svg>
+    ),
+    badge: "CALC",
   },
   {
     id: "crops",
@@ -854,6 +868,18 @@ type SatellitePreviewConfig = {
   opacity: number;
 };
 
+type RasterPreviewConfig = {
+  name: string;
+  indexKey: IdxKey;
+  expression: string;
+  date: string;
+  coords: { lat: number; lng: number };
+  bounds: [[number, number], [number, number]];
+  opacity: number;
+  colorRamp: string;
+  dataUrl: string;
+};
+
 function SatelliteDataPanel({
   selectedFeature,
   onPreview,
@@ -1034,6 +1060,473 @@ function SatelliteDataPanel({
   );
 }
 
+const RASTER_LAYERS = [
+  { key: "B2", name: "Sentinel_B2", file: "blue.tif", color: "#38bdf8" },
+  { key: "B3", name: "Sentinel_B3", file: "green.tif", color: "#22c55e" },
+  { key: "B4", name: "Sentinel_B4", file: "red.tif", color: "#f87171" },
+  { key: "B8", name: "Sentinel_B8", file: "nir.tif", color: "#a3e635" },
+  { key: "B11", name: "Sentinel_B11", file: "swir.tif", color: "#fb923c" },
+];
+
+type RasterBandKey = typeof RASTER_LAYERS[number]["key"];
+
+type UploadedRasterBand = {
+  fileName: string;
+  width: number;
+  height: number;
+  values: number[];
+  min: number;
+  max: number;
+};
+
+const RASTER_PRESETS = [
+  { key: "NDVI" as IdxKey, label: "NDVI", expression: "(B8 - B4)/(B8 + B4)", desc: "Vegetation vigor", required: ["B4", "B8"] },
+  { key: "NDWI" as IdxKey, label: "NDWI", expression: "(B3 - B8)/(B3 + B8)", desc: "Water signal", required: ["B3", "B8"] },
+  { key: "NDMI" as IdxKey, label: "NDMI", expression: "(B8 - B11)/(B8 + B11)", desc: "Moisture stress", required: ["B8"] },
+  { key: "SWIR" as IdxKey, label: "BSI", expression: "((B11 + B4) - (B8 + B2))/((B11 + B4) + (B8 + B2))", desc: "Bare soil", required: ["B2", "B4", "B8"] },
+];
+
+const RASTER_RAMPS = {
+  vegetation: {
+    label: "Vegetation",
+    css: "linear-gradient(90deg,#7f1d1d,#f59e0b,#fef08a,#84cc16,#166534)",
+    colors: [[127, 29, 29], [245, 158, 11], [254, 240, 138], [132, 204, 22], [22, 101, 52]],
+  },
+  water: {
+    label: "Water",
+    css: "linear-gradient(90deg,#78350f,#f8fafc,#38bdf8,#075985)",
+    colors: [[120, 53, 15], [248, 250, 252], [56, 189, 248], [7, 89, 133]],
+  },
+  thermal: {
+    label: "Thermal",
+    css: "linear-gradient(90deg,#172554,#7c3aed,#ef4444,#facc15)",
+    colors: [[23, 37, 84], [124, 58, 237], [239, 68, 68], [250, 204, 21]],
+  },
+};
+
+function getFeatureBounds(feature?: GeoJSON.Feature | null, fallback?: { lat: number; lng: number }) {
+  const coords: number[][] = [];
+  const walk = (value: any) => {
+    if (!Array.isArray(value)) return;
+    if (typeof value[0] === "number" && typeof value[1] === "number") {
+      coords.push(value);
+      return;
+    }
+    value.forEach(walk);
+  };
+  walk((feature?.geometry as any)?.coordinates);
+
+  if (coords.length) {
+    const lngs = coords.map((c) => c[0]);
+    const lats = coords.map((c) => c[1]);
+    const south = Math.min(...lats);
+    const north = Math.max(...lats);
+    const west = Math.min(...lngs);
+    const east = Math.max(...lngs);
+    const pad = Math.max(0.001, Math.max(north - south, east - west) * 0.18);
+    return [[south - pad, west - pad], [north + pad, east + pad]] as [[number, number], [number, number]];
+  }
+
+  const lat = fallback?.lat ?? 30.0444;
+  const lng = fallback?.lng ?? 31.2357;
+  return [[lat - 0.035, lng - 0.035], [lat + 0.035, lng + 0.035]] as [[number, number], [number, number]];
+}
+
+function pickRampColor(colors: number[][], t: number) {
+  const safe = Math.max(0, Math.min(1, t));
+  const step = 1 / (colors.length - 1);
+  const index = Math.min(Math.floor(safe / step), colors.length - 2);
+  const local = (safe - index * step) / step;
+  const a = colors[index];
+  const b = colors[index + 1];
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * local),
+    Math.round(a[1] + (b[1] - a[1]) * local),
+    Math.round(a[2] + (b[2] - a[2]) * local),
+  ];
+}
+
+function makeRasterPreviewDataUrl(expression: string, rampKey: keyof typeof RASTER_RAMPS, seed: number) {
+  const size = 96;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+
+  const image = ctx.createImageData(size, size);
+  const ramp = RASTER_RAMPS[rampKey].colors;
+  const isWater = expression.includes("B3 - B8");
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const wave = Math.sin((x + seed) / 9) * 0.18 + Math.cos((y - seed) / 11) * 0.14;
+      const ridge = Math.sin((x + y) / 17) * 0.1;
+      const center = 1 - Math.min(1, Math.hypot(x - size * 0.52, y - size * 0.48) / 70);
+      const raw = isWater ? 0.38 + wave - center * 0.25 : 0.48 + wave + ridge + center * 0.36;
+      const value = Math.max(0, Math.min(1, raw));
+      const [r, g, b] = pickRampColor(ramp, value);
+      const i = (y * size + x) * 4;
+      image.data[i] = r;
+      image.data[i + 1] = g;
+      image.data[i + 2] = b;
+      image.data[i + 3] = 210;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
+function renderRasterValuesDataUrl(values: number[], width: number, height: number, rampKey: keyof typeof RASTER_RAMPS) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+
+  const image = ctx.createImageData(width, height);
+  const ramp = RASTER_RAMPS[rampKey].colors;
+  for (let i = 0; i < values.length; i++) {
+    const value = values[i];
+    if (!Number.isFinite(value)) {
+      image.data[i * 4 + 3] = 0;
+      continue;
+    }
+    const t = (Math.max(-1, Math.min(1, value)) + 1) / 2;
+    const [r, g, b] = pickRampColor(ramp, t);
+    image.data[i * 4] = r;
+    image.data[i * 4 + 1] = g;
+    image.data[i * 4 + 2] = b;
+    image.data[i * 4 + 3] = 218;
+  }
+  ctx.putImageData(image, 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
+function buildHistogram(values: number[]) {
+  const bins = new Array(12).fill(0);
+  values.forEach((value) => {
+    if (!Number.isFinite(value)) return;
+    const normalized = (Math.max(-1, Math.min(1, value)) + 1) / 2;
+    const index = Math.min(bins.length - 1, Math.floor(normalized * bins.length));
+    bins[index] += 1;
+  });
+  const max = Math.max(...bins, 1);
+  return bins.map((value) => Math.max(6, Math.round((value / max) * 100)));
+}
+
+async function parseRasterBandFile(file: File): Promise<UploadedRasterBand> {
+  const GeoTIFF = await import("geotiff");
+  const tiff = await (GeoTIFF as any).fromArrayBuffer(await file.arrayBuffer());
+  const image = await tiff.getImage();
+  const sourceWidth = image.getWidth();
+  const sourceHeight = image.getHeight();
+  const maxSize = 128;
+  const scale = Math.min(1, maxSize / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  const rasters = await image.readRasters({
+    samples: [0],
+    width,
+    height,
+    interleave: true,
+    resampleMethod: "bilinear",
+  });
+  const raw = Array.from(rasters as ArrayLike<number>);
+  const valid = raw.filter((value) => Number.isFinite(value) && value > -9999 && value < 1_000_000);
+  const min = valid.length ? Math.min(...valid) : 0;
+  const max = valid.length ? Math.max(...valid) : 1;
+  const range = max - min || 1;
+  const values = raw.map((value) => (
+    Number.isFinite(value) && value > -9999 ? (value - min) / range : Number.NaN
+  ));
+  return { fileName: file.name, width, height, values, min, max };
+}
+
+function evaluateRasterExpression(expression: string, bands: Partial<Record<RasterBandKey, UploadedRasterBand>>) {
+  const available = Object.values(bands).filter(Boolean) as UploadedRasterBand[];
+  const base = available[0];
+  if (!base) return null;
+
+  const width = Math.min(...available.map((band) => band.width));
+  const height = Math.min(...available.map((band) => band.height));
+  const count = width * height;
+  const result = new Array<number>(count);
+  const cleaned = expression.trim();
+
+  for (let i = 0; i < count; i++) {
+    try {
+      const jsExpr = cleaned.replace(/\bB\d+\b/g, (token) => {
+        const band = bands[token as RasterBandKey];
+        const value = band?.values[i] ?? 0;
+        return Number.isFinite(value) ? String(value) : "0";
+      });
+      // The expression is user-authored local band math, evaluated per preview pixel.
+      result[i] = Function(`"use strict"; return (${jsExpr});`)() as number;
+      if (!Number.isFinite(result[i])) result[i] = Number.NaN;
+    } catch {
+      result[i] = Number.NaN;
+    }
+  }
+
+  return { values: result, width, height };
+}
+
+function RasterCalculatorPanel({
+  selectedFeature,
+  layers,
+  onPreview,
+}: {
+  selectedFeature?: GeoJSON.Feature | null;
+  layers: MapLayer[];
+  onPreview?: (config: RasterPreviewConfig) => void;
+}) {
+  const coords = getMidCoords(selectedFeature);
+  const [tab, setTab] = useState<"expression" | "presets" | "history">("expression");
+  const [date, setDate] = useState("2026-05-14");
+  const [lat, setLat] = useState(coords?.[0]?.toFixed(6) ?? "30.044400");
+  const [lng, setLng] = useState(coords?.[1]?.toFixed(6) ?? "31.235700");
+  const [expression, setExpression] = useState("(B8 - B4)/(B8 + B4)");
+  const [selectedLayers, setSelectedLayers] = useState<Record<string, boolean>>({ B2: true, B3: true, B4: true, B8: true });
+  const [ramp, setRamp] = useState<keyof typeof RASTER_RAMPS>("vegetation");
+  const [opacity, setOpacity] = useState(82);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [resultReady, setResultReady] = useState(false);
+  const [history, setHistory] = useState<string[]>(["NDVI_Result"]);
+  const [uploadedBands, setUploadedBands] = useState<Partial<Record<RasterBandKey, UploadedRasterBand>>>({});
+  const [uploadingBand, setUploadingBand] = useState<RasterBandKey | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [resultValues, setResultValues] = useState<number[] | null>(null);
+  const [usedRealRaster, setUsedRealRaster] = useState(false);
+
+  useEffect(() => {
+    if (!coords) return;
+    setLat(coords[0].toFixed(6));
+    setLng(coords[1].toFixed(6));
+  }, [coords?.[0], coords?.[1]]);
+
+  const selectedPreset = RASTER_PRESETS.find((preset) => preset.expression === expression) ?? RASTER_PRESETS[0];
+  const enabledLayerList = RASTER_LAYERS.filter((layer) => selectedLayers[layer.key]);
+  const histogram = useMemo(
+    () => resultValues ? buildHistogram(resultValues) : [8, 14, 24, 35, 51, 62, 74, 67, 49, 32, 20, 11],
+    [expression, ramp, resultValues]
+  );
+  const layerJson = useMemo(() => {
+    const entries = enabledLayerList.map((layer) => [layer.key, uploadedBands[layer.key]?.fileName ?? layer.file]);
+    return JSON.stringify({ expression, layers: Object.fromEntries(entries) }, null, 2);
+  }, [enabledLayerList, expression, uploadedBands]);
+
+  const handleBandUpload = async (bandKey: RasterBandKey, file?: File) => {
+    if (!file) return;
+    setUploadingBand(bandKey);
+    setUploadError(null);
+    try {
+      const parsed = await parseRasterBandFile(file);
+      setUploadedBands((prev) => ({ ...prev, [bandKey]: parsed }));
+      setSelectedLayers((prev) => ({ ...prev, [bandKey]: true }));
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Could not read this GeoTIFF file.");
+    } finally {
+      setUploadingBand(null);
+    }
+  };
+
+  const runPreview = () => {
+    const parsedLat = Number(lat);
+    const parsedLng = Number(lng);
+    const safeCoords = {
+      lat: Number.isFinite(parsedLat) ? parsedLat : 30.0444,
+      lng: Number.isFinite(parsedLng) ? parsedLng : 31.2357,
+    };
+    const realResult = evaluateRasterExpression(expression, uploadedBands);
+    const hasRealBands = !!realResult && Object.keys(uploadedBands).length > 0;
+    const dataUrl = realResult
+      ? renderRasterValuesDataUrl(realResult.values, realResult.width, realResult.height, ramp)
+      : makeRasterPreviewDataUrl(expression, ramp, Math.round(safeCoords.lat * 1000 + safeCoords.lng * 1000));
+    const name = `${selectedPreset.label}_Result`;
+    const config: RasterPreviewConfig = {
+      name,
+      indexKey: selectedPreset.key,
+      expression,
+      date,
+      coords: safeCoords,
+      bounds: getFeatureBounds(selectedFeature, safeCoords),
+      opacity: opacity / 100,
+      colorRamp: RASTER_RAMPS[ramp].label,
+      dataUrl,
+    };
+    setPreviewUrl(dataUrl);
+    setResultValues(realResult?.values ?? null);
+    setUsedRealRaster(hasRealBands);
+    setResultReady(true);
+    setHistory((prev) => [name, ...prev.filter((item) => item !== name)].slice(0, 4));
+    onPreview?.(config);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Raster Calculator</p>
+            <p className="mt-1 text-xs leading-relaxed text-slate-300">Choose AOI, date, bands, expression, then preview the result on the map.</p>
+          </div>
+          <span className="rounded-md border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-[0.56rem] font-bold text-emerald-300">LIVE</span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <label className="space-y-1">
+          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Latitude</span>
+          <input value={lat} onChange={(e) => setLat(e.target.value)} className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
+        </label>
+        <label className="space-y-1">
+          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Longitude</span>
+          <input value={lng} onChange={(e) => setLng(e.target.value)} className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
+        </label>
+      </div>
+
+      <label className="block space-y-1">
+        <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Acquisition date</span>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
+      </label>
+
+      <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Available Layers</p>
+          <span className="text-[0.58rem] text-cyan-300">{enabledLayerList.length} selected</span>
+        </div>
+        <div className="space-y-1.5">
+          {RASTER_LAYERS.map((layer) => (
+            <div key={layer.key} className="rounded-md border border-white/[0.05] bg-white/[0.025] px-2.5 py-2">
+              <div className="flex items-center gap-2">
+                <input type="checkbox" checked={!!selectedLayers[layer.key]} onChange={(e) => setSelectedLayers((prev) => ({ ...prev, [layer.key]: e.target.checked }))} className="accent-cyan-400" />
+                <span className="h-2.5 w-2.5 rounded-sm" style={{ background: layer.color }} />
+                <span className="flex-1 text-[0.7rem] text-slate-200">{layer.name}</span>
+                <span className="font-mono text-[0.55rem] text-slate-500">{layer.key}</span>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <label className="shrink-0 cursor-pointer rounded-md border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[0.58rem] font-semibold text-cyan-300 transition-colors hover:bg-cyan-400/15">
+                  Upload .tif
+                  <input
+                    type="file"
+                    accept=".tif,.tiff,image/tiff"
+                    className="hidden"
+                    onChange={(event) => handleBandUpload(layer.key, event.target.files?.[0])}
+                  />
+                </label>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[0.58rem] text-slate-400">
+                    {uploadedBands[layer.key]?.fileName ?? layer.file}
+                  </p>
+                  {uploadedBands[layer.key] && (
+                    <p className="font-mono text-[0.5rem] text-slate-600">
+                      {uploadedBands[layer.key]?.width}x{uploadedBands[layer.key]?.height} | min {uploadedBands[layer.key]?.min.toFixed(2)} max {uploadedBands[layer.key]?.max.toFixed(2)}
+                    </p>
+                  )}
+                </div>
+                {uploadingBand === layer.key && <span className="text-[0.55rem] text-amber-300">Reading...</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+        {uploadError && (
+          <div className="mt-2 rounded-md border border-red-400/20 bg-red-400/[0.06] px-2.5 py-2 text-[0.62rem] text-red-300">
+            {uploadError}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-1">
+        <div className="grid grid-cols-3 gap-1">
+          {(["expression", "presets", "history"] as const).map((item) => (
+            <button key={item} type="button" onClick={() => setTab(item)} className={`rounded-md px-2 py-2 text-[0.65rem] font-semibold capitalize transition-colors ${tab === item ? "bg-cyan-400 text-[#03101d]" : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"}`}>
+              {item}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {tab === "expression" && (
+        <textarea value={expression} onChange={(e) => setExpression(e.target.value)} rows={4} spellCheck={false} className="w-full resize-none rounded-lg border border-white/[0.08] bg-[#020817]/80 px-3 py-2 font-mono text-xs leading-relaxed text-cyan-200 outline-none focus:border-cyan-400/40" />
+      )}
+
+      {tab === "presets" && (
+        <div className="grid grid-cols-2 gap-2">
+          {RASTER_PRESETS.map((preset) => (
+            <button key={preset.label} type="button" onClick={() => { setExpression(preset.expression); setTab("expression"); }} className="rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 text-left transition-colors hover:border-cyan-400/35 hover:bg-cyan-400/[0.06]">
+              <span className="text-xs font-bold text-cyan-300">{preset.label}</span>
+              <span className="mt-1 block text-[0.58rem] text-slate-500">{preset.desc}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === "history" && (
+        <div className="space-y-2">
+          {history.map((item) => (
+            <button key={item} type="button" onClick={() => setTab("expression")} className="flex w-full items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2 text-left text-[0.68rem] text-slate-300">
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              {item}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Color Ramp</p>
+          <span className="text-[0.58rem] text-slate-500">{RASTER_RAMPS[ramp].label}</span>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {(Object.keys(RASTER_RAMPS) as Array<keyof typeof RASTER_RAMPS>).map((key) => (
+            <button key={key} type="button" onClick={() => setRamp(key)} className={`h-9 rounded-lg border p-1 transition-colors ${ramp === key ? "border-cyan-400/45 bg-cyan-400/10" : "border-white/[0.06] bg-white/[0.02]"}`}>
+              <span className="block h-full rounded-md" style={{ background: RASTER_RAMPS[key].css }} />
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Histogram</p>
+          <span className="text-[0.58rem] text-slate-500">Value distribution</span>
+        </div>
+        <div className="flex h-20 items-end gap-1">
+          {histogram.map((value, index) => (
+            <div key={index} className="flex-1 rounded-t-sm bg-cyan-400/70" style={{ height: `${value}%`, opacity: 0.45 + index / 24 }} />
+          ))}
+        </div>
+        <div className="mt-1 flex justify-between font-mono text-[0.5rem] text-slate-600"><span>-1.0</span><span>0.0</span><span>1.0</span></div>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[0.62rem] uppercase tracking-wider text-slate-500">Preview opacity</span>
+          <span className="text-[0.65rem] text-cyan-300">{opacity}%</span>
+        </div>
+        <input type="range" min={30} max={100} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} className="w-full accent-cyan-400" />
+      </div>
+
+      <button type="button" onClick={runPreview} className="w-full rounded-lg bg-cyan-400 px-3 py-3 text-xs font-bold text-[#03101d] transition-colors hover:bg-cyan-300">
+        Preview on Map
+      </button>
+
+      <div className="rounded-lg border border-white/[0.07] bg-[#020817]/70 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Results</p>
+          <span className={`rounded-full px-2 py-0.5 text-[0.55rem] font-bold ${resultReady ? "bg-emerald-400/10 text-emerald-300" : "bg-white/[0.04] text-slate-500"}`}>{resultReady ? (usedRealRaster ? "Real raster" : "Demo preview") : "Waiting"}</span>
+        </div>
+        <label className="mb-3 flex items-center gap-2 text-[0.7rem] text-slate-300">
+          <input type="checkbox" checked={resultReady} readOnly className="accent-cyan-400" />
+          {selectedPreset.label}_Result
+        </label>
+        {previewUrl && <img src={previewUrl} alt="Raster preview" className="mb-3 aspect-video w-full rounded-md border border-white/[0.06] object-cover" />}
+        <pre className="max-h-36 overflow-auto rounded-md border border-white/[0.06] bg-black/20 p-2 text-[0.58rem] leading-relaxed text-slate-400">{layerJson}</pre>
+      </div>
+    </div>
+  );
+}
+
 function PanelContent({
   id,
   selectedFeature,
@@ -1055,6 +1548,7 @@ function PanelContent({
   onLayerZoom,
   onLayer3D,
   onSatellitePreview,
+  onRasterPreview,
 }: {
   id: PanelId;
   selectedFeature?: GeoJSON.Feature | null;
@@ -1076,12 +1570,17 @@ function PanelContent({
   onLayerZoom: (id: string) => void;
   onLayer3D?: (id: string) => void;
   onSatellitePreview?: (config: SatellitePreviewConfig) => void;
+  onRasterPreview?: (config: RasterPreviewConfig) => void;
 }) {
   const [ndviExportData, setNdviExportData] = useState<any>(null);
   const { t, isRTL } = useLang();
 
   if (id === "satellite") {
     return <SatelliteDataPanel selectedFeature={selectedFeature} onPreview={onSatellitePreview} />;
+  }
+
+  if (id === "raster") {
+    return <RasterCalculatorPanel selectedFeature={selectedFeature} layers={layers} onPreview={onRasterPreview} />;
   }
 
   // ── NDVI ──
@@ -1355,6 +1854,7 @@ export default function AnalysisSidebar({
   onLayerZoom,
   onLayer3D,
   onSatellitePreview,
+  onRasterPreview,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
@@ -1380,6 +1880,7 @@ export default function AnalysisSidebar({
   onLayerZoom: (id: string) => void;
   onLayer3D?: (id: string) => void;
   onSatellitePreview?: (config: SatellitePreviewConfig) => void;
+  onRasterPreview?: (config: RasterPreviewConfig) => void;
 }) {
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -1471,6 +1972,7 @@ export default function AnalysisSidebar({
                   onLayerZoom={onLayerZoom}
                   onLayer3D={onLayer3D}
                   onSatellitePreview={onSatellitePreview}
+                  onRasterPreview={onRasterPreview}
                 />
               )}
             </div>

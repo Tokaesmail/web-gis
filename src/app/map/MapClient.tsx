@@ -24,6 +24,18 @@ const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
 const LAYER_SETTINGS_STORAGE_PREFIX = "gis_layer_settings_v1";
 const MAX_LOCAL_GEOJSON_STORAGE_CHARS = 2_000_000;
 
+type RasterPreviewConfig = {
+  name: string;
+  indexKey: IdxKey;
+  expression: string;
+  date: string;
+  coords: { lat: number; lng: number };
+  bounds: [[number, number], [number, number]];
+  opacity: number;
+  colorRamp: string;
+  dataUrl: string;
+};
+
 function persistUploadedGeoJSON(map: Record<string, any>, onSkipped?: () => void) {
   try {
     const payload = JSON.stringify(map);
@@ -84,6 +96,7 @@ export default function MapPage() {
   const changeIdxRef           = useRef<((idx: IdxKey) => void) | null>(null);
   const changeOpacityRef       = useRef<((o: number) => void) | null>(null);
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
+  const rasterOverlayRef       = useRef<((config: RasterPreviewConfig) => void) | null>(null);
   const lastCoordsRef          = useRef<{ lat: number; lng: number }>({ lat: 30.0, lng: 31.0 });
 
   // ── double-click tracking ─────────────────────────────────────────────────
@@ -655,6 +668,31 @@ export default function MapPage() {
     });
   }, []);
 
+  const handleRasterPreview = useCallback((config: RasterPreviewConfig) => {
+    rasterOverlayRef.current?.(config);
+    changeIdxRef.current?.(config.indexKey);
+    changeOpacityRef.current?.(config.opacity);
+
+    setLayers((prev) => {
+      const resultLayer: MapLayer = {
+        id: "raster-result",
+        name: config.name,
+        nameAr: config.name,
+        type: "raster",
+        visible: true,
+        opacity: config.opacity,
+        color: "#22d3ee",
+        source: `${config.expression} | ${config.date} | ${config.colorRamp}`,
+      };
+      const withoutOld = prev.filter((layer) => layer.id !== "raster-result");
+      return [resultLayer, ...withoutOld.map((layer) =>
+        layer.id === "ndvi-tile"
+          ? { ...layer, visible: true, opacity: config.opacity, source: `Raster calculator | ${config.name}` }
+          : layer
+      )];
+    });
+  }, []);
+
   // Sync uploaded GeoJSON as layers
   useEffect(() => {
     const uploadedIds = Object.keys(uploadedGeoJsonMap).map(name => `uploaded_${name}`);
@@ -726,6 +764,7 @@ export default function MapPage() {
       onLayerZoom={handleLayerZoom}
       onLayer3D={handleOpen3D}
       onSatellitePreview={handleSatellitePreview}
+      onRasterPreview={handleRasterPreview}
     />
   ), [
     selectedFeature,
@@ -749,6 +788,7 @@ export default function MapPage() {
     handleLayerReorder,
     handleLayerZoom,
     handleSatellitePreview,
+    handleRasterPreview,
   ]);
 
   const toggle2DButton = useMemo(() => (
@@ -812,6 +852,7 @@ export default function MapPage() {
             onIdxChange={(h) => { changeIdxRef.current = h; }}
               onOpacityChangeRegister={(h) => { changeOpacityRef.current = h; }}
             onImagePlacerRegister={(h) => { startImagePlacementRef.current = h; }}
+            onRasterOverlayRegister={(h) => { rasterOverlayRef.current = h as any; }}
             geoJsonData={contourLayer?.visible ? geoJsonData : null}
             extraGeoJsonData={combinedGeoJson}
             latestGeoJson={latestGeoJson}
