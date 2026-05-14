@@ -43,6 +43,20 @@ const panels: PanelItem[] = [
     ),
     badge: "AI",
   },
+   {
+    id: "raster",
+    labelEn: "Raster Calculator",
+    labelAr: "Raster Calculator",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M4 4h16v16H4z" />
+        <path d="M4 10h16M10 4v16" />
+        <path d="m14 15 4-4M14 11l4 4" />
+      </svg>
+    ),
+    badge: "CALC",
+  },
+
   {
     id: "crops",
     labelEn: "Crop Insight",
