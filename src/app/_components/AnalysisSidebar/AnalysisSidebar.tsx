@@ -880,6 +880,15 @@ type RasterPreviewConfig = {
   dataUrl: string;
 };
 
+type BackendRasterResponse = {
+  name?: string;
+  imageUrl?: string;
+  dataUrl?: string;
+  bounds?: [[number, number], [number, number]];
+  histogram?: number[];
+  stats?: { min?: number; max?: number; mean?: number; std?: number };
+};
+
 function SatelliteDataPanel({
   selectedFeature,
   onPreview,
@@ -1132,6 +1141,54 @@ function getFeatureBounds(feature?: GeoJSON.Feature | null, fallback?: { lat: nu
   return [[lat - 0.035, lng - 0.035], [lat + 0.035, lng + 0.035]] as [[number, number], [number, number]];
 }
 
+function getFeatureBBoxDetails(feature?: GeoJSON.Feature | null, fallback?: { lat: number; lng: number }) {
+  const bounds = getFeatureBounds(feature, fallback);
+  const [[south, west], [north, east]] = bounds;
+  const center = {
+    lat: (south + north) / 2,
+    lng: (west + east) / 2,
+  };
+  const corners = [
+    { label: "NW", lat: north, lng: west },
+    { label: "NE", lat: north, lng: east },
+    { label: "SE", lat: south, lng: east },
+    { label: "SW", lat: south, lng: west },
+  ];
+  return { bounds, center, corners };
+}
+
+function getFeatureVertices(feature?: GeoJSON.Feature | null, fallback?: { lat: number; lng: number }) {
+  const geometry = feature?.geometry as any;
+  const coords = geometry?.coordinates;
+  const points: Array<{ label: string; lat: number; lng: number }> = [];
+
+  const addPoint = (lng: number, lat: number) => {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    const last = points[points.length - 1];
+    if (last && Math.abs(last.lat - lat) < 1e-10 && Math.abs(last.lng - lng) < 1e-10) return;
+    points.push({ label: `P${points.length + 1}`, lat, lng });
+  };
+
+  if (geometry?.type === "Point" && Array.isArray(coords)) {
+    addPoint(coords[0], coords[1]);
+  } else if (geometry?.type === "Polygon" && Array.isArray(coords?.[0])) {
+    const ring = coords[0] as number[][];
+    ring.forEach((point, index) => {
+      const isClosingPoint = index === ring.length - 1 && ring.length > 1 &&
+        point[0] === ring[0][0] && point[1] === ring[0][1];
+      if (!isClosingPoint) addPoint(point[0], point[1]);
+    });
+  } else if (geometry?.type === "LineString" && Array.isArray(coords)) {
+    coords.forEach((point: number[]) => addPoint(point[0], point[1]));
+  }
+
+  if (!points.length && fallback) {
+    points.push({ label: "P1", lat: fallback.lat, lng: fallback.lng });
+  }
+
+  return points;
+}
+
 function pickRampColor(colors: number[][], t: number) {
   const safe = Math.max(0, Math.min(1, t));
   const step = 1 / (colors.length - 1);
@@ -1214,6 +1271,10 @@ function buildHistogram(values: number[]) {
   return bins.map((value) => Math.max(6, Math.round((value / max) * 100)));
 }
 
+function extractRasterBands(expression: string) {
+  return Array.from(new Set(expression.match(/\bB\d+\b/g) ?? [])).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+}
+
 async function parseRasterBandFile(file: File): Promise<UploadedRasterBand> {
   const GeoTIFF = await import("geotiff");
   const tiff = await (GeoTIFF as any).fromArrayBuffer(await file.arrayBuffer());
@@ -1273,92 +1334,132 @@ function evaluateRasterExpression(expression: string, bands: Partial<Record<Rast
 
 function RasterCalculatorPanel({
   selectedFeature,
-  layers,
   onPreview,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
-  layers: MapLayer[];
   onPreview?: (config: RasterPreviewConfig) => void;
 }) {
   const coords = getMidCoords(selectedFeature);
+  const initialBounds = getFeatureBBoxDetails(selectedFeature, coords ? { lat: coords[0], lng: coords[1] } : undefined);
+  const initialVertices = getFeatureVertices(selectedFeature, initialBounds.center);
   const [tab, setTab] = useState<"expression" | "presets" | "history">("expression");
-  const [date, setDate] = useState("2026-05-14");
-  const [lat, setLat] = useState(coords?.[0]?.toFixed(6) ?? "30.044400");
-  const [lng, setLng] = useState(coords?.[1]?.toFixed(6) ?? "31.235700");
+  const [dateFrom, setDateFrom] = useState("2026-05-01");
+  const [dateTo, setDateTo] = useState("2026-05-14");
+  const [lat, setLat] = useState(initialBounds.center.lat.toFixed(6));
+  const [lng, setLng] = useState(initialBounds.center.lng.toFixed(6));
+  const [bboxCorners, setBboxCorners] = useState(initialBounds.corners);
+  const [shapePoints, setShapePoints] = useState(initialVertices);
   const [expression, setExpression] = useState("(B8 - B4)/(B8 + B4)");
-  const [selectedLayers, setSelectedLayers] = useState<Record<string, boolean>>({ B2: true, B3: true, B4: true, B8: true });
   const [ramp, setRamp] = useState<keyof typeof RASTER_RAMPS>("vegetation");
   const [opacity, setOpacity] = useState(82);
   const [previewUrl, setPreviewUrl] = useState("");
   const [resultReady, setResultReady] = useState(false);
   const [history, setHistory] = useState<string[]>(["NDVI_Result"]);
-  const [uploadedBands, setUploadedBands] = useState<Partial<Record<RasterBandKey, UploadedRasterBand>>>({});
-  const [uploadingBand, setUploadingBand] = useState<RasterBandKey | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [resultValues, setResultValues] = useState<number[] | null>(null);
-  const [usedRealRaster, setUsedRealRaster] = useState(false);
+  const [backendHistogram, setBackendHistogram] = useState<number[] | null>(null);
+  const [backendStats, setBackendStats] = useState<BackendRasterResponse["stats"] | null>(null);
+  const [backendError, setBackendError] = useState<string | null>(null);
+  const [calculating, setCalculating] = useState(false);
+  const [usedBackendResult, setUsedBackendResult] = useState(false);
 
   useEffect(() => {
-    if (!coords) return;
-    setLat(coords[0].toFixed(6));
-    setLng(coords[1].toFixed(6));
-  }, [coords?.[0], coords?.[1]]);
+    const details = getFeatureBBoxDetails(selectedFeature, coords ? { lat: coords[0], lng: coords[1] } : undefined);
+    setLat(details.center.lat.toFixed(6));
+    setLng(details.center.lng.toFixed(6));
+    setBboxCorners(details.corners);
+    setShapePoints(getFeatureVertices(selectedFeature, details.center));
+  }, [coords?.[0], coords?.[1], selectedFeature]);
 
   const selectedPreset = RASTER_PRESETS.find((preset) => preset.expression === expression) ?? RASTER_PRESETS[0];
-  const enabledLayerList = RASTER_LAYERS.filter((layer) => selectedLayers[layer.key]);
+  const requestedBands = useMemo(() => extractRasterBands(expression), [expression]);
   const histogram = useMemo(
-    () => resultValues ? buildHistogram(resultValues) : [8, 14, 24, 35, 51, 62, 74, 67, 49, 32, 20, 11],
-    [expression, ramp, resultValues]
+    () => backendHistogram ?? (resultValues ? buildHistogram(resultValues) : [8, 14, 24, 35, 51, 62, 74, 67, 49, 32, 20, 11]),
+    [backendHistogram, expression, ramp, resultValues]
   );
-  const layerJson = useMemo(() => {
-    const entries = enabledLayerList.map((layer) => [layer.key, uploadedBands[layer.key]?.fileName ?? layer.file]);
-    return JSON.stringify({ expression, layers: Object.fromEntries(entries) }, null, 2);
-  }, [enabledLayerList, expression, uploadedBands]);
+  const requestJson = useMemo(() => {
+    return JSON.stringify({
+      expression,
+      bands: requestedBands,
+      dateFrom,
+      dateTo,
+      coords: { lat: Number(lat) || 0, lng: Number(lng) || 0 },
+      shapePoints,
+      bbox: bboxCorners.map((corner) => ({ label: corner.label, lat: corner.lat, lng: corner.lng })),
+    }, null, 2);
+  }, [bboxCorners, dateFrom, dateTo, expression, lat, lng, requestedBands, shapePoints]);
 
-  const handleBandUpload = async (bandKey: RasterBandKey, file?: File) => {
-    if (!file) return;
-    setUploadingBand(bandKey);
-    setUploadError(null);
-    try {
-      const parsed = await parseRasterBandFile(file);
-      setUploadedBands((prev) => ({ ...prev, [bandKey]: parsed }));
-      setSelectedLayers((prev) => ({ ...prev, [bandKey]: true }));
-    } catch (error) {
-      setUploadError(error instanceof Error ? error.message : "Could not read this GeoTIFF file.");
-    } finally {
-      setUploadingBand(null);
-    }
-  };
-
-  const runPreview = () => {
+  const runPreview = async () => {
     const parsedLat = Number(lat);
     const parsedLng = Number(lng);
     const safeCoords = {
       lat: Number.isFinite(parsedLat) ? parsedLat : 30.0444,
       lng: Number.isFinite(parsedLng) ? parsedLng : 31.2357,
     };
-    const realResult = evaluateRasterExpression(expression, uploadedBands);
-    const hasRealBands = !!realResult && Object.keys(uploadedBands).length > 0;
-    const dataUrl = realResult
-      ? renderRasterValuesDataUrl(realResult.values, realResult.width, realResult.height, ramp)
-      : makeRasterPreviewDataUrl(expression, ramp, Math.round(safeCoords.lat * 1000 + safeCoords.lng * 1000));
+    const bounds = getFeatureBounds(selectedFeature, safeCoords);
     const name = `${selectedPreset.label}_Result`;
+
+    setCalculating(true);
+    setBackendError(null);
+
+    let dataUrl = "";
+    let resultName = name;
+    let resultBounds = bounds;
+    let backendWorked = false;
+
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "";
+      const endpoint = baseUrl ? `${baseUrl}/raster/calculate` : "/api/raster/calculate";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expression,
+          bands: requestedBands,
+          dateFrom,
+          dateTo,
+          coords: safeCoords,
+          bbox: bounds,
+          bboxCorners,
+          shapePoints,
+          colorRamp: RASTER_RAMPS[ramp].label,
+        }),
+      });
+
+      if (!response.ok) throw new Error(`Backend responded ${response.status}`);
+      const payload = await response.json() as BackendRasterResponse;
+      dataUrl = payload.dataUrl || payload.imageUrl || "";
+      if (!dataUrl) throw new Error("Backend result did not include imageUrl or dataUrl");
+      resultName = payload.name || name;
+      resultBounds = payload.bounds || bounds;
+      setBackendHistogram(Array.isArray(payload.histogram) ? payload.histogram : null);
+      setBackendStats(payload.stats ?? null);
+      setResultValues(null);
+      backendWorked = true;
+    } catch (error) {
+      dataUrl = makeRasterPreviewDataUrl(expression, ramp, Math.round(safeCoords.lat * 1000 + safeCoords.lng * 1000));
+      setBackendHistogram(null);
+      setBackendStats(null);
+      setResultValues(null);
+      setBackendError(error instanceof Error ? error.message : "Backend raster calculation is not available.");
+    } finally {
+      setCalculating(false);
+    }
+
     const config: RasterPreviewConfig = {
-      name,
+      name: resultName,
       indexKey: selectedPreset.key,
       expression,
-      date,
+      date: `${dateFrom} to ${dateTo}`,
       coords: safeCoords,
-      bounds: getFeatureBounds(selectedFeature, safeCoords),
+      bounds: resultBounds,
       opacity: opacity / 100,
       colorRamp: RASTER_RAMPS[ramp].label,
       dataUrl,
     };
     setPreviewUrl(dataUrl);
-    setResultValues(realResult?.values ?? null);
-    setUsedRealRaster(hasRealBands);
+    setUsedBackendResult(backendWorked);
     setResultReady(true);
-    setHistory((prev) => [name, ...prev.filter((item) => item !== name)].slice(0, 4));
+    setHistory((prev) => [resultName, ...prev.filter((item) => item !== resultName)].slice(0, 4));
     onPreview?.(config);
   };
 
@@ -1368,7 +1469,7 @@ function RasterCalculatorPanel({
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Raster Calculator</p>
-            <p className="mt-1 text-xs leading-relaxed text-slate-300">Choose AOI, date, bands, expression, then preview the result on the map.</p>
+            <p className="mt-1 text-xs leading-relaxed text-slate-300">Choose AOI, date range, expression, then preview the result on the map.</p>
           </div>
           <span className="rounded-md border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-[0.56rem] font-bold text-emerald-300">LIVE</span>
         </div>
@@ -1376,64 +1477,62 @@ function RasterCalculatorPanel({
 
       <div className="grid grid-cols-2 gap-2">
         <label className="space-y-1">
-          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Latitude</span>
+          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">AOI center lat</span>
           <input value={lat} onChange={(e) => setLat(e.target.value)} className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
         </label>
         <label className="space-y-1">
-          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Longitude</span>
+          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">AOI center lng</span>
           <input value={lng} onChange={(e) => setLng(e.target.value)} className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
         </label>
       </div>
 
-      <label className="block space-y-1">
-        <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Acquisition date</span>
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
-      </label>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="space-y-1">
+          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Start date</span>
+          <input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
+        </label>
+        <label className="space-y-1">
+          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">End date</span>
+          <input type="date" value={dateTo} min={dateFrom} onChange={(e) => setDateTo(e.target.value)} className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
+        </label>
+      </div>
 
       <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
         <div className="mb-2 flex items-center justify-between">
-          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Available Layers</p>
-          <span className="text-[0.58rem] text-cyan-300">{enabledLayerList.length} selected</span>
+          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Shape Points</p>
+          <span className="text-[0.58rem] text-cyan-300">{shapePoints.length} point{shapePoints.length === 1 ? "" : "s"}</span>
         </div>
-        <div className="space-y-1.5">
-          {RASTER_LAYERS.map((layer) => (
-            <div key={layer.key} className="rounded-md border border-white/[0.05] bg-white/[0.025] px-2.5 py-2">
-              <div className="flex items-center gap-2">
-                <input type="checkbox" checked={!!selectedLayers[layer.key]} onChange={(e) => setSelectedLayers((prev) => ({ ...prev, [layer.key]: e.target.checked }))} className="accent-cyan-400" />
-                <span className="h-2.5 w-2.5 rounded-sm" style={{ background: layer.color }} />
-                <span className="flex-1 text-[0.7rem] text-slate-200">{layer.name}</span>
-                <span className="font-mono text-[0.55rem] text-slate-500">{layer.key}</span>
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                <label className="shrink-0 cursor-pointer rounded-md border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[0.58rem] font-semibold text-cyan-300 transition-colors hover:bg-cyan-400/15">
-                  Upload .tif
-                  <input
-                    type="file"
-                    accept=".tif,.tiff,image/tiff"
-                    className="hidden"
-                    onChange={(event) => handleBandUpload(layer.key, event.target.files?.[0])}
-                  />
-                </label>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[0.58rem] text-slate-400">
-                    {uploadedBands[layer.key]?.fileName ?? layer.file}
-                  </p>
-                  {uploadedBands[layer.key] && (
-                    <p className="font-mono text-[0.5rem] text-slate-600">
-                      {uploadedBands[layer.key]?.width}x{uploadedBands[layer.key]?.height} | min {uploadedBands[layer.key]?.min.toFixed(2)} max {uploadedBands[layer.key]?.max.toFixed(2)}
-                    </p>
-                  )}
-                </div>
-                {uploadingBand === layer.key && <span className="text-[0.55rem] text-amber-300">Reading...</span>}
-              </div>
+        <div className="grid grid-cols-2 gap-1.5">
+          {shapePoints.map((point) => (
+            <div key={point.label} className="rounded-md border border-white/[0.05] bg-black/10 p-2">
+              <p className="text-[0.55rem] font-bold text-cyan-300">{point.label}</p>
+              <p className="mt-0.5 font-mono text-[0.55rem] text-slate-400">lat {point.lat.toFixed(6)}</p>
+              <p className="font-mono text-[0.55rem] text-slate-400">lng {point.lng.toFixed(6)}</p>
             </div>
           ))}
         </div>
-        {uploadError && (
-          <div className="mt-2 rounded-md border border-red-400/20 bg-red-400/[0.06] px-2.5 py-2 text-[0.62rem] text-red-300">
-            {uploadError}
-          </div>
-        )}
+        <p className="mt-2 text-[0.55rem] leading-relaxed text-slate-500">
+          These are the actual drawn vertices. The backend still receives the bounding box internally for satellite search.
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Backend Bands</p>
+          <span className="text-[0.58rem] text-cyan-300">{requestedBands.length} required</span>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {requestedBands.length ? requestedBands.map((band) => (
+            <span key={band} className="rounded-md border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 font-mono text-[0.62rem] text-cyan-200">
+              {band}
+            </span>
+          )) : (
+            <span className="text-[0.65rem] text-amber-300">Write bands like B4 and B8 in the expression.</span>
+          )}
+        </div>
+        <p className="mt-2 text-[0.58rem] leading-relaxed text-slate-500">
+          The backend receives these band names and fetches the raster data for the selected date and location.
+        </p>
       </div>
 
       <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-1">
@@ -1507,21 +1606,40 @@ function RasterCalculatorPanel({
         <input type="range" min={30} max={100} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} className="w-full accent-cyan-400" />
       </div>
 
-      <button type="button" onClick={runPreview} className="w-full rounded-lg bg-cyan-400 px-3 py-3 text-xs font-bold text-[#03101d] transition-colors hover:bg-cyan-300">
-        Preview on Map
+      <button type="button" onClick={runPreview} disabled={calculating || requestedBands.length === 0} className="w-full rounded-lg bg-cyan-400 px-3 py-3 text-xs font-bold text-[#03101d] transition-colors hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-55">
+        {calculating ? "Calculating..." : "Preview on Map"}
       </button>
 
       <div className="rounded-lg border border-white/[0.07] bg-[#020817]/70 p-3">
         <div className="mb-2 flex items-center justify-between">
           <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Results</p>
-          <span className={`rounded-full px-2 py-0.5 text-[0.55rem] font-bold ${resultReady ? "bg-emerald-400/10 text-emerald-300" : "bg-white/[0.04] text-slate-500"}`}>{resultReady ? (usedRealRaster ? "Real raster" : "Demo preview") : "Waiting"}</span>
+          <span className={`rounded-full px-2 py-0.5 text-[0.55rem] font-bold ${resultReady ? "bg-emerald-400/10 text-emerald-300" : "bg-white/[0.04] text-slate-500"}`}>{resultReady ? (usedBackendResult ? "Backend result" : "Demo fallback") : "Waiting"}</span>
         </div>
         <label className="mb-3 flex items-center gap-2 text-[0.7rem] text-slate-300">
           <input type="checkbox" checked={resultReady} readOnly className="accent-cyan-400" />
           {selectedPreset.label}_Result
         </label>
+        {backendError && (
+          <div className="mb-3 rounded-md border border-amber-400/20 bg-amber-400/[0.06] px-2.5 py-2 text-[0.62rem] text-amber-200">
+            Backend not connected yet: {backendError}. Showing demo fallback.
+          </div>
+        )}
         {previewUrl && <img src={previewUrl} alt="Raster preview" className="mb-3 aspect-video w-full rounded-md border border-white/[0.06] object-cover" />}
-        <pre className="max-h-36 overflow-auto rounded-md border border-white/[0.06] bg-black/20 p-2 text-[0.58rem] leading-relaxed text-slate-400">{layerJson}</pre>
+        {backendStats && (
+          <div className="mb-3 grid grid-cols-3 gap-1.5">
+            {[
+              { label: "Min", value: backendStats.min },
+              { label: "Max", value: backendStats.max },
+              { label: "Mean", value: backendStats.mean },
+            ].map((item) => (
+              <div key={item.label} className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2 text-center">
+                <p className="text-[0.68rem] font-semibold text-slate-200">{Number(item.value ?? 0).toFixed(3)}</p>
+                <p className="mt-0.5 text-[0.52rem] text-slate-500">{item.label}</p>
+              </div>
+            ))}
+          </div>
+        )}
+        <pre className="max-h-36 overflow-auto rounded-md border border-white/[0.06] bg-black/20 p-2 text-[0.58rem] leading-relaxed text-slate-400">{requestJson}</pre>
       </div>
     </div>
   );
@@ -1580,7 +1698,7 @@ function PanelContent({
   }
 
   if (id === "raster") {
-    return <RasterCalculatorPanel selectedFeature={selectedFeature} layers={layers} onPreview={onRasterPreview} />;
+    return <RasterCalculatorPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />;
   }
 
   // ── NDVI ──

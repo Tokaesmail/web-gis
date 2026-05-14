@@ -38,7 +38,7 @@ interface GeoJSONStyle {
 interface Props {
   activeTool:     DrawTool;
   captureTarget:  CaptureTarget;
-  onAreaSelected: (name: string, area: number) => void;
+  onAreaSelected: (name: string, area: number, feature?: GeoJSON.Feature) => void;
   onCoordsUpdate: (lat: number, lng: number) => void;
   flyToRef:       React.MutableRefObject<((lat: number, lng: number) => void) | null>;
   clearRef:       React.MutableRefObject<(() => void) | null>;
@@ -97,6 +97,21 @@ function getUniversityColor(from: number, to: number): { fill: string; stroke: s
   if (to <= 5)  return { fill: "#22c55e", stroke: "#16a34a" };
   if (to <= 10) return { fill: "#f59e0b", stroke: "#d97706" };
   return           { fill: "#ef4444", stroke: "#dc2626" };
+}
+
+function makePolygonFeature(name: string, points: [number, number][], area: number): GeoJSON.Feature {
+  const ring = points.map(([lat, lng]) => [lng, lat]);
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  const closedRing = first && last && (first[0] !== last[0] || first[1] !== last[1])
+    ? [...ring, first]
+    : ring;
+
+  return {
+    type: "Feature",
+    geometry: { type: "Polygon", coordinates: [closedRing] },
+    properties: { name, areaHa: area, _drawn: true },
+  };
 }
 
 export default function LeafletMap({
@@ -763,7 +778,9 @@ export default function LeafletMap({
       return acc + p[1] * pts[j][0] - pts[j][1] * p[0];
     }, 0)) / 2 * 12345).toFixed(1));
     poly.bindPopup(`🔵 ${t.polygon} · ≈ ${area} ${t.ha}`).openPopup();
-    onAreaSelected("Drawn Polygon", area);
+    const feature = makePolygonFeature("Drawn Polygon", pts, area);
+    onAreaSelected("Drawn Polygon", area, feature);
+    onFeatureClick?.(feature);
 
     const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
     lastCoordsRef.current = coordinates;
@@ -1172,12 +1189,14 @@ export default function LeafletMap({
             const area = parseFloat((Math.abs(p1[0] - lat) * Math.abs(p1[1] - lng) * 12345).toFixed(1));
             rect.bindPopup(`📐 ${t.rectangle} · ≈ ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(rect);
-            onAreaSelected("Drawn Rectangle", area);
+            const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
+            const feature = makePolygonFeature("Drawn Rectangle", coordinates.map((point) => [point.lat, point.lng]), area);
+            onAreaSelected("Drawn Rectangle", area, feature);
+            onFeatureClick?.(feature);
             if (canvasRef.current) {
               const px1 = map.latLngToContainerPoint(L.latLng(p1[0], p1[1]));
               const px2 = map.latLngToContainerPoint(L.latLng(lat, lng));
               drawRect(canvasRef.current, px1, px2);
-              const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
               lastCoordsRef.current = [{ lat: p1[0], lng: p1[1] }, { lat, lng }];
               lastToolRef.current   = "rectangle";
               const metadata: CaptureMetadata = { areaName: "Drawn Rectangle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
@@ -1202,7 +1221,16 @@ export default function LeafletMap({
             const area   = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
             circ.bindPopup(`🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(circ);
-            onAreaSelected("Drawn Circle", area);
+            const bounds = circ.getBounds();
+            const circleBox: [number, number][] = [
+              [bounds.getNorth(), bounds.getWest()],
+              [bounds.getNorth(), bounds.getEast()],
+              [bounds.getSouth(), bounds.getEast()],
+              [bounds.getSouth(), bounds.getWest()],
+            ];
+            const feature = makePolygonFeature("Drawn Circle Bounds", circleBox, area);
+            onAreaSelected("Drawn Circle", area, feature);
+            onFeatureClick?.(feature);
             if (canvasRef.current) {
               const cPx = map.latLngToContainerPoint(L.latLng(center[0], center[1]));
               const ePx = map.latLngToContainerPoint(L.latLng(lat, lng));

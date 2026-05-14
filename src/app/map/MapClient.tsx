@@ -838,8 +838,9 @@ export default function MapPage() {
           <LeafletMap
             activeTool={activeTool}
             captureTarget={captureTarget}
-            onAreaSelected={(name, area) => {
+            onAreaSelected={(name, area, feature) => {
               setSelectedArea({ name, ha: area });
+              if (feature) setSelectedFeature(feature);
             }}
             onCoordsUpdate={(lat, lng) => {
               lastCoordsRef.current = { lat, lng };
