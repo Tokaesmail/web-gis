@@ -81,6 +81,16 @@ export default function MapPage() {
   const [extrusionCfg,    setExtrusionCfg]    = useState<any>(null);
   const [layerSettingsLoaded, setLayerSettingsLoaded] = useState(false);
 
+  // ── Template match: pending captures ────────────────────────────────────
+  const [pendingTemplateCapture, setPendingTemplateCapture] = useState<{
+    blob: Blob; previewUrl: string;
+    bounds: { north: number; south: number; east: number; west: number };
+  } | null>(null);
+  const [pendingMapCapture, setPendingMapCapture] = useState<{
+    blob: Blob; previewUrl: string;
+    bounds: { north: number; south: number; east: number; west: number };
+  } | null>(null);
+
   // ── Layer panel state ────────────────────────────────────────────────────
   const [layers, setLayers] = useState<MapLayer[]>([
     { id: "contours",   name: "Contours",           nameAr: "خطوط الكنتور",     type: "vector", visible: true,  opacity: 1,    color: "#00d4ff", source: "Backend API · /gis/contours" },
@@ -101,6 +111,7 @@ export default function MapPage() {
 
   // ── double-click tracking ─────────────────────────────────────────────────
   const lastClickTimeRef = useRef<number>(0);
+  const templateMatchCaptureRef = useRef<"template" | "map" | null>(null);
 
   const isRestored = useRef(false);
   const isLayerSettingsHydrating = useRef(false);
@@ -143,8 +154,12 @@ export default function MapPage() {
     fetch(`${BASE_URL}/gis/contours`, {
       headers: { "Accept-Encoding": "gzip, deflate, br", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     })
-      .then((r) => r.json())
-      .then((data) => { if (isMounted) { setGeoJsonData(data); setGeoJsonError(null); } })
+      .then((r) => { if (!r.ok) throw new Error(`Contours API ${r.status}`); return r.json(); })
+      .then((data) => {
+        if (!isMounted) return;
+        if (!data || !data.type || !Array.isArray(data.features)) throw new Error("Invalid GeoJSON from contours API");
+        setGeoJsonData(data); setGeoJsonError(null);
+      })
       .catch((err) => { if (isMounted) setGeoJsonError(err.message); })
       .finally(() => { if (isMounted) setGeoJsonLoading(false); });
 
@@ -480,9 +495,25 @@ export default function MapPage() {
   }, []);
 
   const handleCapture = useCallback((capture: CaptureResult) => {
-    const displayUrl = capture.smallUrl ?? capture.largeUrl;
-    if (!displayUrl) return;
-    setCaptureUrl(displayUrl);
+    // If we're in template match capture mode, route to the correct state
+    const captureMode = templateMatchCaptureRef.current;
+    if (captureMode) {
+      templateMatchCaptureRef.current = null;
+      const mapCap = {
+        blob: capture.smallBlob,
+        previewUrl: capture.smallUrl,
+        bounds: capture.selectedBounds,
+      };
+      if (captureMode === "template") {
+        setPendingTemplateCapture(mapCap);
+      } else {
+        setPendingMapCapture(mapCap);
+      }
+      setActiveTool("pointer");
+      return;
+    }
+
+    setCaptureUrl(capture.smallUrl);
     setCaptures((prev) => [
       {
         id: Date.now(),
@@ -499,6 +530,16 @@ export default function MapPage() {
       },
       ...prev,
     ]);
+  }, []);
+
+  const handleRequestTemplateCapture = useCallback(() => {
+    templateMatchCaptureRef.current = "template";
+    setActiveTool("rectangle");
+  }, []);
+
+  const handleRequestMapCapture = useCallback(() => {
+    templateMatchCaptureRef.current = "map";
+    setActiveTool("rectangle");
   }, []);
 
   const handleDeleteCapture = useCallback((id: number, url: string) => {
@@ -754,6 +795,12 @@ export default function MapPage() {
         });
       }}
       onDeleteCapture={handleDeleteCapture}
+      onRequestTemplateCapture={handleRequestTemplateCapture}
+      pendingTemplateCapture={pendingTemplateCapture}
+      onClearTemplateCapture={() => { if (pendingTemplateCapture?.previewUrl) URL.revokeObjectURL(pendingTemplateCapture.previewUrl); setPendingTemplateCapture(null); }}
+      onRequestMapCapture={handleRequestMapCapture}
+      pendingMapCapture={pendingMapCapture}
+      onClearMapCapture={() => { if (pendingMapCapture?.previewUrl) URL.revokeObjectURL(pendingMapCapture.previewUrl); setPendingMapCapture(null); }}
       layers={layers}
       onLayerToggle={handleLayerToggle}
       onLayerOpacity={handleLayerOpacity}
@@ -778,6 +825,10 @@ export default function MapPage() {
     handleFlyTo,
     handleClose3D,
     handleDeleteCapture,
+    handleRequestTemplateCapture,
+    pendingTemplateCapture,
+    handleRequestMapCapture,
+    pendingMapCapture,
     activePanel,
     layers,
     handleLayerToggle,

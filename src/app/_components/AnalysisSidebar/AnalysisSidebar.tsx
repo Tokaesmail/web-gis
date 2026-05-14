@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useLang } from "../translations";
 import JSONUploadModal from "./DataManagerPanel";
+import TemplateMatchPanel, { type MapCapture } from "./TemplateMatchPanel";
 import { exportToExcel, exportToPDF } from "../../../../lib/exportUtils";
 import { useMapDB } from "../../map/useMapDB";
 import LayerPanel, { MapLayer } from "../../map/LayerPanel";
@@ -17,8 +18,8 @@ type PanelId =
   | "overview"
   | "analyses"
   | "layers"
-  | "captures"
-  | "crops";
+  | "crops"
+  | "template-match";
 
 interface PanelItem {
   id: PanelId;
@@ -30,32 +31,17 @@ interface PanelItem {
 
 const panels: PanelItem[] = [
   {
-    id: "satellite",
-    labelEn: "Satellite Data",
-    labelAr: "بيانات الأقمار",
+    id: "template-match",
+    labelEn: "Template Match",
+    labelAr: "مطابقة القالب",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M13.5 6.5 17 3l4 4-3.5 3.5" />
-        <path d="m3 21 7.8-7.8" />
-        <path d="m9 15 6-6" />
-        <path d="m7 11 6 6" />
-        <path d="M15 3h6v6" />
+        <rect x="2" y="2" width="8" height="8" rx="1" />
+        <path d="m21 21-4.35-4.35" />
+        <circle cx="15" cy="15" r="5" />
       </svg>
     ),
-    badge: "S2",
-  },
-  {
-    id: "raster",
-    labelEn: "Raster Calculator",
-    labelAr: "Raster Calculator",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M4 4h16v16H4z" />
-        <path d="M4 10h16M10 4v16" />
-        <path d="m14 15 4-4M14 11l4 4" />
-      </svg>
-    ),
-    badge: "CALC",
+    badge: "AI",
   },
   {
     id: "crops",
@@ -67,18 +53,9 @@ const panels: PanelItem[] = [
         <path d="M13 20a7 7 0 0 0 7-7V5a2 2 0 0 0-2-2h-5a2 2 0 0 0-2 2v8a7 7 0 0 0 7 7Z" />
       </svg>
     ),
+    badge: "CALC",
   },
-  {
-    id: "captures",
-    labelEn: "Captures",
-    labelAr: "اللقطات",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-        <circle cx="12" cy="13" r="4" />
-      </svg>
-    ),
-  },
+
   {
     id: "layers",
     labelEn: "Layers",
@@ -1656,6 +1633,12 @@ function PanelContent({
   onFlyTo,
   onClearCaptures,
   onDeleteCapture,
+  onRequestTemplateCapture,
+  pendingTemplateCapture,
+  onClearTemplateCapture,
+  onRequestMapCapture,
+  pendingMapCapture,
+  onClearMapCapture,
   layers,
   onLayerToggle,
   onLayerOpacity,
@@ -1678,6 +1661,12 @@ function PanelContent({
   onFlyTo?: (lat: number, lng: number) => void;
   onClearCaptures: () => void;
   onDeleteCapture?: (id: number, url: string) => void;
+  onRequestTemplateCapture?: () => void;
+  pendingTemplateCapture?: MapCapture | null;
+  onClearTemplateCapture?: () => void;
+  onRequestMapCapture?: () => void;
+  pendingMapCapture?: MapCapture | null;
+  onClearMapCapture?: () => void;
   layers: MapLayer[];
   onLayerToggle: (id: string, visible: boolean) => void;
   onLayerOpacity: (id: string, opacity: number) => void;
@@ -1827,9 +1816,19 @@ function PanelContent({
     );
   }
 
-  // ── CAPTURES ──
-  if (id === "captures") {
-    return <CapturesPanel items={captures} onClear={onClearCaptures} onDelete={onDeleteCapture} />;
+  // ── TEMPLATE MATCH ──
+  if (id === "template-match") {
+    return (
+      <TemplateMatchPanel
+        onResult={(geojson, fileName) => onGeoJSONUpload?.(geojson, fileName)}
+        onRequestTemplateCapture={onRequestTemplateCapture}
+        pendingTemplateCapture={pendingTemplateCapture}
+        onClearTemplateCapture={onClearTemplateCapture}
+        onRequestMapCapture={onRequestMapCapture}
+        pendingMapCapture={pendingMapCapture}
+        onClearMapCapture={onClearMapCapture}
+      />
+    );
   }
 
   // ── LAYERS ──
@@ -1962,6 +1961,12 @@ export default function AnalysisSidebar({
   onActivePanelChange,
   onClearCaptures,
   onDeleteCapture,
+  onRequestTemplateCapture,
+  pendingTemplateCapture,
+  onClearTemplateCapture,
+  onRequestMapCapture,
+  pendingMapCapture,
+  onClearMapCapture,
   layers,
   onLayerToggle,
   onLayerOpacity,
@@ -1988,6 +1993,12 @@ export default function AnalysisSidebar({
   onActivePanelChange?: (id: PanelId | null) => void;
   onClearCaptures: () => void;
   onDeleteCapture?: (id: number, url: string) => void;
+  onRequestTemplateCapture?: () => void;
+  pendingTemplateCapture?: MapCapture | null;
+  onClearTemplateCapture?: () => void;
+  onRequestMapCapture?: () => void;
+  pendingMapCapture?: MapCapture | null;
+  onClearMapCapture?: () => void;
   layers: MapLayer[];
   onLayerToggle: (id: string, visible: boolean) => void;
   onLayerOpacity: (id: string, opacity: number) => void;
@@ -2080,6 +2091,12 @@ export default function AnalysisSidebar({
                   onFlyTo={onFlyTo}
                   onClearCaptures={onClearCaptures}
                   onDeleteCapture={onDeleteCapture}
+                  onRequestTemplateCapture={onRequestTemplateCapture}
+                  pendingTemplateCapture={pendingTemplateCapture}
+                  onClearTemplateCapture={onClearTemplateCapture}
+                  onRequestMapCapture={onRequestMapCapture}
+                  pendingMapCapture={pendingMapCapture}
+                  onClearMapCapture={onClearMapCapture}
                   layers={layers}
                   onLayerToggle={onLayerToggle}
                   onLayerOpacity={onLayerOpacity}
