@@ -499,9 +499,15 @@ export default function MapPage() {
     const captureMode = templateMatchCaptureRef.current;
     if (captureMode) {
       templateMatchCaptureRef.current = null;
+      const blob = capture.smallBlob ?? capture.largeBlob;
+      const previewUrl = capture.smallUrl ?? capture.largeUrl;
+      if (!blob || !previewUrl) {
+        setActiveTool("pointer");
+        return;
+      }
       const mapCap = {
-        blob: capture.smallBlob,
-        previewUrl: capture.smallUrl,
+        blob,
+        previewUrl,
         bounds: capture.selectedBounds,
       };
       if (captureMode === "template") {
@@ -513,7 +519,9 @@ export default function MapPage() {
       return;
     }
 
-    setCaptureUrl(capture.smallUrl);
+    const displayUrl = capture.smallUrl ?? capture.largeUrl;
+    if (!displayUrl) return;
+    setCaptureUrl(displayUrl);
     setCaptures((prev) => [
       {
         id: Date.now(),
