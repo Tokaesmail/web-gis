@@ -18,6 +18,9 @@ import AITriggerButton from "./AITriggerButton";
 import Mapbox3DView from "./Mapbox3DView";
 import LayerPanel, { MapLayer } from "./LayerPanel";
 import ExportButton from "./ExportButton";
+import ProjectStartDialog from "./projects/ProjectStartDialog";
+import { updateProject } from "./projects/projectStorage";
+import type { ProjectSnapshot, UserProject } from "./projects/projectTypes";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
@@ -69,6 +72,9 @@ export default function MapPage() {
   const [selectedFeature,  setSelectedFeature]   = useState<any>(null);
   const [view3D,           setView3D]            = useState<{ lat: number; lng: number; name?: string; geojson?: GeoJSON.FeatureCollection } | null>(null);
   const [activePanel,      setActivePanel]       = useState<string | null>("overview");
+  const [projectStartOpen, setProjectStartOpen]  = useState(true);
+  const [activeProject,    setActiveProject]     = useState<UserProject | null>(null);
+  const [projectSaving,    setProjectSaving]     = useState(false);
 
   const [geoJsonData,     setGeoJsonData]     = useState<any>(null);
   const [geoJsonLoading,  setGeoJsonLoading]  = useState(false);
@@ -123,6 +129,11 @@ export default function MapPage() {
     const user = session?.user as any;
     const accountKey = user?.id ?? user?.email ?? "guest";
     return `${LAYER_SETTINGS_STORAGE_PREFIX}:${accountKey}`;
+  }, [session?.user]);
+
+  const projectOwnerKey = useMemo(() => {
+    const user = session?.user as any;
+    return String(user?.id ?? user?.email ?? "guest");
   }, [session?.user]);
 
   // ── 1. localStorage restore ───────────────────────────────────────────────
@@ -778,6 +789,81 @@ export default function MapPage() {
     ].slice(0, 200),
   }), [coords, selectedArea, layers, geoJsonData, combinedGeoJson]);
 
+  const currentProjectSnapshot = useMemo<ProjectSnapshot>(() => {
+    const today = new Date();
+    const from = new Date(today);
+    from.setDate(today.getDate() - 30);
+
+    return {
+      aoiGeometry: selectedFeature?.geometry ? JSON.parse(JSON.stringify(selectedFeature.geometry)) : null,
+      selectedLayers: layers.map((layer) => ({ ...layer })),
+      uploadedGeoJsonMap: JSON.parse(JSON.stringify(uploadedGeoJsonMap)),
+      selectedDatasets: layers
+        .filter((layer) => layer.visible)
+        .map((layer) => layer.source || layer.name),
+      timeRange: {
+        from: from.toISOString().slice(0, 10),
+        to: today.toISOString().slice(0, 10),
+      },
+      analysisSettings: {
+        activePanel,
+        captureTarget,
+        selectedArea,
+        coords,
+      },
+    };
+  }, [activePanel, captureTarget, coords, layers, selectedArea, selectedFeature, uploadedGeoJsonMap]);
+
+  const handleLoadProject = useCallback((project: UserProject) => {
+    const snapshot = project.snapshot;
+    if (!snapshot) {
+      toast.error(isRTL ? "ملف المشروع غير صالح" : "Project data is not valid");
+      return;
+    }
+
+    setUploadedGeoJsonMap(snapshot.uploadedGeoJsonMap ?? {});
+    setLayers(Array.isArray(snapshot.selectedLayers) ? snapshot.selectedLayers : []);
+    setSelectedFeature(
+      snapshot.aoiGeometry
+        ? ({
+            type: "Feature",
+            properties: { name: project.name },
+            geometry: snapshot.aoiGeometry,
+          } as GeoJSON.Feature)
+        : null,
+    );
+    setSelectedArea(snapshot.analysisSettings?.selectedArea ?? { name: "Selected Area", ha: 0 });
+    setCoords(snapshot.analysisSettings?.coords ?? null);
+    setActivePanel((snapshot.analysisSettings?.activePanel as any) ?? "overview");
+    setActiveProject(project);
+    setProjectStartOpen(false);
+    toast.success(isRTL ? "تم تحميل المشروع" : `Loaded ${project.name}`);
+  }, [isRTL]);
+
+  const handleCreateStartupProject = useCallback((project: UserProject) => {
+    setActiveProject(project);
+    setProjectStartOpen(false);
+    setActivePanel("overview");
+  }, []);
+
+  const handleSaveActiveProject = useCallback(async () => {
+    if (!activeProject || projectSaving) return;
+    setProjectSaving(true);
+    try {
+      const result = await updateProject(
+        projectOwnerKey,
+        { ...activeProject, snapshot: currentProjectSnapshot },
+        sessionStatus === "authenticated",
+      );
+      setActiveProject(result.data);
+      toast.success(result.mode === "remote" ? "Project saved to backend" : "Project saved locally");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Project save failed");
+    } finally {
+      setProjectSaving(false);
+    }
+  }, [activeProject, currentProjectSnapshot, projectOwnerKey, projectSaving, sessionStatus]);
+
   // ── Shared sidebar ────────────────────────────────────────────────────────
   const sharedSidebar = useMemo(() => (
     <AnalysisSidebar
@@ -937,16 +1023,42 @@ export default function MapPage() {
                 3D
               </button>
 
+              <button
+                onClick={() => setProjectStartOpen(true)}
+                className="px-3 py-1.5 rounded-lg bg-[#0d1f3c] border border-white/10 text-slate-300 text-xs cursor-pointer hover:text-cyan-400 transition-all flex items-center gap-1.5"
+                title={activeProject ? `Current project: ${activeProject.name}` : "Choose project"}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+                </svg>
+                {activeProject ? activeProject.name : "New Project"}
+              </button>
+
+              {activeProject && (
+                <button
+                  onClick={handleSaveActiveProject}
+                  disabled={projectSaving}
+                  className="px-3 py-1.5 rounded-lg bg-cyan-400 text-[#03101d] text-xs font-bold cursor-pointer hover:bg-cyan-300 disabled:cursor-wait disabled:opacity-70 transition-all flex items-center gap-1.5"
+                  title="Save current project state"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+                    <path d="M17 21v-8H7v8M7 3v5h8" />
+                  </svg>
+                  {projectSaving ? "Saving" : "Save"}
+                </button>
+              )}
+
               {/* Layers panel toggle (now opens sidebar) */}
               <button
                 onClick={() => setActivePanel("layers")}
-                className={`px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-all flex items-center gap-1.5 ${activePanel === "layers" ? "bg-cyan-400/10 border-cyan-400/40 text-cyan-400" : "bg-[#0d1f3c] border-white/10 text-slate-300 hover:text-cyan-400"}`}
+                className="hidden"
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>
                 {isRTL ? "الطبقات" : "Layers"}
               </button>
 
-              <div className="flex items-center rounded-lg border border-white/10 bg-[#0d1f3c] p-0.5">
+              <div className="hidden">
                 {(["small", "large"] as CaptureTarget[]).map((target) => (
                   <button
                     key={target}
@@ -965,7 +1077,7 @@ export default function MapPage() {
                 ))}
               </div>
 
-              <span className="px-2 py-1 rounded-md bg-[#0a1628]/80 border border-white/[0.06] text-slate-500 text-[0.65rem] select-none hidden sm:block">
+              <span className="hidden">
                 {isRTL ? "دبل كليك للـ 3D" : "Double-click → 3D"}
               </span>
             </div>
@@ -1103,6 +1215,17 @@ export default function MapPage() {
             toggleButton={toggle2DButton}
             sidebarSlot={sharedSidebar}
             uploadedGeoJson={view3D.geojson ?? mergedUploadedGeoJson}
+          />
+        )}
+
+        {projectStartOpen && !view3D && (
+          <ProjectStartDialog
+            ownerKey={projectOwnerKey}
+            isAuthenticated={sessionStatus === "authenticated"}
+            currentSnapshot={currentProjectSnapshot}
+            onCreateProject={handleCreateStartupProject}
+            onLoadProject={handleLoadProject}
+            onSkip={() => setProjectStartOpen(false)}
           />
         )}
 
