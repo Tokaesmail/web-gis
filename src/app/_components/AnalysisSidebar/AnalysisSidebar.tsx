@@ -9,6 +9,7 @@ import { useMapDB } from "../../map/useMapDB";
 import LayerPanel, { MapLayer } from "../../map/LayerPanel";
 import ExportButton from "../../map/ExportButton";
 import { IdxKey, SatKey } from "../../map/mapTypes_proxy";
+import { log } from "console";
 
 type PanelId =
   | "satellite"
@@ -875,9 +876,22 @@ type SatellitePreviewConfig = {
   dateTo: string;
   cloudCover: number;
   opacity: number;
+  scenePreview?: {
+    name: string;
+    band: IdxKey;
+    expression: string | null;
+    assets: string[];
+    assetUrls: Record<string, string>;
+    bounds: [[number, number], [number, number]];
+    coords: { lat: number; lng: number };
+    previewUrl?: string;
+    overviewUrl?: string;
+    geometry?: GeoJSON.Geometry | null;
+  };
 };
 
-type SatelliteDownloadFormat = "geojson" | "shapefile" | "geotiff";
+type SatelliteDownloadFormat = "png" | "geojson" | "shapefile" | "geotiff";
+type RasterDownloadFormat = "geotiff" | "geojson" | "shapefile" | "pdf";
 
 type RasterPreviewConfig = {
   name: string;
@@ -912,6 +926,7 @@ type SatelliteScene = {
   previewUrl?: string;
   itemUrl?: string;
   rawAssetUrl?: string;
+  assets?: Record<string, string>;
 };
 
 type StacFeature = {
@@ -931,6 +946,42 @@ const sanitizeFileName = (name: string) =>
   name.replace(/[^a-z0-9._-]+/gi, "_").replace(/^_+|_+$/g, "") || "satellite_scene";
 
 const textBytes = (value: string) => new TextEncoder().encode(value);
+
+function formatDateDMY(value: string) {
+  const [year, month, day] = value.split("-");
+  if (!year || !month || !day) return value || "DD/MM/YYYY";
+  return `${day}/${month}/${year}`;
+}
+
+function DatePickerField({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  min?: string;
+  max?: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="space-y-1">
+      {/* <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">{label}</span> */}
+      <input
+        type="date"
+        value={value}
+        min={min}
+        max={max}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-9 w-full cursor-pointer rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 font-mono text-xs text-slate-200 outline-none transition [color-scheme:dark] focus:border-cyan-400/40"
+        aria-label={label}
+        title={formatDateDMY(value)}
+      />
+    </label>
+  );
+}
 
 const concatBytes = (chunks: Uint8Array[]) => {
   const size = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -1047,6 +1098,21 @@ function sceneFeature(scene: SatelliteScene): GeoJSON.Feature {
   };
 }
 
+function stacBBoxToBounds(bbox?: number[], fallback?: [[number, number], [number, number]]) {
+  if (Array.isArray(bbox) && bbox.length >= 4) {
+    const [west, south, east, north] = bbox.map(Number);
+    if ([west, south, east, north].every(Number.isFinite)) {
+      return [[south, west], [north, east]] as [[number, number], [number, number]];
+    }
+  }
+  return fallback ?? [[30.0094, 31.2007], [30.0794, 31.2707]] as [[number, number], [number, number]];
+}
+
+function boundsCenter(bounds: [[number, number], [number, number]]) {
+  const [[south, west], [north, east]] = bounds;
+  return { lat: (south + north) / 2, lng: (west + east) / 2 };
+}
+
 function polygonRing(geometry?: GeoJSON.Geometry | null, bbox?: number[]) {
   const fallback = bboxGeometry(bbox ?? [0, 0, 0, 0]).coordinates[0];
   if (!geometry) return fallback;
@@ -1132,6 +1198,214 @@ function makeShapefileZip(scene: SatelliteScene) {
   ]);
 }
 
+function rasterBoundsGeometry(bounds: [[number, number], [number, number]]): GeoJSON.Polygon {
+  const [[south, west], [north, east]] = bounds;
+  return bboxGeometry([west, south, east, north]);
+}
+
+function makeRasterFeature(config: RasterPreviewConfig): GeoJSON.Feature {
+  return {
+    type: "Feature",
+    geometry: rasterBoundsGeometry(config.bounds),
+    properties: {
+      name: config.name,
+      index: config.indexKey,
+      expression: config.expression,
+      date: config.date,
+      colorRamp: config.colorRamp,
+      opacity: config.opacity,
+      centerLat: config.coords.lat,
+      centerLng: config.coords.lng,
+    },
+  };
+}
+
+function makeRasterDbf(config: RasterPreviewConfig) {
+  const fieldLength = 80;
+  const fields = ["NAME", "INDEX", "DATE"];
+  const headerLength = 33 + fields.length * 32;
+  const recordLength = 1 + fields.length * fieldLength;
+  const dbf = new Uint8Array(headerLength + recordLength + 1);
+  const view = new DataView(dbf.buffer);
+  const now = new Date();
+  dbf[0] = 0x03;
+  dbf[1] = now.getFullYear() - 1900;
+  dbf[2] = now.getMonth() + 1;
+  dbf[3] = now.getDate();
+  view.setUint32(4, 1, true);
+  view.setUint16(8, headerLength, true);
+  view.setUint16(10, recordLength, true);
+  fields.forEach((field, index) => {
+    const offset = 32 + index * 32;
+    dbf.set(textBytes(field), offset);
+    dbf[offset + 11] = 0x43;
+    dbf[offset + 16] = fieldLength;
+  });
+  dbf[headerLength - 1] = 0x0d;
+  dbf[headerLength] = 0x20;
+  [config.name, config.indexKey, config.date].forEach((value, index) => {
+    dbf.set(textBytes(String(value).slice(0, fieldLength).padEnd(fieldLength, " ")), headerLength + 1 + index * fieldLength);
+  });
+  dbf[dbf.length - 1] = 0x1a;
+  return dbf;
+}
+
+function makeRasterShapefileZip(config: RasterPreviewConfig) {
+  const base = sanitizeFileName(config.name);
+  const ring = rasterBoundsGeometry(config.bounds).coordinates[0];
+  const xs = ring.map((point) => point[0]);
+  const ys = ring.map((point) => point[1]);
+  const bbox = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  const contentBytes = 44 + 4 + ring.length * 16;
+  const shpLength = 100 + 8 + contentBytes;
+  const shp = new Uint8Array(shpLength);
+  const shpView = new DataView(shp.buffer);
+  writeShpHeader(shpView, shpLength / 2, 5, bbox);
+  shpView.setInt32(100, 1, false);
+  shpView.setInt32(104, contentBytes / 2, false);
+  shpView.setInt32(108, 5, true);
+  bbox.forEach((value, index) => shpView.setFloat64(112 + index * 8, value, true));
+  shpView.setInt32(144, 1, true);
+  shpView.setInt32(148, ring.length, true);
+  shpView.setInt32(152, 0, true);
+  ring.forEach((point, index) => {
+    shpView.setFloat64(156 + index * 16, point[0], true);
+    shpView.setFloat64(164 + index * 16, point[1], true);
+  });
+
+  const shx = new Uint8Array(108);
+  const shxView = new DataView(shx.buffer);
+  writeShpHeader(shxView, 54, 5, bbox);
+  shxView.setInt32(100, 50, false);
+  shxView.setInt32(104, contentBytes / 2, false);
+
+  return makeZip([
+    { name: `${base}.shp`, data: shp },
+    { name: `${base}.shx`, data: shx },
+    { name: `${base}.dbf`, data: makeRasterDbf(config) },
+    { name: `${base}.prj`, data: textBytes('GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]') },
+    { name: `${base}.cpg`, data: textBytes("UTF-8") },
+  ]);
+}
+
+async function dataUrlToImageData(dataUrl: string) {
+  const image = new Image();
+  image.crossOrigin = "anonymous";
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("Could not read raster preview image."));
+    image.src = dataUrl;
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth || 96;
+  canvas.height = image.naturalHeight || 96;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas is not available.");
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+function writeAscii(view: DataView, offset: number, value: string) {
+  for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+}
+
+function makeGeoTiffFromImage(imageData: ImageData, bounds: [[number, number], [number, number]]) {
+  const { width, height, data } = imageData;
+  const rgb = new Uint8Array(width * height * 3);
+  for (let src = 0, dst = 0; src < data.length; src += 4, dst += 3) {
+    rgb[dst] = data[src];
+    rgb[dst + 1] = data[src + 1];
+    rgb[dst + 2] = data[src + 2];
+  }
+
+  const [[south, west], [north, east]] = bounds;
+  const pixelScale = [(east - west) / width, (north - south) / height, 0];
+  const tiepoint = [0, 0, 0, west, north, 0];
+  const geoKeys = [1, 1, 0, 3, 1024, 0, 1, 2, 1025, 0, 1, 1, 2048, 0, 1, 4326];
+  const software = "GeoSense AI\0";
+  const entries = 17;
+  const ifdOffset = 8;
+  const ifdSize = 2 + entries * 12 + 4;
+  let dataOffset = ifdOffset + ifdSize;
+  const bitsOffset = dataOffset; dataOffset += 6;
+  const scaleOffset = dataOffset; dataOffset += 24;
+  const tiepointOffset = dataOffset; dataOffset += 48;
+  const geoKeyOffset = dataOffset; dataOffset += geoKeys.length * 2;
+  const softwareOffset = dataOffset; dataOffset += software.length;
+  const pixelOffset = dataOffset;
+  const out = new Uint8Array(pixelOffset + rgb.length);
+  const view = new DataView(out.buffer);
+  writeAscii(view, 0, "II");
+  view.setUint16(2, 42, true);
+  view.setUint32(4, ifdOffset, true);
+  view.setUint16(ifdOffset, entries, true);
+
+  let entry = ifdOffset + 2;
+  const tag = (id: number, type: number, count: number, value: number) => {
+    view.setUint16(entry, id, true);
+    view.setUint16(entry + 2, type, true);
+    view.setUint32(entry + 4, count, true);
+    if ((type === 3 && count <= 2) || (type === 4 && count === 1)) {
+      if (type === 3) view.setUint16(entry + 8, value, true);
+      else view.setUint32(entry + 8, value, true);
+    } else {
+      view.setUint32(entry + 8, value, true);
+    }
+    entry += 12;
+  };
+
+  tag(256, 4, 1, width);
+  tag(257, 4, 1, height);
+  tag(258, 3, 3, bitsOffset);
+  tag(259, 3, 1, 1);
+  tag(262, 3, 1, 2);
+  tag(273, 4, 1, pixelOffset);
+  tag(277, 3, 1, 3);
+  tag(278, 4, 1, height);
+  tag(279, 4, 1, rgb.length);
+  tag(284, 3, 1, 1);
+  tag(305, 2, software.length, softwareOffset);
+  tag(33550, 12, 3, scaleOffset);
+  tag(33922, 12, 6, tiepointOffset);
+  tag(34735, 3, geoKeys.length, geoKeyOffset);
+  tag(339, 3, 1, 1);
+  tag(338, 3, 1, 1);
+  tag(274, 3, 1, 1);
+  view.setUint32(entry, 0, true);
+
+  [8, 8, 8].forEach((value, index) => view.setUint16(bitsOffset + index * 2, value, true));
+  pixelScale.forEach((value, index) => view.setFloat64(scaleOffset + index * 8, value, true));
+  tiepoint.forEach((value, index) => view.setFloat64(tiepointOffset + index * 8, value, true));
+  geoKeys.forEach((value, index) => view.setUint16(geoKeyOffset + index * 2, value, true));
+  writeAscii(view, softwareOffset, software);
+  out.set(rgb, pixelOffset);
+  return new Blob([out], { type: "image/tiff" });
+}
+
+async function makeRasterPdf(config: RasterPreviewConfig) {
+  const { jsPDF } = await import("jspdf");
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  doc.setFontSize(18);
+  doc.text("Raster Calculation Report", 40, 44);
+  doc.setFontSize(10);
+  doc.text(`Name: ${config.name}`, 40, 72);
+  doc.text(`Index: ${config.indexKey}`, 40, 90);
+  doc.text(`Date: ${config.date}`, 40, 108);
+  doc.text(`Expression: ${config.expression}`, 40, 126);
+  doc.text(`Center: ${config.coords.lat.toFixed(6)}, ${config.coords.lng.toFixed(6)}`, 40, 144);
+  if (config.dataUrl) doc.addImage(config.dataUrl, "PNG", 360, 70, 420, 260);
+  const [[south, west], [north, east]] = config.bounds;
+  doc.text(`Bounds: W ${west.toFixed(5)}, S ${south.toFixed(5)}, E ${east.toFixed(5)}, N ${north.toFixed(5)}`, 40, 170);
+  doc.setDrawColor(34, 211, 238);
+  doc.rect(40, 195, 260, 170);
+  doc.text("Basic map footprint", 52, 216);
+  doc.text("NW", 52, 244);
+  doc.text("NE", 270, 244);
+  doc.text("SW", 52, 346);
+  doc.text("SE", 270, 346);
+  doc.save(`${sanitizeFileName(config.name)}_report.pdf`);
+}
+
 async function getSignedPlanetaryComputerUrl(url: string) {
   try {
     const response = await fetch(`https://planetarycomputer.microsoft.com/api/sas/v1/sign?href=${encodeURIComponent(url)}`);
@@ -1181,6 +1455,9 @@ function SatelliteDataPanel({
   const [apiScenes, setApiScenes] = useState<SatelliteScene[]>([]);
   const [sceneFormats, setSceneFormats] = useState<Record<string, SatelliteDownloadFormat>>({});
   const [downloadingSceneId, setDownloadingSceneId] = useState<string | null>(null);
+  const [previewingSceneId, setPreviewingSceneId] = useState<string | null>(null);
+  const [activePreviewSceneId, setActivePreviewSceneId] = useState<string | null>(null);
+  const [scenePreviewUrls, setScenePreviewUrls] = useState<Record<string, string>>({});
 
   const coords = getMidCoords(selectedFeature);
   const bounds = getFeatureBounds(selectedFeature, coords ? { lat: coords[0], lng: coords[1] } : undefined);
@@ -1212,6 +1489,175 @@ function SatelliteDataPanel({
 
   const scenes = apiScenes.length ? apiScenes : fallbackScenes;
 
+  type AnalysisType = "RGB" | "NDVI" | "NDWI" | "NDMI" | "SWIR";
+
+  const getVisualization = (analysis: AnalysisType, collection = source === "landsat" ? "landsat-c2-l2" : "sentinel-2-l2a") => {
+    const isLandsat = collection.includes("landsat");
+
+    if (isLandsat) {
+      switch (analysis) {
+        case "RGB":
+          return {
+            assets: ["red", "green", "blue"],
+            expression: null,
+          };
+
+        case "NDVI":
+          return {
+            assets: ["nir08", "red"],
+            expression: "(nir08-red)/(nir08+red)",
+          };
+
+        case "NDWI":
+          return {
+            assets: ["green", "nir08"],
+            expression: "(green-nir08)/(green+nir08)",
+          };
+
+        case "NDMI":
+          return {
+            assets: ["nir08", "swir16"],
+            expression: "(nir08-swir16)/(nir08+swir16)",
+          };
+
+        case "SWIR":
+          return {
+            assets: ["swir16", "nir08", "red"],
+            expression: null,
+          };
+
+        default:
+          return {
+            assets: ["red", "green", "blue"],
+            expression: null,
+          };
+      }
+    }
+
+    switch (analysis) {
+      case "RGB":
+        return {
+          assets: ["B04", "B03", "B02"],
+          expression: null,
+        };
+
+      case "NDVI":
+        return {
+          assets: ["B08", "B04"],
+          expression: "(B08-B04)/(B08+B04)",
+        };
+
+      case "NDWI":
+        return {
+          assets: ["B03", "B08"],
+          expression: "(B03-B08)/(B03+B08)",
+        };
+
+      case "NDMI":
+        return {
+          assets: ["B08", "B11"],
+          expression: "(B08-B11)/(B08+B11)",
+        };
+
+      case "SWIR":
+        return {
+          assets: ["B11", "B08", "B04"],
+          expression: null,
+        };
+
+      default:
+        return {
+          assets: ["B04", "B03", "B02"],
+          expression: null,
+        };
+    }
+  };
+
+  const normalizeBandAssetKey = (key: string) => {
+    const upper = key.toUpperCase();
+    const match = upper.match(/^B0?(\d{1,2})$/);
+    return match ? `B${match[1].padStart(2, "0")}` : upper;
+  };
+
+  const getAssetLookupKeys = (assetKey: string) => {
+    const normalizedKey = normalizeBandAssetKey(assetKey);
+    return Array.from(new Set([
+      assetKey,
+      normalizedKey,
+      assetKey.toLowerCase(),
+      assetKey.toUpperCase(),
+      assetKey.replace(/^B0/, "B"),
+      normalizedKey.replace(/^B0/, "B"),
+    ]));
+  };
+
+  const getSceneAssetUrls = (scene: SatelliteScene, analysis: AnalysisType) => {
+    const visualization = getVisualization(analysis, scene.collection);
+    const sceneAssets = scene.assets ?? {};
+    return visualization.assets.reduce<Record<string, string>>((acc, assetKey) => {
+      const href = getAssetLookupKeys(assetKey).map((key) => sceneAssets[key]).find(Boolean);
+      if (href) acc[assetKey] = href;
+      return acc;
+    }, {});
+  };
+
+  const sceneHasVisualizationAssets = (scene: SatelliteScene, analysis: AnalysisType) => {
+    const sceneAssets = scene.assets ?? {};
+    return getVisualization(analysis, scene.collection).assets.every((asset) => (
+      getAssetLookupKeys(asset).some((key) => Boolean(sceneAssets[key]))
+    ));
+  };
+
+  const getIndexPreviewStyle = (analysis: AnalysisType) => {
+    switch (analysis) {
+      case "NDVI":
+        return { rescale: "-1,1", colormap: "rdylgn" };
+      case "NDWI":
+        return { rescale: "-1,1", colormap: "blues" };
+      case "NDMI":
+        return { rescale: "-1,1", colormap: "viridis" };
+      default:
+        return { rescale: "0,4000", colormap: "" };
+    }
+  };
+
+  const makePlanetaryComputerPreviewUrl = (scene: SatelliteScene, analysis: AnalysisType) => {
+    if (
+      !scene.id ||
+      !scene.collection ||
+      !sceneHasVisualizationAssets(scene, analysis)
+    ) {
+      return scene.previewUrl ?? scene.thumbnail ?? scene.itemUrl;
+    }
+
+    const visualization = getVisualization(analysis, scene.collection);
+    const url = new URL("https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png");
+    url.searchParams.set("collection", scene.collection);
+    url.searchParams.set("item", scene.id);
+    url.searchParams.set("max_size", "1024");
+
+    visualization.assets.forEach((asset) => {
+      url.searchParams.append("assets", asset);
+      url.searchParams.append("asset_bidx", `${asset}|1`);
+    });
+
+    if (visualization.expression) {
+      const style = getIndexPreviewStyle(analysis);
+      url.searchParams.set("asset_as_band", "true");
+      url.searchParams.set("expression", visualization.expression);
+      url.searchParams.set("rescale", style.rescale);
+      url.searchParams.set("colormap_name", style.colormap);
+    } else {
+      url.searchParams.set("asset_as_band", "true");
+      url.searchParams.set("rescale", "0,4000");
+      if (analysis === "SWIR") {
+        url.searchParams.set("color_formula", "Gamma RGB 1.2 Saturation 1.15");
+      }
+    }
+
+    return url.toString();
+  };
+
   const fetchScenes = async () => {
     setSceneStatus("loading");
     setSceneError(null);
@@ -1227,10 +1673,14 @@ function SatelliteDataPanel({
           datetime: `${dateFrom}T00:00:00Z/${dateTo}T23:59:59Z`,
           limit: 12,
         }),
+        
       });
+      console.log("AFTER FETCH");
+      console.log(response);
 
       if (!response.ok) throw new Error(`STAC API ${response.status}`);
       const payload = await response.json();
+      console.log(payload,"AFTER PARSE");
       const features = Array.isArray(payload?.features) ? payload.features : [];
       const nextScenes = features
         .map((feature: StacFeature): SatelliteScene => {
@@ -1250,6 +1700,14 @@ function SatelliteDataPanel({
             const title = asset?.title?.toLowerCase() ?? "";
             return href.includes(".tif") || href.includes(".tiff") || type.includes("geotiff") || title.includes("geotiff");
           })?.href;
+          const assets = Object.entries(feature?.assets ?? {}).reduce<Record<string, string>>((acc, [key, asset]) => {
+            if (!asset?.href) return acc;
+            acc[key] = asset.href;
+            acc[normalizeBandAssetKey(key)] = asset.href;
+            acc[key.toLowerCase()] = asset.href;
+            acc[key.toUpperCase()] = asset.href;
+            return acc;
+          }, {});
 
           return {
             id: String(feature?.id ?? "scene"),
@@ -1263,6 +1721,7 @@ function SatelliteDataPanel({
             previewUrl: thumbnail,
             itemUrl,
             rawAssetUrl,
+            assets,
           };
         })
         .filter((scene: SatelliteScene) => scene.cloud <= cloudCover)
@@ -1284,24 +1743,77 @@ function SatelliteDataPanel({
     setPreviewReady(false);
     await fetchScenes();
     window.setTimeout(() => {
-      onPreview?.({ source, satKey, band, dateFrom, dateTo, cloudCover, opacity: opacity / 100 });
       setPreviewReady(true);
       setIsLoading(false);
-    }, 700);
+    },);
   };
 
+  const handlePreviewScene = async (scene: SatelliteScene) => {
+    const analysis = band as AnalysisType;
+    const previewUrl = makePlanetaryComputerPreviewUrl(scene, analysis);
+    const sceneBounds = stacBBoxToBounds(scene.bbox, bounds);
+    const sceneCoords = boundsCenter(sceneBounds);
+    const visualization = getVisualization(analysis, scene.collection);
+    const overviewUrl = scene.previewUrl ?? scene.thumbnail ?? makePlanetaryComputerPreviewUrl(scene, "RGB");
+
+    setPreviewingSceneId(scene.id);
+    setSceneError(null);
+    if (previewUrl) setScenePreviewUrls((prev) => ({ ...prev, [scene.id]: previewUrl }));
+    setPreviewingSceneId(null);
+
+    setActivePreviewSceneId(scene.id);
+    onPreview?.({
+      source,
+      satKey,
+      band,
+      dateFrom,
+      dateTo,
+      cloudCover,
+      opacity: opacity / 100,
+      scenePreview: {
+        name: `${scene.id}_overview`,
+        band,
+        expression: visualization.expression,
+        assets: visualization.assets,
+        assetUrls: getSceneAssetUrls(scene, analysis),
+        bounds: sceneBounds,
+        coords: sceneCoords,
+        previewUrl,
+        overviewUrl,
+        geometry: scene.geometry ?? null,
+      },
+    });
+    setPreviewReady(true);
+  };
+
+  useEffect(() => {
+    if (!activePreviewSceneId) return;
+    const scene = scenes.find((item) => item.id === activePreviewSceneId);
+    if (!scene) return;
+    void handlePreviewScene(scene);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [band]);
+
   const handleOpenScene = (scene: SatelliteScene) => {
-    const url = scene.previewUrl ?? scene.thumbnail ?? scene.itemUrl;
+    const url = makePlanetaryComputerPreviewUrl(scene, band as AnalysisType);
     if (!url) return;
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
   const handleDownloadScene = async (scene: SatelliteScene) => {
-    const format = sceneFormats[scene.id] ?? "geojson";
-    const baseName = sanitizeFileName(scene.id);
+    const format = sceneFormats[scene.id] ?? "png";
+    const analysis = band as AnalysisType;
+    const baseName = sanitizeFileName(`${scene.id}_${analysis}`);
     setDownloadingSceneId(scene.id);
 
     try {
+      if (format === "png") {
+        const imageUrl = scenePreviewUrls[scene.id] ?? makePlanetaryComputerPreviewUrl(scene, analysis);
+        if (!imageUrl) return;
+        await downloadExternalFile(imageUrl, `${baseName}.png`);
+        return;
+      }
+
       if (format === "geojson") {
         const geojson: GeoJSON.FeatureCollection = {
           type: "FeatureCollection",
@@ -1367,14 +1879,8 @@ function SatelliteDataPanel({
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <label className="space-y-1">
-          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">From</span>
-          <input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} className="w-full rounded-lg bg-[#020817]/70 border border-white/[0.08] px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
-        </label>
-        <label className="space-y-1">
-          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">To</span>
-          <input type="date" value={dateTo} min={dateFrom} onChange={(e) => setDateTo(e.target.value)} className="w-full rounded-lg bg-[#020817]/70 border border-white/[0.08] px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
-        </label>
+        <DatePickerField label="From" value={dateFrom} max={dateTo} onChange={setDateFrom} />
+        <DatePickerField label="To" value={dateTo} min={dateFrom} onChange={setDateTo} />
       </div>
 
       <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3 space-y-3">
@@ -1401,6 +1907,18 @@ function SatelliteDataPanel({
               <span className="block text-[0.55rem] text-slate-500 mt-0.5 truncate">{item.desc}</span>
             </button>
           ))}
+        </div>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {getVisualization(band as AnalysisType, source === "landsat" ? "landsat-c2-l2" : "sentinel-2-l2a").assets.map((asset) => (
+              <span key={asset} className="rounded-md border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 font-mono text-[0.58rem] text-cyan-200">
+                {asset}
+              </span>
+            ))}
+            <span className="text-[0.58rem] text-slate-500">
+              {getVisualization(band as AnalysisType, source === "landsat" ? "landsat-c2-l2" : "sentinel-2-l2a").expression ?? "RGB composite"}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -1432,7 +1950,7 @@ function SatelliteDataPanel({
       </div>
 
       <button type="button" onClick={handlePreview} disabled={isLoading} className="w-full h-10 rounded-lg bg-cyan-400 text-[#03101d] text-xs font-bold hover:bg-cyan-300 disabled:opacity-60 disabled:cursor-wait transition-colors cursor-pointer">
-        {isLoading ? "Searching external API..." : "Search Scenes & Preview"}
+        {isLoading ? "Searching external API..." : "Search Matching Scenes"}
       </button>
 
       <div className="space-y-2">
@@ -1463,13 +1981,13 @@ function SatelliteDataPanel({
               )}
               <div className="min-w-0 flex-1">
                 <p className="text-[0.68rem] text-slate-200 truncate">{scene.id}</p>
-                <p className="text-[0.55rem] text-slate-500">{scene.date} | cloud {scene.cloud}% | {scene.collection}</p>
+                <p className="text-[0.55rem] text-slate-500">{formatDateDMY(scene.date)} | cloud {scene.cloud}% | {scene.collection}</p>
               </div>
               <span className="text-[0.62rem] text-emerald-300">{scene.score}</span>
             </div>
-            <div className="mt-2 grid grid-cols-[1fr_auto] gap-2">
+            <div className="mt-2 grid grid-cols-[1fr_auto_auto] gap-2">
               <select
-                value={sceneFormats[scene.id] ?? "geojson"}
+                value={sceneFormats[scene.id] ?? "png"}
                 onChange={(e) => setSceneFormats((prev) => ({
                   ...prev,
                   [scene.id]: e.target.value as SatelliteDownloadFormat,
@@ -1477,6 +1995,7 @@ function SatelliteDataPanel({
                 className="h-7 rounded-md border border-white/[0.08] bg-[#020817]/80 px-2 text-[0.62rem] text-slate-300 outline-none focus:border-cyan-400/40"
                 title="Download format"
               >
+                <option value="png">PNG preview ({band})</option>
                 <option value="geojson">GeoJSON (vector)</option>
                 <option value="shapefile">Shapefile (.zip)</option>
                 <option value="geotiff" disabled={!scene.rawAssetUrl}>GeoTIFF (raster)</option>
@@ -1484,23 +2003,41 @@ function SatelliteDataPanel({
               <button
                 type="button"
                 onClick={() => handleOpenScene(scene)}
-                disabled={!scene.previewUrl && !scene.thumbnail && !scene.itemUrl}
+                disabled={!makePlanetaryComputerPreviewUrl(scene, band as AnalysisType)}
                 className="h-7 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 text-[0.62rem] font-medium text-slate-300 transition-colors hover:border-cyan-400/30 hover:bg-cyan-400/10 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 Open
               </button>
+              <button
+                type="button"
+                onClick={() => handlePreviewScene(scene)}
+                disabled={previewingSceneId === scene.id}
+                className="h-7 rounded-md border border-cyan-400/20 bg-cyan-400/10 px-2 text-[0.62rem] font-semibold text-cyan-200 transition-colors hover:border-cyan-400/40 hover:bg-cyan-400/15 disabled:cursor-wait disabled:opacity-55"
+              >
+                {previewingSceneId === scene.id ? "..." : "Preview"}
+              </button>
             </div>
+            {activePreviewSceneId === scene.id && (
+              <div className="mt-2 rounded-md border border-cyan-400/16 bg-cyan-400/[0.05] p-2 text-[0.58rem] text-cyan-100">
+                {scenePreviewUrls[scene.id] && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={scenePreviewUrls[scene.id]} alt={`${scene.id} ${band} preview`} className="mb-2 aspect-video w-full rounded-md border border-white/[0.08] bg-slate-950 object-cover" />
+                )}
+                Image preview uses {getVisualization(band as AnalysisType, scene.collection).assets.join(", ")}
+                {getVisualization(band as AnalysisType, scene.collection).expression ? ` | ${getVisualization(band as AnalysisType, scene.collection).expression}` : " | RGB composite"}
+              </div>
+            )}
             <div className="mt-2 grid grid-cols-1 gap-2">
               <button
                 type="button"
                 onClick={() => handleDownloadScene(scene)}
                 disabled={
                   downloadingSceneId === scene.id ||
-                  ((sceneFormats[scene.id] ?? "geojson") === "geotiff" && !scene.rawAssetUrl)
+                  ((sceneFormats[scene.id] ?? "png") === "geotiff" && !scene.rawAssetUrl)
                 }
                 className="h-7 rounded-md border border-emerald-400/20 bg-emerald-400/10 text-[0.62rem] font-semibold text-emerald-200 transition-colors hover:border-emerald-400/40 hover:bg-emerald-400/15 disabled:cursor-not-allowed disabled:opacity-45"
               >
-                {downloadingSceneId === scene.id ? "Preparing download..." : `Download ${sceneFormats[scene.id] === "shapefile" ? "Shapefile" : sceneFormats[scene.id] === "geotiff" ? "GeoTIFF" : "GeoJSON"}`}
+                {downloadingSceneId === scene.id ? "Preparing download..." : `Download ${sceneFormats[scene.id] === "shapefile" ? "Shapefile" : sceneFormats[scene.id] === "geotiff" ? "GeoTIFF" : sceneFormats[scene.id] === "geojson" ? "GeoJSON" : `${band} PNG`}`}
               </button>
             </div>
           </div>
@@ -1513,7 +2050,7 @@ function SatelliteDataPanel({
 
       {previewReady && (
         <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2 text-[0.65rem] text-emerald-200">
-          Preview layer updated: {sourceMeta.title} | {band} | {dateFrom} to {dateTo}
+          Scenes ready. Choose a band, then preview or download the scene image.
         </div>
       )}
     </div>
@@ -1812,6 +2349,9 @@ function RasterCalculatorPanel({
   const [backendError, setBackendError] = useState<string | null>(null);
   const [calculating, setCalculating] = useState(false);
   const [usedBackendResult, setUsedBackendResult] = useState(false);
+  const [downloadFormat, setDownloadFormat] = useState<RasterDownloadFormat>("geotiff");
+  const [lastResult, setLastResult] = useState<RasterPreviewConfig | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
     const details = getFeatureBBoxDetails(selectedFeature, coords ? { lat: coords[0], lng: coords[1] } : undefined);
@@ -1910,8 +2450,43 @@ function RasterCalculatorPanel({
     setPreviewUrl(dataUrl);
     setUsedBackendResult(backendWorked);
     setResultReady(true);
+    setLastResult(config);
     setHistory((prev) => [resultName, ...prev.filter((item) => item !== resultName)].slice(0, 4));
     onPreview?.(config);
+  };
+
+  const handleDownloadResult = async () => {
+    if (!lastResult) return;
+    setDownloading(true);
+    const baseName = sanitizeFileName(lastResult.name);
+    try {
+      if (downloadFormat === "geojson") {
+        const geojson: GeoJSON.FeatureCollection = {
+          type: "FeatureCollection",
+          features: [makeRasterFeature(lastResult)],
+        };
+        triggerBlobDownload(
+          new Blob([JSON.stringify(geojson, null, 2)], { type: "application/geo+json" }),
+          `${baseName}.geojson`,
+        );
+        return;
+      }
+
+      if (downloadFormat === "shapefile") {
+        triggerBlobDownload(makeRasterShapefileZip(lastResult), `${baseName}.zip`);
+        return;
+      }
+
+      if (downloadFormat === "pdf") {
+        await makeRasterPdf(lastResult);
+        return;
+      }
+
+      const imageData = await dataUrlToImageData(lastResult.dataUrl);
+      triggerBlobDownload(makeGeoTiffFromImage(imageData, lastResult.bounds), `${baseName}.tif`);
+    } finally {
+      setDownloading(false);
+    }
   };
 
   return (
@@ -1938,14 +2513,8 @@ function RasterCalculatorPanel({
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <label className="space-y-1">
-          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Start date</span>
-          <input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
-        </label>
-        <label className="space-y-1">
-          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">End date</span>
-          <input type="date" value={dateTo} min={dateFrom} onChange={(e) => setDateTo(e.target.value)} className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
-        </label>
+        <DatePickerField label="Start date" value={dateFrom} max={dateTo} onChange={setDateFrom} />
+        <DatePickerField label="End date" value={dateTo} min={dateFrom} onChange={setDateTo} />
       </div>
 
       <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
@@ -2076,6 +2645,27 @@ function RasterCalculatorPanel({
           </div>
         )}
         {previewUrl && <img src={previewUrl} alt="Raster preview" className="mb-3 aspect-video w-full rounded-md border border-white/[0.06] object-cover" />}
+        <div className="mb-3 grid grid-cols-[1fr_auto] gap-2">
+          <select
+            value={downloadFormat}
+            onChange={(e) => setDownloadFormat(e.target.value as RasterDownloadFormat)}
+            className="h-9 rounded-md border border-white/[0.08] bg-[#020817]/80 px-2 text-[0.68rem] text-slate-300 outline-none focus:border-cyan-400/40"
+            title="Raster result download format"
+          >
+            <option value="geotiff">GeoTIFF (raster)</option>
+            <option value="geojson">GeoJSON</option>
+            <option value="shapefile">Shapefile (.zip)</option>
+            <option value="pdf">PDF report (basic map)</option>
+          </select>
+          <button
+            type="button"
+            onClick={handleDownloadResult}
+            disabled={!lastResult || downloading}
+            className="h-9 rounded-md border border-emerald-400/20 bg-emerald-400/10 px-3 text-[0.68rem] font-semibold text-emerald-200 transition-colors hover:border-emerald-400/40 hover:bg-emerald-400/15 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {downloading ? "Preparing..." : "Download"}
+          </button>
+        </div>
         {backendStats && (
           <div className="mb-3 grid grid-cols-3 gap-1.5">
             {[
@@ -2518,7 +3108,7 @@ export default function AnalysisSidebar({
 
       <div
         className={`absolute top-0 bottom-0 z-1000 flex ${isRTL ? "flex-row-reverse left-0" : "flex-row right-0"}`}
-        style={{ pointerEvents: "none" }}
+        style={{  pointerEvents: activePanel ? "all" : "none", }}
       >
         {/* ── Expanded panel ── */}
         <div
@@ -2543,7 +3133,7 @@ export default function AnalysisSidebar({
               <button
                 onClick={() => togglePanel(activePanel as PanelId)}
                 className="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/[0.07] rounded-md transition-all cursor-pointer"
-                style={{ pointerEvents: "all" }}
+                style={{  pointerEvents: activePanel ? "all" : "none", }}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path d="M18 6 6 18M6 6l12 12" />
@@ -2591,7 +3181,7 @@ export default function AnalysisSidebar({
         {/* ── Icon rail ── */}
         <div
           className="h-full flex flex-col items-center py-3 gap-1 bg-[#070f1e]/92 backdrop-blur-xl border-l border-white/[0.07] w-[52px] shrink-0"
-          style={{ pointerEvents: "all" }}
+          style={{  pointerEvents: activePanel ? "all" : "none", }}
         >
           {panels.map((item) => (
             <div key={item.id} className="relative group w-full flex justify-center">

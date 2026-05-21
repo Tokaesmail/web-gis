@@ -39,6 +39,28 @@ type RasterPreviewConfig = {
   dataUrl: string;
 };
 
+type SatellitePreviewConfig = {
+  source: "sentinel-2" | "landsat";
+  satKey: SatKey;
+  band: IdxKey;
+  dateFrom: string;
+  dateTo: string;
+  cloudCover: number;
+  opacity: number;
+  scenePreview?: {
+    name: string;
+    band: IdxKey;
+    expression: string | null;
+    assets: string[];
+    assetUrls: Record<string, string>;
+    bounds: [[number, number], [number, number]];
+    coords: { lat: number; lng: number };
+    previewUrl?: string;
+    overviewUrl?: string;
+    geometry?: GeoJSON.Geometry | null;
+  };
+};
+
 function persistUploadedGeoJSON(map: Record<string, any>, onSkipped?: () => void) {
   try {
     const payload = JSON.stringify(map);
@@ -683,15 +705,47 @@ export default function MapPage() {
     }
   }, [uploadedGeoJsonMap]);
 
-  const handleSatellitePreview = useCallback((config: {
-    source: "sentinel-2" | "landsat";
-    satKey: SatKey;
-    band: IdxKey;
-    dateFrom: string;
-    dateTo: string;
-    cloudCover: number;
-    opacity: number;
-  }) => {
+  const handleSatellitePreview = useCallback((config: SatellitePreviewConfig) => {
+    if (config.scenePreview) {
+      const scene = config.scenePreview;
+      const feature: GeoJSON.Feature = {
+        type: "Feature",
+        geometry: scene.geometry ?? {
+          type: "Polygon",
+          coordinates: [[
+            [scene.bounds[0][1], scene.bounds[0][0]],
+            [scene.bounds[1][1], scene.bounds[0][0]],
+            [scene.bounds[1][1], scene.bounds[1][0]],
+            [scene.bounds[0][1], scene.bounds[1][0]],
+            [scene.bounds[0][1], scene.bounds[0][0]],
+          ]],
+        },
+        properties: {
+          name: scene.name,
+          band: scene.band,
+          expression: scene.expression,
+          assets: scene.assets.join(", "),
+        },
+      };
+      setLatestGeoJson({ type: "FeatureCollection", features: [feature] });
+      if (scene.previewUrl) {
+        rasterOverlayRef.current?.({
+          name: scene.name,
+          indexKey: scene.band,
+          expression: scene.expression ?? scene.assets.join(","),
+          date: `${config.dateFrom} to ${config.dateTo}`,
+          coords: scene.coords,
+          bounds: scene.bounds,
+          opacity: Math.min(0.72, Math.max(0.35, config.opacity)),
+          colorRamp: "Scene preview",
+          dataUrl: scene.previewUrl,
+        });
+      } else {
+        flyToRef.current?.(scene.coords.lat, scene.coords.lng);
+      }
+      return;
+    }
+
     changeSatRef.current?.(config.satKey);
     changeIdxRef.current?.(config.band);
     changeOpacityRef.current?.(config.opacity);
