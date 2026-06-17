@@ -1089,6 +1089,7 @@ export function SatelliteDataPanel({
         </>
       )}
 
+
       {showMultispectralControls && (
       <div className="space-y-2">
         <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Band selector</p>
@@ -1111,18 +1112,7 @@ export function SatelliteDataPanel({
           ))}
         </div>
         <div className="grid grid-cols-1 gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              const next = !falseColorEnabled;
-              setFalseColorEnabled(next);
-            }}
-            className={`h-9 rounded-lg border text-[0.68rem] font-semibold transition-colors ${
-              falseColorEnabled ? "border-orange-400/35 bg-orange-400/10 text-orange-200" : "border-white/[0.08] bg-white/[0.03] text-slate-300 hover:border-orange-400/25"
-            }`}
-          >
-            False color
-          </button>
+         
         </div>
         <div className="rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -1187,6 +1177,42 @@ export function SatelliteDataPanel({
           <span className="text-[0.65rem] text-slate-400">{opacity}%</span>
         </div>
         <input type="range" min={25} max={100} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} className="w-full accent-cyan-400" />
+       <button
+  onClick={handlePreview}
+  disabled={sceneStatus === "loading"}
+  className="mt-2 h-9 w-full rounded-lg border border-cyan-400/25 
+             bg-cyan-400/10 text-cyan-200 text-xs font-semibold
+             transition-all hover:bg-cyan-400/15 hover:border-cyan-400/40
+             disabled:opacity-60 disabled:cursor-not-allowed"
+>
+  {sceneStatus === "loading" ? (
+    <span className="flex items-center justify-center gap-2">
+      <svg
+        className="h-4 w-4 animate-spin text-cyan-300"
+        viewBox="0 0 24 24"
+        fill="none"
+      >
+        <circle
+          className="opacity-25"
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          strokeWidth="4"
+        />
+        <path
+          className="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+        />
+      </svg>
+      Loading Scenes...
+    </span>
+  ) : (
+    "Load Satellite Scenes"
+  )}
+</button>
+
       </div>
 
       {showSceneSearch && (

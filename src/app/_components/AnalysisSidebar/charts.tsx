@@ -18,7 +18,6 @@ export function DonutChart({ value, total, color, bg }: { value: number; total: 
   );
 }
 
-// â”€â”€â”€ Bar Chart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function BarChart({ data, color }: { data: { label: string; value: number }[]; color: string }) {
   const max = Math.max(...data.map((d) => d.value));
   return (
@@ -41,7 +40,6 @@ function BarChart({ data, color }: { data: { label: string; value: number }[]; c
   );
 }
 
-// â”€â”€â”€ Stacked Bar Chart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function StackedBarChart({ data }: { data: { label: string; a: number; b: number }[] }) {
   const max = Math.max(...data.map((d) => d.a + d.b));

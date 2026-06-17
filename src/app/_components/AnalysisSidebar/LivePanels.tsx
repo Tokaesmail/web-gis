@@ -7,7 +7,7 @@ function SkRow({ w = "w-full", h = "h-4" }: { w?: string; h?: string }) {
   return <div className={`${h} ${w} rounded-md bg-white/[0.05] animate-pulse`} />;
 }
 
-// â”€â”€â”€ NDVI Live Panel (data from selected feature coords) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// NDVI Live Panel (data from selected feature coords)
 export function NDVILivePanel({ feature, onExport }: { feature?: GeoJSON.Feature | null; onExport?: (data: any) => void }) {
   const [ndviData, setNdviData] = useState<any>(null);
   const [loading,  setLoading]  = useState(false);
@@ -325,7 +325,6 @@ export function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | nul
     };
   }, [coords?.[0], coords?.[1], feature]);
 
-  // â”€â”€ no feature selected â”€â”€
   if (!feature || !coords) {
     return (
       <div className="space-y-5">

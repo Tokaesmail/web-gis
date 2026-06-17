@@ -9,6 +9,7 @@ import { RasterCalculatorPanel } from "./RasterCalculatorPanel";
 import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { getMidCoords } from "./geoFeatureUtils";
 import { PanelId } from "./panels";
+import { CropsPanel } from "./CropsPanel";
 
 export function PanelContent({
   id,
@@ -134,71 +135,9 @@ export function PanelContent({
     );
   }
 
-  if (id === "crops") {
-    const cropData = {
-      cropType: "Corn",
-      health: "good",
-      coverage: 87,
-      estimatedYield: "12.4 t/ha",
-      recommendation: "Soil moisture is optimal. Monitor for pests in the NW sector."
-    };
-
-    const exportData = {
-      cropAnalysis: cropData,
-      selectedArea: { name: "Corn Field Z32", ha: 27.4 }
-    };
-
-    return (
-      <div className="space-y-4">
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-1">{t.fieldInsights} (EOS)</p>
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-400/20 bg-emerald-400/10 text-[0.62rem] font-bold text-emerald-300">CROP</div>
-            <div>
-              <p className="text-sm font-bold text-slate-200">Corn Field - Z32</p>
-              <p className="text-[0.6rem] text-slate-500">Stem elongation stage</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          {[
-            { l: t.soilMoisture, v: "42%", c: "text-blue-400" },
-            { l: t.biomass, v: "High", c: "text-emerald-400" },
-            { l: t.sowing, v: "12 Apr", c: "text-slate-300" },
-            { l: t.harvestEst, v: "25 Aug", c: "text-amber-400" },
-          ].map(it => (
-            <div key={it.l} className="bg-white/[0.03] border border-white/[0.05] rounded-lg p-2">
-              <p className={`text-xs font-bold ${it.c}`}>{it.v}</p>
-              <p className="text-[0.55rem] text-slate-500 mt-0.5">{it.l}</p>
-            </div>
-          ))}
-        </div>
-
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 space-y-3">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">{t.growthPrediction}</p>
-          <div className="relative h-12 flex items-end gap-1">
-             {[30, 45, 60, 55, 75, 90, 85].map((h, i) => (
-               <div key={i} className="flex-1 bg-cyan-400/20 rounded-t-sm transition-all hover:bg-cyan-400/40" style={{ height: `${h}%` }} />
-             ))}
-          </div>
-          <div className="flex justify-between text-[0.55rem] text-slate-600 px-1">
-            <span>May</span><span>Jun</span><span>Jul</span><span>Aug</span>
-          </div>
-        </div>
-
-        <div className="bg-amber-400/[0.05] border border-amber-400/20 rounded-xl p-3 flex gap-3">
-           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-amber-400/20 bg-amber-400/10 text-[0.62rem] font-bold text-amber-300">!</div>
-           <div>
-             <p className="text-[0.65rem] font-bold text-amber-400">{t.scoutingRequired}</p>
-             <p className="text-[0.58rem] text-slate-400 mt-0.5">Potential water stress detected in North-West sector.</p>
-           </div>
-        </div>
-
-        <ExportButton data={exportData} />
-      </div>
-    );
-  }
+ if (id === "crops") {
+  return <CropsPanel selectedFeature={selectedFeature} />;
+}
 
   if (id === "template-match") {
     return (
@@ -230,7 +169,7 @@ export function PanelContent({
     );
   }
 
-  if (id === "analyses") {
+  if (id === "analysis") {
     const analysisList = [
       { en: "Image Analysis",          ar: "Satellite Image Analysis",  icon: "IMG", color: "#22d3ee", tag: "Satellite"   },
       { en: "Spectral Classification", ar: "Spectral Classification",   icon: "CLS", color: "#a78bfa", tag: "AI"          },
@@ -241,7 +180,7 @@ export function PanelContent({
       { en: "Time Series Analysis",    ar: "Time Series Analysis",      icon: "TS",  color: "#f472b6", tag: "Series"      },
     ];
 
-    const flyCoords = getMidCoords(selectedFeature);
+      const flyCoords = getMidCoords(selectedFeature);
     const handleAnalysisClick = () => { if (flyCoords) onFlyTo?.(flyCoords[0], flyCoords[1]); };
 
     return (

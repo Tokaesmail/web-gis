@@ -1055,13 +1055,12 @@ export default function MapPage() {
             activeTool={activeTool}
             captureTarget={captureTarget}
             onAreaSelected={(name, area, feature) => {
-              setSelectedArea({ name, ha: area });
-              if (feature) {
-                handleFeatureClick(feature);
-                lastActivePanelRef.current = "analyses";
-                setActivePanel("analyses");
-              }
-            }}
+            setSelectedArea({ name, ha: area });
+
+            if (feature) {
+              handleFeatureClick(feature);
+            }
+          }}
             onCoordsUpdate={(lat, lng) => {
               lastCoordsRef.current = { lat, lng };
               setCoords({ lat, lng });

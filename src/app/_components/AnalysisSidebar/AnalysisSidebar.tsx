@@ -9,7 +9,8 @@ import { PanelContent } from "./PanelContent";
 import { panels, type PanelId } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 
-export default function AnalysisSidebar({
+export default function AnalysisSidebar(
+  {
   selectedFeature,
   uploadedGeoJsonMap,
   captures,
@@ -79,7 +80,10 @@ export default function AnalysisSidebar({
   const { isRTL } = useLang();
 
   // Determine which state to use
-  const activePanel = controlledActivePanel !== undefined ? controlledActivePanel : internalActivePanel;
+  const activePanel = controlledActivePanel !== undefined ? 
+  controlledActivePanel : internalActivePanel;
+
+  //! If both controlled and internal states are used, consider adding a warning in development mode to avoid confusion.
 
   const togglePanel = (id: PanelId) => {
     const next = activePanel === id ? null : id;
@@ -89,7 +93,7 @@ export default function AnalysisSidebar({
       setInternalActivePanel(next);
     }
   };
-
+  //^ معرفة بيانات الـ Panel
   const activeItem = panels.find((p) => p.id === activePanel);
 
   return (
@@ -117,7 +121,8 @@ export default function AnalysisSidebar({
           }}
         >
           <div className="h-full w-[min(340px,calc(100vw-52px))] bg-[#070f1e]/97 backdrop-blur-xl border-l border-white/[0.08] flex flex-col overflow-hidden shadow-[-8px_0_32px_rgba(0,0,0,0.4)]">
-            {/* Panel header */}
+
+            //* {/* Panel header */}
             <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-white/[0.06] shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-7 h-7 rounded-lg bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400">
@@ -220,10 +225,8 @@ export default function AnalysisSidebar({
             </div>
           ))}
 
-          {/* â”€â”€ Divider â”€â”€ */}
           <div className="w-6 h-px bg-white/[0.08] my-1" />
 
-          {/* â”€â”€ Upload GeoJSON button â”€â”€ */}
           <div className="relative group w-full flex justify-center">
             <button
               onClick={() => setUploadOpen((p) => !p)}
