@@ -114,6 +114,41 @@ function makePolygonFeature(name: string, points: [number, number][], area: numb
   };
 }
 
+const EARTH_RADIUS_M = 6378137;
+const toRad = (deg: number) => (deg * Math.PI) / 180;
+type DistanceMap = { distance: (from: [number, number], to: [number, number]) => number };
+type UnitLabels = { km: string };
+
+function calculateGeodesicAreaHa(points: [number, number][]): number {
+  if (points.length < 3) return 0;
+
+  let area = 0;
+  for (let i = 0; i < points.length; i++) {
+    const [lat1, lng1] = points[i];
+    const [lat2, lng2] = points[(i + 1) % points.length];
+    area += toRad(lng2 - lng1) * (2 + Math.sin(toRad(lat1)) + Math.sin(toRad(lat2)));
+  }
+
+  return Number(Math.abs((area * EARTH_RADIUS_M * EARTH_RADIUS_M) / 2 / 10000).toFixed(2));
+}
+
+function calculatePolylineDistanceM(map: DistanceMap, points: [number, number][]): number {
+  let distance = 0;
+  for (let i = 1; i < points.length; i++) {
+    distance += map.distance(points[i - 1], points[i]);
+  }
+  return distance;
+}
+
+function formatDistance(distanceM: number, t: UnitLabels): string {
+  if (distanceM >= 1000) return `${(distanceM / 1000).toFixed(3)} ${t.km}`;
+  return `${distanceM.toFixed(1)} m`;
+}
+
+function isEscapeEvent(e: KeyboardEvent): boolean {
+  return e.key === "Escape" || e.key === "Esc" || e.code === "Escape" || e.keyCode === 27;
+}
+
 export default function LeafletMap({
   activeTool, captureTarget, onAreaSelected, onCoordsUpdate,
   flyToRef, clearRef, onSatChange, onIdxChange, onOpacityChangeRegister, onCapture,
@@ -200,6 +235,12 @@ export default function LeafletMap({
     }
     drawPointsRef.current = [];
     if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
+  };
+
+  const showFinishButton = (label: string) => {
+    if (!closeBtnRef.current) return;
+    closeBtnRef.current.textContent = label;
+    closeBtnRef.current.style.display = "block";
   };
 
   const persistImageOverlays = () => {
@@ -368,20 +409,31 @@ export default function LeafletMap({
   // Escape cancels only the in-progress interaction.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (!isEscapeEvent(e)) return;
       e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
 
       if (placingImageRef.current) {
         stopImagePlacement();
         return;
       }
 
-      if (drawPointsRef.current.length > 0) {
+      const tool = activeToolRef.current;
+      if (drawPointsRef.current.length > 0 || tool === "measure" || tool === "polygon") {
         cancelCurrentDrawing();
       }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    document.addEventListener("keydown", handler, true);
+    document.addEventListener("keyup", handler, true);
+    window.addEventListener("keydown", handler, true);
+    window.addEventListener("keyup", handler, true);
+    return () => {
+      document.removeEventListener("keydown", handler, true);
+      document.removeEventListener("keyup", handler, true);
+      window.removeEventListener("keydown", handler, true);
+      window.removeEventListener("keyup", handler, true);
+    };
   }, []);
 
   const drawExtrusions = () => {
@@ -773,10 +825,7 @@ export default function LeafletMap({
     const c    = TOOL_COLORS.polygon;
     const poly = L.polygon(pts, { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
     drawLayersRef.current.push(poly);
-    const area = parseFloat((Math.abs(pts.reduce((acc: number, p: [number, number], i: number) => {
-      const j = (i + 1) % pts.length;
-      return acc + p[1] * pts[j][0] - pts[j][1] * p[0];
-    }, 0)) / 2 * 12345).toFixed(1));
+    const area = calculateGeodesicAreaHa(pts);
     poly.bindPopup(`🔵 ${t.polygon} · ≈ ${area} ${t.ha}`).openPopup();
     const feature = makePolygonFeature("Drawn Polygon", pts, area);
     onAreaSelected("Drawn Polygon", area, feature);
@@ -808,9 +857,8 @@ export default function LeafletMap({
 
     const line = L.polyline(pts, { color: TOOL_COLORS.measure.stroke, weight: 2.5 }).addTo(map);
     drawLayersRef.current.push(line);
-    let dist = 0;
-    for (let i = 1; i < pts.length; i++) dist += map.distance(pts[i - 1], pts[i]);
-    line.bindPopup(`📏 ${(dist / 1000).toFixed(3)} ${t.km}`).openPopup();
+    const dist = calculatePolylineDistanceM(map, pts);
+    line.bindPopup(`📏 ${formatDistance(dist, t)}`).openPopup();
 
     const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
     lastCoordsRef.current = coordinates;
@@ -935,7 +983,7 @@ export default function LeafletMap({
         backdropFilter: "blur(10px)", boxShadow: "0 4px 20px rgba(0,212,255,0.25)",
         fontFamily: "DM Sans, sans-serif", letterSpacing: "0.3px",
       });
-      closeBtn.textContent = "✓ Close Shape";
+      closeBtn.textContent = "✓ Finish";
       closeBtn.addEventListener("mouseenter", () => closeBtn.style.background = "#0a1628");
       closeBtn.addEventListener("mouseleave", () => closeBtn.style.background = "#0a1628cc");
       closeBtn.addEventListener("click", () => {
@@ -944,6 +992,14 @@ export default function LeafletMap({
         if (tool === "measure") finishMeasure(map, L);
       });
       mapRef.current!.appendChild(closeBtn);
+
+      map.on("dblclick", (e: { originalEvent: Event }) => {
+        const tool = activeToolRef.current;
+        if (tool !== "polygon" && tool !== "measure") return;
+        L.DomEvent.stop(e.originalEvent);
+        if (tool === "polygon") finishPolygon(map, L);
+        if (tool === "measure") finishMeasure(map, L);
+      });
 
       // ── Image overlays manager UI ─────────────────────────────────────────
       const overlaysUi = document.createElement("div");
@@ -1154,7 +1210,7 @@ export default function LeafletMap({
             }).addTo(map);
           drawLayersRef.current.push(marker);
           draftLayersRef.current.push(marker);
-          if (pts.length >= 3 && closeBtnRef.current) closeBtnRef.current.style.display = "block";
+          if (pts.length >= 3) showFinishButton(isRTL ? "✓ إنهاء المساحة" : "✓ Finish Area");
           return;
         }
 
@@ -1171,7 +1227,7 @@ export default function LeafletMap({
           const marker = L.circleMarker([lat, lng], { radius: 4, color: TOOL_COLORS.measure.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map);
           drawLayersRef.current.push(marker);
           draftLayersRef.current.push(marker);
-          if (pts.length >= 2 && closeBtnRef.current) closeBtnRef.current.style.display = "block";
+          if (pts.length >= 2) showFinishButton(isRTL ? "✓ إنهاء القياس" : "✓ Finish Distance");
           return;
         }
 
@@ -1186,10 +1242,10 @@ export default function LeafletMap({
           } else {
             const p1   = drawPointsRef.current[0];
             const rect = L.rectangle([p1, [lat, lng]], { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
-            const area = parseFloat((Math.abs(p1[0] - lat) * Math.abs(p1[1] - lng) * 12345).toFixed(1));
-            rect.bindPopup(`📐 ${t.rectangle} · ≈ ${area} ${t.ha}`).openPopup();
-            drawLayersRef.current.push(rect);
             const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
+            const area = calculateGeodesicAreaHa(coordinates.map((point) => [point.lat, point.lng]));
+            rect.bindPopup(`📐 ${t.rectangle} · Area: ${area} ${t.ha}`).openPopup();
+            drawLayersRef.current.push(rect);
             const feature = makePolygonFeature("Drawn Rectangle", coordinates.map((point) => [point.lat, point.lng]), area);
             onAreaSelected("Drawn Rectangle", area, feature);
             onFeatureClick?.(feature);
@@ -1219,7 +1275,7 @@ export default function LeafletMap({
             const radius = map.distance(center, [lat, lng]);
             const circ   = L.circle(center, { radius, color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
             const area   = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
-            circ.bindPopup(`🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`).openPopup();
+            circ.bindPopup(`🟢 ${t.circle} · Radius: ${radius.toFixed(0)} m · Area: ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(circ);
             const bounds = circ.getBounds();
             const circleBox: [number, number][] = [

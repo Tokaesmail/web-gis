@@ -71,6 +71,14 @@ export const SAT_LAYERS = {
     maxZoom:        22,
     maxNativeZoom:  13,
   },
+  "Legacy Viewer": {
+    url:            "/api/tile/{z}/{x}/{y}?source=legacy",
+    type:           "xyz" as const,
+    layers:         "",
+    attribution:    "Legacy PNG tiles",
+    maxZoom:        22,
+    maxNativeZoom:  18,
+  },
 };
 
 // ─── Labels Layer (عبر الـ proxy كمان) ───────────────────────────────────────

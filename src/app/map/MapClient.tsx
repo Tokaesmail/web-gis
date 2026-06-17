@@ -124,6 +124,7 @@ export default function MapPage() {
     { id: "contours",   name: "Contours",           nameAr: "خطوط الكنتور",     type: "vector", visible: true,  opacity: 1,    color: "#00d4ff", source: "Backend API · /gis/contours" },
     { id: "osm",        name: "OpenStreetMap Base",  nameAr: "خريطة OSM الأساسية", type: "tile",   visible: true,  opacity: 1 },
     { id: "satellite",  name: "Satellite Imagery",   nameAr: "صور الأقمار الصناعية", type: "raster", visible: false, opacity: 0.9,  source: "Esri World Imagery" },
+    { id: "legacy-viewer", name: "Legacy Viewer",    nameAr: "عارض البلاطات القديمة", type: "raster", visible: false, opacity: 1, source: "Legacy PNG tiles" },
     { id: "ndvi-tile",  name: "NDVI Live Layer",     nameAr: "طبقة NDVI الحية",  type: "ndvi",   visible: false, opacity: 0.85, source: "Sentinel-2 via open-meteo" },
     { id: "universities", name: "Universities",      nameAr: "الجامعات",         type: "vector", visible: true,  opacity: 1,    color: "#a855f7", source: "API · /api/universities" },
   ]);
@@ -136,6 +137,7 @@ export default function MapPage() {
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
   const rasterOverlayRef       = useRef<((config: RasterPreviewConfig) => void) | null>(null);
   const lastCoordsRef          = useRef<{ lat: number; lng: number }>({ lat: 30.0, lng: 31.0 });
+  const lastActivePanelRef     = useRef<string>("overview");
 
   // ── double-click tracking ─────────────────────────────────────────────────
   const lastClickTimeRef = useRef<number>(0);
@@ -598,6 +600,7 @@ export default function MapPage() {
     setLayers((prev) => prev.map((l) => l.id === id ? { ...l, visible } : l));
     // Wire to map tile changes where applicable
     if (id === "satellite" && visible) changeSatRef.current?.("Default");
+    if (id === "legacy-viewer" && visible) changeSatRef.current?.("Legacy Viewer");
     if (id === "ndvi-tile" && visible) changeIdxRef.current?.("NDVI" as any);
   }, []);
 
@@ -888,7 +891,9 @@ export default function MapPage() {
     );
     setSelectedArea(snapshot.analysisSettings?.selectedArea ?? { name: "Selected Area", ha: 0 });
     setCoords(snapshot.analysisSettings?.coords ?? null);
-    setActivePanel((snapshot.analysisSettings?.activePanel as any) ?? "overview");
+    const restoredPanel = (snapshot.analysisSettings?.activePanel as any) ?? "overview";
+    setActivePanel(restoredPanel);
+    if (restoredPanel) lastActivePanelRef.current = restoredPanel;
     setActiveProject(project);
     setProjectStartOpen(false);
     toast.success(isRTL ? "تم تحميل المشروع" : `Loaded ${project.name}`);
@@ -898,6 +903,17 @@ export default function MapPage() {
     setActiveProject(project);
     setProjectStartOpen(false);
     setActivePanel("overview");
+    lastActivePanelRef.current = "overview";
+  }, []);
+
+  const handleActivePanelChange = useCallback((id: string | null) => {
+    if (id) lastActivePanelRef.current = id;
+    setActivePanel(id);
+  }, []);
+
+  const handleFeatureClick = useCallback((feature: GeoJSON.Feature) => {
+    setSelectedFeature(feature);
+    setActivePanel((current) => current ?? lastActivePanelRef.current ?? "overview");
   }, []);
 
   const handleSaveActiveProject = useCallback(async () => {
@@ -932,7 +948,7 @@ export default function MapPage() {
       onFlyTo={handleFlyTo}
       onClose={handleClose3D}
       activePanel={activePanel as any}
-      onActivePanelChange={(id) => setActivePanel(id)}
+      onActivePanelChange={handleActivePanelChange as any}
       onClearCaptures={() => {
         setCaptures((prev) => {
           prev.forEach(c => {
@@ -972,6 +988,7 @@ export default function MapPage() {
     handleExtrusionConfig,
     handleFlyTo,
     handleClose3D,
+    handleActivePanelChange,
     handleDeleteCapture,
     handleRequestTemplateCapture,
     pendingTemplateCapture,
@@ -1039,7 +1056,11 @@ export default function MapPage() {
             captureTarget={captureTarget}
             onAreaSelected={(name, area, feature) => {
               setSelectedArea({ name, ha: area });
-              if (feature) setSelectedFeature(feature);
+              if (feature) {
+                handleFeatureClick(feature);
+                lastActivePanelRef.current = "analyses";
+                setActivePanel("analyses");
+              }
             }}
             onCoordsUpdate={(lat, lng) => {
               lastCoordsRef.current = { lat, lng };
@@ -1059,7 +1080,7 @@ export default function MapPage() {
             geoJsonStyle={contourGeoJsonStyle}
             geoJsonFitBounds={false}
             extrusionConfig={extrusionCfg || { enabled: false }}
-            onFeatureClick={setSelectedFeature}
+            onFeatureClick={handleFeatureClick}
           />
         </div>
 
