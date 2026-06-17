@@ -94,7 +94,6 @@ export default function AnalysisSidebar({
 
   return (
     <>
-      {/* â”€â”€ GeoJSON Upload Modal â”€â”€ */}
       {uploadOpen && (
         <JSONUploadModal
           onClose={() => setUploadOpen(false)}
@@ -109,7 +108,6 @@ export default function AnalysisSidebar({
         className={`absolute top-0 bottom-0 z-1000 flex ${isRTL ? "flex-row-reverse left-0" : "flex-row right-0"}`}
         style={{ pointerEvents: "all" }}
       >
-        {/* â”€â”€ Expanded panel â”€â”€ */}
         <div
           className="h-full overflow-hidden transition-all duration-300 ease-in-out"
           style={{
@@ -177,7 +175,6 @@ export default function AnalysisSidebar({
           </div>
         </div>
 
-        {/* â”€â”€ Icon rail â”€â”€ */}
         <div
           className="h-full flex flex-col items-center py-3 gap-1 bg-[#070f1e]/92 backdrop-blur-xl border-l border-white/[0.07] w-[52px] shrink-0"
           style={{ pointerEvents: "all" }}

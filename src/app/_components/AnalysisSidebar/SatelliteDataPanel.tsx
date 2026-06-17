@@ -1,7 +1,6 @@
 ﻿import React, { useEffect, useState } from "react";
 import { IdxKey, SatKey } from "../../map/mapTypes_proxy";
 import { SATELLITE_LEGENDS, SATELLITE_PIPELINES, type SatelliteAnalysisType, type SatelliteViewerMode } from "./SatellitePipelines";
-import { clampPercent, getFeatureAreaKm2 } from "./aoiAnalysis";
 import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
 
 export type SatellitePreviewConfig = {
@@ -596,21 +595,15 @@ export function SatelliteDataPanel({
   const [previewingSceneId, setPreviewingSceneId] = useState<string | null>(null);
   const [activePreviewSceneId, setActivePreviewSceneId] = useState<string | null>(null);
   const [scenePreviewUrls, setScenePreviewUrls] = useState<Record<string, string>>({});
-  const [aoiSummary, setAoiSummary] = useState<{
-    meanNdvi: number | null;
-    vegetationCoverage: number | null;
-    waterCoverage: number | null;
-    acquisitionDate: string | null;
-    cloudCover: number | null;
-  } | null>(null);
-  const [aoiSummaryLoading, setAoiSummaryLoading] = useState(false);
 
   const coords = getMidCoords(selectedFeature);
   const bounds = getFeatureBounds(selectedFeature, coords ? { lat: coords[0], lng: coords[1] } : undefined);
   const [[south, west], [north, east]] = bounds;
-  const satKey: SatKey = source === "sentinel-2" ? "Sentinel-2" : "Default";
-  const aoiAreaKm2 = getFeatureAreaKm2(selectedFeature);
-  const sourceMeta = {
+  const satKey: SatKey =
+    source === "sentinel-2"
+      ? "Sentinel-2"
+      : "Default";  
+    const sourceMeta = {
     "sentinel-2": { title: "Sentinel-2", subtitle: "Primary source", resolution: "10m", cadence: "5 days", color: "#22d3ee" },
     landsat: { title: "Landsat", subtitle: "Secondary source", resolution: "30m", cadence: "16 days", color: "#f59e0b" },
   }[source];
@@ -1195,7 +1188,6 @@ export function SatelliteDataPanel({
         </div>
         <input type="range" min={25} max={100} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} className="w-full accent-cyan-400" />
       </div>
-      
 
       {showSceneSearch && (
       <div className="space-y-2">

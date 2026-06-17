@@ -63,20 +63,20 @@ export const panels: PanelItem[] = [
     badge: "CALC",
   },
 
-  {
-    id: "crops",
-    labelEn: "Crop Insight",
-    labelAr: "Crop Insight",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M12 21V10" />
-        <path d="M12 10c-4.5 0-7-2.4-7-6 4.2 0 6.2 1.9 7 6Z" />
-        <path d="M12 13c4.8 0 7-2.6 7-6-4.4 0-6.4 2-7 6Z" />
-        <path d="M7 21h10" />
-      </svg>
-    ),
-    badge: "CALC",
-  },
+  // {
+  //   id: "crops",
+  //   labelEn: "Crop Insight",
+  //   labelAr: "Crop Insight",
+  //   icon: (
+  //     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+  //       <path d="M12 21V10" />
+  //       <path d="M12 10c-4.5 0-7-2.4-7-6 4.2 0 6.2 1.9 7 6Z" />
+  //       <path d="M12 13c4.8 0 7-2.6 7-6-4.4 0-6.4 2-7 6Z" />
+  //       <path d="M7 21h10" />
+  //     </svg>
+  //   ),
+  //   badge: "CALC",
+  // },
 
   {
     id: "layers",

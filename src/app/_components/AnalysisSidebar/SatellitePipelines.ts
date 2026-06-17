@@ -14,12 +14,6 @@ export const SATELLITE_PIPELINES: Array<{
     desc: "Bands, false color, and NDVI.",
   },
   {
-    key: "analysis",
-    label: "Analysis Module",
-    pipeline: "Scene metadata -> indices -> AOI summary",
-    desc: "Optional scene interpretation.",
-  },
-  {
     key: "download",
     label: "Download System",
     pipeline: "Selected scene -> PNG/GeoJSON/SHP/GeoTIFF",

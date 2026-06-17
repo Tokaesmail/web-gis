@@ -444,7 +444,6 @@ export function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | nul
   );
 }
 
-// â”€â”€â”€ Weather Live Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export function WeatherLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
   const coords = getMidCoords(feature);
 
@@ -543,7 +542,7 @@ export function WeatherLivePanel({ feature }: { feature?: GeoJSON.Feature | null
           { l: "UV Index", v: `${cur.uv_index != null ? Math.round(cur.uv_index) : "-"}`, ic: "UV" },
         ].map(w => (
           <div key={w.l} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2.5 text-center">
-            <p className="text-base">{w.ic}</p>
+            <p className="text-2xl text-white font-bold">{w.ic}</p>
             <p className="text-xs font-medium text-slate-200 mt-1">{w.v}</p>
             <p className="text-[0.58rem] text-slate-500">{w.l}</p>
           </div>

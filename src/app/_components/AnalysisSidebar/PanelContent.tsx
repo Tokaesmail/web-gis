@@ -78,7 +78,6 @@ export function PanelContent({
     return <RasterCalculatorPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />;
   }
 
-  // â”€â”€ NDVI â”€â”€
   if (id === "ndvi") {
     const coords = getMidCoords(selectedFeature);
 
@@ -96,7 +95,6 @@ export function PanelContent({
     );
   }
 
-  // â”€â”€ OVERVIEW â”€â”€
   if (id === "overview") {
     const p = selectedFeature?.properties ?? {};
     const coords = getMidCoords(selectedFeature);
@@ -120,7 +118,6 @@ export function PanelContent({
     );
   }
 
-  // â”€â”€ WEATHER â”€â”€
   if (id === "weather") {
     const coords = getMidCoords(selectedFeature);
     const exportData = {
@@ -137,7 +134,6 @@ export function PanelContent({
     );
   }
 
-  // â”€â”€ CROPS â”€â”€
   if (id === "crops") {
     const cropData = {
       cropType: "Corn",
@@ -204,7 +200,6 @@ export function PanelContent({
     );
   }
 
-  // â”€â”€ TEMPLATE MATCH â”€â”€
   if (id === "template-match") {
     return (
       <TemplateMatchPanel
@@ -219,7 +214,6 @@ export function PanelContent({
     );
   }
 
-  // â”€â”€ LAYERS â”€â”€
   if (id === "layers") {
     return (
       <LayerPanel
@@ -236,7 +230,6 @@ export function PanelContent({
     );
   }
 
-  // â”€â”€ ANALYSES â”€â”€
   if (id === "analyses") {
     const analysisList = [
       { en: "Image Analysis",          ar: "Satellite Image Analysis",  icon: "IMG", color: "#22d3ee", tag: "Satellite"   },
@@ -253,13 +246,11 @@ export function PanelContent({
 
     return (
       <div className="space-y-2">
-        <OverviewLivePanel feature={selectedFeature} />
-
         {/* Header */}
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-3">
+        {/* <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-3">
           <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Available Analyses</p>
           <p className="text-xs text-slate-300">Select an analysis type to run on the selected area</p>
-        </div>
+        </div> */}
 
         {/* No feature warning */}
         {!selectedFeature && (
@@ -324,7 +315,6 @@ export function PanelContent({
     );
   }
 
-  // â”€â”€ DEFAULT â”€â”€
   return (
     <div className="flex flex-col items-center justify-center py-12 gap-2 opacity-40">
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-slate-500">
