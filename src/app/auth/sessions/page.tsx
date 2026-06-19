@@ -4,7 +4,7 @@ import { getCurrentUser, getSessions, revokeSessionAction } from "../action/auth
 
 export default async function SessionsPage() {
   const [user, sessions] = await Promise.all([getCurrentUser(), getSessions()]);
-  if (!user) redirect("/auth/login");
+  if (!user) redirect("/backend/auth/login");
 
   return (
     <div className="space-y-6">
@@ -16,7 +16,7 @@ export default async function SessionsPage() {
           <div className="h-px flex-1 bg-white/[0.06]" />
         </div>
         <div className="flex items-center gap-3">
-          <Link href="/auth/profile"
+          <Link href="/backend/auth/profile"
             className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/[0.06] rounded-lg transition-all">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
           </Link>
@@ -92,7 +92,7 @@ export default async function SessionsPage() {
       {/* Footer note */}
       <p className="text-center text-[0.7rem] text-slate-600 leading-relaxed">
         If you see a session you don&apos;t recognize,{" "}
-        <Link href="/auth/change-password" className="text-cyan-400 hover:text-cyan-300">
+        <Link href="/backend/auth/change-password" className="text-cyan-400 hover:text-cyan-300">
           change your password
         </Link>{" "}
         immediately.

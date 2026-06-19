@@ -11,7 +11,7 @@ async function reLoginForToken(token: any) {
       return { ...token, error: "RefreshTokenError" };
     }
 
-    const res = await fetch(`${BASE_URL}/auth/login`, {
+    const res = await fetch(`${BASE_URL}/backend/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: token._email, password: token._password }),
@@ -44,8 +44,8 @@ export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET,
 
   pages: {
-    signIn: "/auth/login",
-    error: "/auth/login",
+    signIn: "/backend/auth/login",
+    error: "/backend/auth/login",
   },
 
   session: {
@@ -79,9 +79,9 @@ export const authOptions: NextAuthOptions = {
         }
 
         try {
-          console.log("[authorize] calling:", `${BASE_URL}/auth/login`);
+          console.log("[authorize] calling:", `${BASE_URL}/backend/auth/login`);
 
-          const res = await fetch(`${BASE_URL}/auth/login`, {
+          const res = await fetch(`${BASE_URL}/backend/auth/login`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

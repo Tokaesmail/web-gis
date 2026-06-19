@@ -76,14 +76,14 @@ export default async function LoginPage({ searchParams }: Props) {
       {/* Footer links */}
       <div className="space-y-3 text-center">
         <Link
-          href="/auth/change-password"
+          href="/backend/auth/change-password"
           className="block text-[0.75rem] text-slate-500 hover:text-cyan-400 transition-colors">
           Forgot your password?
         </Link>
         <p className="text-sm text-slate-600">
           Don&apos;t have an account?{" "}
           <Link
-            href="/auth/register"
+            href="/backend/auth/register"
             className="text-cyan-400 hover:text-cyan-300 transition-colors font-medium">
             Create one
           </Link>

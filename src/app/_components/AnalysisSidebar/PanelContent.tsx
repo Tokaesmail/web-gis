@@ -1,4 +1,4 @@
-﻿import React, { useState } from "react";
+﻿import React, { useRef, useState } from "react";
 import { useLang } from "../translations";
 import TemplateMatchPanel, { type MapCapture } from "./TemplateMatchPanel";
 import LayerPanel, { MapLayer } from "../../map/LayerPanel";
@@ -69,6 +69,10 @@ export function PanelContent({
   onRasterPreview?: (config: RasterPreviewConfig) => void;
 }) {
   const [ndviExportData, setNdviExportData] = useState<any>(null);
+  const ndviPanelRef = useRef<HTMLDivElement>(null);
+  const overviewPanelRef = useRef<HTMLDivElement>(null);
+  const weatherPanelRef = useRef<HTMLDivElement>(null);
+  const cropsPanelRef = useRef<HTMLDivElement>(null);
   const { t, isRTL } = useLang();
 
   if (id === "satellite") {
@@ -89,9 +93,15 @@ export function PanelContent({
     };
 
     return (
-        <div className="space-y-4">
-            <NDVILivePanel feature={selectedFeature} onExport={setNdviExportData} />
-            {selectedFeature && <ExportButton data={exportBundle} />}
+        <div className="flex flex-col gap-4 min-h-full">
+            <div ref={ndviPanelRef} data-export-panel="ndvi">
+              <NDVILivePanel feature={selectedFeature} onExport={setNdviExportData} />
+            </div>
+            {selectedFeature && (
+              <div className="sticky bottom-0 z-20 pt-3 pb-1 bg-gradient-to-t from-[#070f1e] via-[#070f1e]/95 to-transparent">
+                <ExportButton data={exportBundle} panelRef={ndviPanelRef} reportType="ndvi" block />
+              </div>
+            )}
         </div>
     );
   }
@@ -107,12 +117,14 @@ export function PanelContent({
     };
 
     return (
-      <div className="space-y-4">
-        <OverviewLivePanel feature={selectedFeature} />
-        
+      <div className="flex flex-col gap-4 min-h-full">
+        <div ref={overviewPanelRef} data-export-panel="overview">
+          <OverviewLivePanel feature={selectedFeature} />
+        </div>
+
         {selectedFeature && (
-          <div className="flex gap-2">
-            <ExportButton data={exportData} />
+          <div className="sticky bottom-0 z-20 pt-3 pb-1 bg-gradient-to-t from-[#070f1e] via-[#070f1e]/95 to-transparent">
+            <ExportButton data={exportData} panelRef={overviewPanelRef} reportType="overview" block />
           </div>
         )}
       </div>
@@ -121,22 +133,49 @@ export function PanelContent({
 
   if (id === "weather") {
     const coords = getMidCoords(selectedFeature);
+    const p = selectedFeature?.properties ?? {};
+    const areaHa = typeof p.areaHa === "number" ? p.areaHa : typeof p.area === "number" ? p.area : undefined;
+
     const exportData = {
       title: "Weather Report",
       coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
-      timestamp: new Date().toISOString()
+      selectedArea: areaHa != null ? { name: String(p.name ?? p.label ?? "Selected Area"), ha: areaHa } : undefined,
+      timestamp: new Date().toISOString(),
     };
 
     return (
-      <div className="space-y-4">
-        <WeatherLivePanel feature={selectedFeature} />
-        {selectedFeature && <ExportButton data={exportData} />}
+      <div className="flex flex-col gap-4 min-h-full">
+        <div ref={weatherPanelRef} data-export-panel="weather">
+          <WeatherLivePanel feature={selectedFeature} />
+        </div>
+        {selectedFeature && (
+          <div className="sticky bottom-0 z-20 pt-3 pb-1 bg-gradient-to-t from-[#070f1e] via-[#070f1e]/95 to-transparent">
+            <ExportButton data={exportData} panelRef={weatherPanelRef} reportType="weather" block />
+          </div>
+        )}
       </div>
     );
   }
 
  if (id === "crops") {
-  return <CropsPanel selectedFeature={selectedFeature} />;
+  const coords = getMidCoords(selectedFeature);
+  const exportData = {
+    title: "Crop Health Report",
+    coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+  };
+
+  return (
+    <div className="flex flex-col gap-4 min-h-full">
+      <div ref={cropsPanelRef} data-export-panel="crops">
+        <CropsPanel selectedFeature={selectedFeature} />
+      </div>
+      {selectedFeature && (
+        <div className="sticky bottom-0 z-20 pt-3 pb-1 bg-gradient-to-t from-[#070f1e] via-[#070f1e]/95 to-transparent">
+          <ExportButton data={exportData} panelRef={cropsPanelRef} reportType="crops" block />
+        </div>
+      )}
+    </div>
+  );
 }
 
   if (id === "template-match") {

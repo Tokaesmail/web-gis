@@ -9,7 +9,7 @@ export function LogoutButton() {
 
   const handleLogout = async () => {
     setPending(true);
-    await signOut({ callbackUrl: "/auth/login" });
+    await signOut({ callbackUrl: "/backend/auth/login" });
   };
 
   return (
@@ -48,7 +48,7 @@ export function LogoutAllButton({ logoutAllAction }: { logoutAllAction: () => Pr
       // ignore redirect errors thrown by Next.js redirect()
     }
     // then clear the next-auth session cookie
-    await signOut({ callbackUrl: "/auth/login" });
+    await signOut({ callbackUrl: "/backend/auth/login" });
   };
 
   return (

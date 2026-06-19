@@ -17,7 +17,6 @@ import CoordsPopup from "./CoordsPopup";
 import AITriggerButton from "./AITriggerButton";
 import Mapbox3DView from "./Mapbox3DView";
 import LayerPanel, { MapLayer } from "./LayerPanel";
-import ExportButton from "./ExportButton";
 import ProjectStartDialog from "./projects/ProjectStartDialog";
 import { updateProject } from "./projects/projectStorage";
 import type { ProjectSnapshot, UserProject } from "./projects/projectTypes";

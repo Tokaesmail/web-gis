@@ -41,7 +41,7 @@ export default function RegisterForm() {  // ← removed "async"
   const onSubmit = async (values: RegisterValues) => {
     setServerError(null);
     try {
-      const res = await fetch(`${BASE_URL}/auth/register`, {
+      const res = await fetch(`${BASE_URL}/backend/auth/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(values),
@@ -54,7 +54,7 @@ export default function RegisterForm() {  // ← removed "async"
         return;
       }
 
-      router.push("/auth/login?registered=1");
+      router.push("/backend/auth/login?registered=1");
     } catch {
       setServerError("An unexpected error occurred. Please try again.");
     }
@@ -212,7 +212,7 @@ function SubmitButton({ pending, label, pendingLabel }: { pending: boolean; labe
       </button>
       <p className="text-sm text-slate-600 text-center">
         Already have an account?{" "}
-        <Link href="/auth/login" className="text-cyan-400 hover:text-cyan-300 transition-colors font-medium">
+        <Link href="/backend/auth/login" className="text-cyan-400 hover:text-cyan-300 transition-colors font-medium">
           Sign in
         </Link>
       </p>

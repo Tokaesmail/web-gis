@@ -43,24 +43,24 @@ export async function loginAction(_: unknown, formData: FormData) {
 export async function logoutAction() {
   const token = await getAccessToken();
   if (token) {
-    fetch(`${BASE_URL}/auth/logout`, {
+    fetch(`${BASE_URL}/backend/auth/logout`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => {});
   }
-  redirect("/auth/login");
+  redirect("/backend/auth/login");
 }
 
 // ─── Logout All ────────────────────────────────────────────────────────────────
 export async function logoutAllAction() {
   const token = await getAccessToken();
   if (token) {
-    fetch(`${BASE_URL}/auth/logout-all`, {
+    fetch(`${BASE_URL}/backend/auth/logout-all`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => {});
   }
-  redirect("/auth/login");
+  redirect("/backend/auth/login");
 }
 
 // ─── Change Password ───────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ export async function changePasswordAction(_: unknown, formData: FormData) {
     newPassword: formData.get("newPassword"),
   };
 
-  const res = await fetch(`${BASE_URL}/auth/change-password`, {
+  const res = await fetch(`${BASE_URL}/backend/auth/change-password`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
@@ -91,7 +91,7 @@ export async function changePasswordAction(_: unknown, formData: FormData) {
 export async function getSessions() {
   const token = await getAccessToken();
 
-  const res = await fetch(`${BASE_URL}/auth/sessions`, {
+  const res = await fetch(`${BASE_URL}/backend/auth/sessions`, {
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
@@ -111,7 +111,7 @@ export async function revokeSessionAction(formData: FormData) {
 
   const token = await getAccessToken();
 
-  const res = await fetch(`${BASE_URL}/auth/sessions/${sessionId}`, {
+  const res = await fetch(`${BASE_URL}/backend/auth/sessions/${sessionId}`, {
     method: "DELETE",
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -132,7 +132,7 @@ export async function registerAction(_: unknown, formData: FormData) {
     password: formData.get("password"),
   };
 
-  const res = await fetch(`${BASE_URL}/auth/register`, {
+  const res = await fetch(`${BASE_URL}/backend/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -143,14 +143,14 @@ export async function registerAction(_: unknown, formData: FormData) {
     return { error: data.message ?? "Registration failed" };
   }
 
-  redirect("/auth/login?registered=1");
+  redirect("/backend/auth/login?registered=1");
 }
 
 // ─── Refresh Token ─────────────────────────────────────────────────────────────
 export async function refreshTokenAction() {
   const token = await getAccessToken();
 
-  const res = await fetch(`${BASE_URL}/auth/refresh`, {
+  const res = await fetch(`${BASE_URL}/backend/auth/refresh`, {
     method: "POST",
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),

@@ -5,7 +5,7 @@ import ChangePasswordForm from "./_form";
 
 export default async function ChangePasswordPage() {
   const user = await getCurrentUser();
-  if (!user) redirect("/auth/login");
+  if (!user) redirect("/backend/auth/login");
 
   return (
     <div className="space-y-8">
@@ -20,7 +20,7 @@ export default async function ChangePasswordPage() {
         </div>
         <div className="flex items-center gap-3">
           <Link
-            href="/auth/profile"
+            href="/backend/auth/profile"
             className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-white/6 rounded-lg transition-all">
             <svg
               width="14"
@@ -74,7 +74,7 @@ export default async function ChangePasswordPage() {
         After changing your password, you&apos;ll remain signed in on this
         device.{" "}
         <Link
-          href="/auth/sessions"
+          href="/backend/auth/sessions"
           className="text-cyan-400 hover:text-cyan-300">
           Manage other sessions
         </Link>

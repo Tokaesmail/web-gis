@@ -1,0 +1,161 @@
+import type { ReportConfig, ReportData } from './types';
+
+export const sampleReportConfig: ReportConfig = {
+  title: 'تقرير GIS الزراعي الشامل',
+  subtitle: 'تحليل مكاني وطيفي للحقل',
+  organization: 'مركز الزراعة الدقيقة',
+  locale: 'ar',
+  generatedAt: new Date().toISOString(),
+  author: 'نظام AgriGIS',
+  includeSections: {
+    cover: true,
+    overview: true,
+    ndvi: true,
+    crop: true,
+    weather: true,
+    satellite: true,
+    templateMatch: true,
+    charts: true,
+    recommendations: true,
+  },
+};
+
+export const sampleReportData: ReportData = {
+  field: {
+    id: 'FLD-001',
+    name: 'حقل الواحة الشمالي',
+    areaHa: 45.8,
+    cropType: 'قمح',
+    plantingDate: '2025-11-15',
+    coordinates: { lat: 24.7136, lng: 46.6753 },
+  },
+  weather: {
+    temperature: { current: 32, min: 22, max: 38, unit: 'C' },
+    humidity: 45,
+    rainfall: { daily: 0, weekly: 2.4, monthly: 8.1, unit: 'mm' },
+    windSpeed: 14,
+    forecast: [
+      { date: '2026-06-18', temp: 34, rain: 0, condition: 'مشمس' },
+      { date: '2026-06-19', temp: 36, rain: 0, condition: 'حار' },
+      { date: '2026-06-20', temp: 33, rain: 1.2, condition: 'غائم جزئياً' },
+      { date: '2026-06-21', temp: 31, rain: 3.5, condition: 'أمطار خفيفة' },
+      { date: '2026-06-22', temp: 30, rain: 0.5, condition: 'غائم' },
+      { date: '2026-06-23', temp: 32, rain: 0, condition: 'مشمس' },
+      { date: '2026-06-24', temp: 35, rain: 0, condition: 'حار' },
+    ],
+    alerts: ['تحذير: موجة حرارة متوقعة يوم 19 يونيو'],
+  },
+  crop: {
+    healthScore: 78,
+    growthStage: 'الإزهار',
+    estimatedYield: { value: 4.2, unit: 'طن/هكتار', change: 5.3 },
+    stressFactors: [
+      { name: 'إجهاد مائي', severity: 'medium', description: 'انخفاض رطوبة التربة في القطاع الشرقي' },
+      { name: 'نقص نيتروجين', severity: 'low', description: 'مستويات طفيفة تحت المعدل في المنطقة الشمالية' },
+    ],
+    soilMoisture: 42,
+    pestRisk: 'low',
+  },
+  ndvi: {
+    current: 0.72,
+    average: 0.68,
+    min: 0.31,
+    max: 0.89,
+    trend: 'improving',
+    history: [
+      { date: '2026-05-01', value: 0.55 },
+      { date: '2026-05-15', value: 0.62 },
+      { date: '2026-06-01', value: 0.68 },
+      { date: '2026-06-15', value: 0.72 },
+    ],
+    zones: [
+      { label: 'القطاع الشمالي', areaHa: 12.3, ndvi: 0.81, status: 'ممتاز' },
+      { label: 'القطاع الجنوبي', areaHa: 15.1, ndvi: 0.74, status: 'جيد' },
+      { label: 'القطاع الشرقي', areaHa: 10.8, ndvi: 0.58, status: 'يحتاج ري' },
+      { label: 'القطاع الغربي', areaHa: 7.6, ndvi: 0.69, status: 'جيد' },
+    ],
+    anomalyDetected: true,
+  },
+  satellite: {
+    provider: 'Sentinel-2',
+    acquisitionDate: '2026-06-15',
+    resolution: '10m',
+    cloudCover: 4.2,
+    bands: ['B02', 'B03', 'B04', 'B08', 'B11', 'B12'],
+    indices: [
+      { name: 'NDVI', value: 0.72, status: 'غطاء كثيف' },
+      { name: 'NDWI', value: 0.18, status: 'رطوبة معتدلة' },
+      { name: 'EVI', value: 0.45, status: 'نمو نشط' },
+      { name: 'SAVI', value: 0.61, status: 'غطاء جيد' },
+    ],
+    changeDetection: { period: '30 يوم', changePercent: 8.4, direction: 'تحسن' },
+  },
+  templateMatch: {
+    templateName: 'نمط الري بالتنقيط',
+    matchScore: 0.87,
+    matchedAreaHa: 38.2,
+    confidence: 0.91,
+    patterns: [
+      { name: 'صفوف منتظمة', score: 0.92, location: 'القطاع الشمالي' },
+      { name: 'منطقة جفاف', score: 0.78, location: 'القطاع الشرقي' },
+      { name: 'نمو متجانس', score: 0.85, location: 'القطاع الغربي' },
+    ],
+  },
+  charts: [
+    {
+      name: 'اتجاه NDVI (90 يوم)',
+      data: [
+        { label: 'مارس', value: 0.35 },
+        { label: 'أبريل', value: 0.48 },
+        { label: 'مايو', value: 0.62 },
+        { label: 'يونيو', value: 0.72 },
+      ],
+      color: '#1a5f4a',
+    },
+    {
+      name: 'هطول الأمطار الشهري (mm)',
+      data: [
+        { label: 'يناير', value: 12 },
+        { label: 'فبراير', value: 8 },
+        { label: 'مارس', value: 22 },
+        { label: 'أبريل', value: 5 },
+        { label: 'مايو', value: 3 },
+        { label: 'يونيو', value: 8 },
+      ],
+      color: '#3498db',
+    },
+    {
+      name: 'درجة صحة المحصول',
+      data: [
+        { label: 'أسبوع 1', value: 65 },
+        { label: 'أسبوع 2', value: 70 },
+        { label: 'أسبوع 3', value: 74 },
+        { label: 'أسبوع 4', value: 78 },
+      ],
+      color: '#e8a838',
+    },
+  ],
+  recommendations: [
+    {
+      priority: 'high',
+      category: 'الري',
+      title: 'زيادة الري في القطاع الشرقي',
+      description: 'انخفاض NDVI وقيم رطوبة التربة تشير إلى إجهاد مائي في القطاع الشرقي (10.8 هكتار).',
+      action: 'تشغيل نظام الري بالتنقيط لمدة 45 دقيقة إضافية يومياً لمدة أسبوع.',
+    },
+    {
+      priority: 'medium',
+      category: 'التسميد',
+      title: 'تسميد نيتروجيني موضعي',
+      description: 'مستويات NDVI المنخفضة نسبياً في المنطقة الشمالية قد تشير إلى نقص بسيط في النيتروجين.',
+      action: 'تطبيق 30 كغ/هكتار يوريا في القطاع الشمالي خلال الأسبوع القادم.',
+    },
+    {
+      priority: 'low',
+      category: 'المراقبة',
+      title: 'متابعة موجة الحرارة',
+      description: 'تنبؤ بموجة حرارة يوم 19 يونيو قد تؤثر على مرحلة الإزهار.',
+      action: 'مراقبة الحقل يومياً وتفعيل نظام الضباب الرذاذي عند تجاوز 38°م.',
+    },
+  ],
+};
