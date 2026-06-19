@@ -1,6 +1,7 @@
 ﻿import React from "react";
 
 export type PanelId =
+  | "elevation" 
   | "satellite"
   | "raster"
   | "ndvi"
@@ -134,6 +135,18 @@ export const panels: PanelItem[] = [
       </svg>
     ),
   },
+   {                                                    // ← new block starts here
+    id: "elevation",
+    labelEn: "Elevation",
+    labelAr: "الارتفاع",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M3 17l4-8 4 4 4-6 4 10" />
+        <path d="M3 20h18" />
+      </svg>
+    ),
+    badge: "DEM",
+  },   
 ];
 
 

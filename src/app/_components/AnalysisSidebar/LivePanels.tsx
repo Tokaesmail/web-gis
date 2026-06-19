@@ -56,7 +56,6 @@ export function NDVILivePanel({ feature, onExport }: { feature?: GeoJSON.Feature
       .finally(() => setLoading(false));
   }, [coords?.[0], coords?.[1]]);
 
-  // â”€â”€ No feature selected â€” show static mock â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (!feature || !coords) {
     const bars = [
       { label: "23 Dec", value: 0.58 }, { label: "02 Jan", value: 0.61 },

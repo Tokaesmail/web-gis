@@ -10,6 +10,7 @@ import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConf
 import { getMidCoords } from "./geoFeatureUtils";
 import { PanelId } from "./panels";
 import { CropsPanel } from "./CropsPanel";
+import ElevationContourPanel from "./ElevationContourPanel";
 
 export function PanelContent({
   id,
@@ -154,6 +155,16 @@ export function PanelContent({
           </div>
         )}
       </div>
+    );
+  }
+
+  // ── ELEVATION & CONTOURS ──                         
+  if (id === "elevation") {
+    return (
+      <ElevationContourPanel
+        selectedFeature={selectedFeature}
+        onContoursGenerated={(geojson, fileName) => onGeoJSONUpload?.(geojson, fileName)}
+      />
     );
   }
 

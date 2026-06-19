@@ -8,6 +8,7 @@ import { MapLayer } from "../../map/LayerPanel";
 import { PanelContent } from "./PanelContent";
 import { panels, type PanelId } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
+import ElevationContourPanel from "./ElevationContourPanel"; 
 
 export default function AnalysisSidebar(
   {
