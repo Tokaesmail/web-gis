@@ -5,12 +5,13 @@ import LayerPanel, { MapLayer } from "../../map/LayerPanel";
 import ExportButton from "../../map/ExportButton";
 import { CapturesPanel } from "./CapturesPanel";
 import { NDVILivePanel, OverviewLivePanel, WeatherLivePanel } from "./LivePanels";
-import { RasterCalculatorPanel } from "./RasterCalculatorPanel";
+// import { RasterCalculatorPanel } from "./RasterCalculatorPanel";
 import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { getMidCoords } from "./geoFeatureUtils";
 import { PanelId } from "./panels";
 import { CropsPanel } from "./CropsPanel";
 import ElevationContourPanel from "./ElevationContourPanel";
+import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
 
 export function PanelContent({
   id,
@@ -80,9 +81,13 @@ export function PanelContent({
     return <SatelliteDataPanel selectedFeature={selectedFeature} onPreview={onSatellitePreview} />;
   }
 
-  if (id === "raster") {
-    return <RasterCalculatorPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />;
-  }
+  // if (id === "raster") {
+  //   return <RasterCalculatorPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />;
+  // }
+
+  if (id === "planetary-raster") {
+  return <PlanetaryRasterPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />;
+}
 
   if (id === "ndvi") {
     const coords = getMidCoords(selectedFeature);

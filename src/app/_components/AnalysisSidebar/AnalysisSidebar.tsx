@@ -9,6 +9,9 @@ import { PanelContent } from "./PanelContent";
 import { panels, type PanelId } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import ElevationContourPanel from "./ElevationContourPanel"; 
+import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
+import { getPolygonRing, clipImageToPolygon } from "./geoClipUtils";
+// (or wherever geoClipUtils.ts ends up — see note at bottom)
 
 export default function AnalysisSidebar(
   {

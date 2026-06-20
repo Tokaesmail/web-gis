@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 // ─── PlanetaryRasterPanel.tsx ───────────────────────────────────────────────
 // Raster Calculator مبني على Planetary Computer Data API (titiler).
@@ -12,6 +12,7 @@
 // ويرجع صورة PNG جاهزة. إحنا بس بنعرضها كـ image overlay على الخريطة.
 
 import { useEffect, useMemo, useState } from "react";
+import { getPolygonRing, clipImageToPolygon } from "./geoClipUtils";
 
 // ─── Sentinel-2 L2A band reference (so the user writes valid expressions) ──
 const SENTINEL2_BANDS: { id: string; label: string; gsd: string; desc: string }[] = [
@@ -39,7 +40,18 @@ const EXPRESSION_PRESETS: { key: string; label: string; expression: string; colo
   { key: "EVI",  label: "EVI",   expression: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)", colormap: "greens", rescale: [-1, 2], desc: "Enhanced vegetation" },
 ];
 
-const COLORMAPS = ["rdylgn", "rdbu", "bugn_r", "magma", "greens", "viridis", "spectral", "rdylbu_r"];
+// ─── Color ramps shown as visual swatches (matching the app's existing
+// "Water / Vegetation / Spectral" style) instead of a plain colormap name list ──
+const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
+  { key: "rdylgn",   label: "Vegetation", gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#1a9850)" },
+  { key: "rdbu",     label: "Water",      gradient: "linear-gradient(90deg,#67001f,#f4a582,#f7f7f7,#92c5de,#053061)" },
+  { key: "spectral", label: "Spectral",   gradient: "linear-gradient(90deg,#9e0142,#fdae61,#ffffbf,#abdda4,#5e4fa2)" },
+  { key: "bugn_r",   label: "Moisture",   gradient: "linear-gradient(90deg,#00441b,#66c2a4,#edf8fb)" },
+  { key: "magma",    label: "Thermal",    gradient: "linear-gradient(90deg,#000004,#721f81,#fb8761,#fcfdbf)" },
+  { key: "greens",   label: "Greens",     gradient: "linear-gradient(90deg,#00441b,#66c2a4,#f7fcf5)" },
+  { key: "viridis",  label: "Viridis",    gradient: "linear-gradient(90deg,#440154,#21918c,#fde725)" },
+  { key: "rdylbu_r", label: "Heat",       gradient: "linear-gradient(90deg,#313695,#fee090,#a50026)" },
+];
 
 const PC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search";
 const PC_DATA_URL = "https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png";
@@ -135,6 +147,7 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   const [rescaleMin, setRescaleMin] = useState(EXPRESSION_PRESETS[0].rescale[0]);
   const [rescaleMax, setRescaleMax] = useState(EXPRESSION_PRESETS[0].rescale[1]);
   const [opacity, setOpacity] = useState(85);
+  const [clipToShape, setClipToShape] = useState(true);
   const [cloudCover, setCloudCover] = useState(20);
   const [dateFrom, setDateFrom] = useState("2026-04-01");
   const [dateTo, setDateTo] = useState("2026-05-31");
@@ -150,6 +163,7 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   const [previewImg, setPreviewImg] = useState<string | null>(null);
 
   const bbox = useMemo(() => getFeatureBBox(selectedFeature, fallbackCoords), [selectedFeature, fallbackCoords?.lat, fallbackCoords?.lng]);
+  const polygonRing = useMemo(() => getPolygonRing(selectedFeature), [selectedFeature]);
   const validation = useMemo(() => validateExpression(expression), [expression]);
   const selectedScene = scenes.find((s) => s.id === selectedSceneId) ?? null;
 
@@ -240,24 +254,37 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
         throw new Error(`Planetary Computer render failed (${res.status}). ${text.slice(0, 160)}`);
       }
       const blob = await res.blob();
-      const dataUrl: string = await new Promise((resolve, reject) => {
+      let dataUrl: string = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
         reader.onerror = () => reject(new Error("Could not read image data"));
         reader.readAsDataURL(blob);
       });
 
+      const [west, south, east, north] = selectedScene.bbox ?? bbox;
+      const renderedBounds: [[number, number], [number, number]] = [[south, west], [north, east]];
+
+      // Server always returns a rectangle covering the bbox. If the user drew
+      // an actual polygon (not just a point/rectangle), mask out everything
+      // outside its outline so only the selected shape shows on the map.
+      if (clipToShape && polygonRing) {
+        try {
+          dataUrl = await clipImageToPolygon(dataUrl, renderedBounds, polygonRing);
+        } catch {
+          // If clipping fails for any reason, fall back to the unclipped rectangle.
+        }
+      }
+
       setPreviewImg(dataUrl);
       setPreviewStatus("success");
 
-      const [west, south, east, north] = selectedScene.bbox ?? bbox;
       onPreview?.({
         name: `${activePreset || "Expression"} · ${selectedScene.id}`,
         indexKey: activePreset || "CUSTOM",
         expression,
         date: selectedScene.date,
         dataUrl,
-        bounds: [[south, west], [north, east]],
+        bounds: renderedBounds,
         opacity: opacity / 100,
         colorRamp: colormap,
         coords: fallbackCoords ?? { lat: (south + north) / 2, lng: (west + east) / 2 },
@@ -438,18 +465,27 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
       {/* Colormap + rescale */}
       <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3 space-y-3">
         <div>
-          <p className="mb-2 text-[0.62rem] uppercase tracking-wider text-slate-500">Colormap</p>
-          <div className="flex flex-wrap gap-1.5">
-            {COLORMAPS.map((cm) => (
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Color ramp</p>
+            <span className="text-[0.58rem] text-cyan-300">{COLOR_RAMPS.find((r) => r.key === colormap)?.label ?? colormap}</span>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {COLOR_RAMPS.map((ramp) => (
               <button
-                key={cm}
+                key={ramp.key}
                 type="button"
-                onClick={() => setColormap(cm)}
-                className={`rounded-md border px-2 py-1 text-[0.6rem] font-mono transition-colors cursor-pointer ${
-                  colormap === cm ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-300" : "border-white/[0.07] bg-white/[0.02] text-slate-400 hover:border-white/[0.15]"
+                onClick={() => setColormap(ramp.key)}
+                title={ramp.label}
+                className={`group rounded-lg border p-1.5 transition-all cursor-pointer ${
+                  colormap === ramp.key ? "border-cyan-400/45 bg-cyan-400/[0.06]" : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.16]"
                 }`}
               >
-                {cm}
+                <span className="block h-7 rounded-md" style={{ background: ramp.gradient }} />
+                <span className={`mt-1.5 block text-[0.56rem] font-medium truncate ${
+                  colormap === ramp.key ? "text-cyan-300" : "text-slate-500 group-hover:text-slate-300"
+                }`}>
+                  {ramp.label}
+                </span>
               </button>
             ))}
           </div>
@@ -466,6 +502,31 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
               className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
           </label>
         </div>
+      </div>
+
+      {/* Clip to shape */}
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
+        <div className="min-w-0">
+          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Clip to drawn shape</p>
+          <p className="mt-1 text-[0.58rem] text-slate-500 leading-relaxed">
+            {polygonRing
+              ? "Mask everything outside your polygon — only the selected area shows."
+              : "No polygon selected — server returns a rectangle covering the AOI."}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setClipToShape((p) => !p)}
+          disabled={!polygonRing}
+          className={`w-11 h-6 shrink-0 rounded-full border transition-all cursor-pointer relative disabled:cursor-not-allowed disabled:opacity-40 ${
+            clipToShape && polygonRing ? "bg-cyan-400/20 border-cyan-400/30" : "bg-white/[0.03] border-white/[0.08]"
+          }`}
+          aria-pressed={clipToShape && !!polygonRing}
+        >
+          <span className={`absolute top-0.5 w-5 h-5 rounded-full transition-all ${
+            clipToShape && polygonRing ? "left-5 bg-cyan-400" : "left-0.5 bg-slate-600"
+          }`} />
+        </button>
       </div>
 
       {/* Opacity */}
@@ -513,17 +574,7 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   );
 }
 
-// crude visual approximation just for the legend bar — actual colors come from the server-rendered PNG
+// looks up the same gradient used in the color-ramp picker, for the result legend bar
 function colormapPreviewGradient(name: string): string {
-  const gradients: Record<string, string> = {
-    rdylgn:   "linear-gradient(90deg,#a50026,#fdae61,#ffffbf,#a6d96a,#006837)",
-    rdbu:     "linear-gradient(90deg,#67001f,#f4a582,#f7f7f7,#92c5de,#053061)",
-    bugn_r:   "linear-gradient(90deg,#00441b,#66c2a4,#edf8fb)",
-    magma:    "linear-gradient(90deg,#000004,#721f81,#fb8761,#fcfdbf)",
-    greens:   "linear-gradient(90deg,#00441b,#66c2a4,#f7fcf5)",
-    viridis:  "linear-gradient(90deg,#440154,#21918c,#fde725)",
-    spectral: "linear-gradient(90deg,#9e0142,#fdae61,#ffffbf,#abdda4,#5e4fa2)",
-    rdylbu_r: "linear-gradient(90deg,#313695,#fee090,#a50026)",
-  };
-  return gradients[name] ?? gradients.viridis;
+  return COLOR_RAMPS.find((r) => r.key === name)?.gradient ?? COLOR_RAMPS[COLOR_RAMPS.length - 2].gradient;
 }

@@ -1,7 +1,8 @@
-﻿import React, { useEffect, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import { IdxKey, SatKey } from "../../map/mapTypes_proxy";
 import { SATELLITE_LEGENDS, SATELLITE_PIPELINES, type SatelliteAnalysisType, type SatelliteViewerMode } from "./SatellitePipelines";
 import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
+import { clipImageToPolygon, getPolygonRing } from "./geoClipUtils";
 
 export type SatellitePreviewConfig = {
   source: "sentinel-2" | "landsat";
@@ -596,6 +597,12 @@ export function SatelliteDataPanel({
   const [activePreviewSceneId, setActivePreviewSceneId] = useState<string | null>(null);
   const [scenePreviewUrls, setScenePreviewUrls] = useState<Record<string, string>>({});
 
+const polygonRing = useMemo(
+  () => getPolygonRing(selectedFeature),
+  [selectedFeature]
+);
+  const [clipToShape, setClipToShape] = useState(true);
+  const [clippedThumbs, setClippedThumbs] = useState<Record<string, string>>({});  
   const coords = getMidCoords(selectedFeature);
   const bounds = getFeatureBounds(selectedFeature, coords ? { lat: coords[0], lng: coords[1] } : undefined);
   const [[south, west], [north, east]] = bounds;
@@ -616,18 +623,27 @@ export function SatelliteDataPanel({
     { key: "SWIR", label: "SWIR", desc: "Dryness view", color: "#fb923c" },
   ];
 
-  const fallbackScenes: SatelliteScene[] = [
+  const fallbackScenes = useMemo<SatelliteScene[]>(() => {
+  return [
     { id: "S2A-20260507", cloud: 8, score: 96, date: "2026-05-07" },
     { id: "S2B-20260430", cloud: 14, score: 88, date: "2026-04-30" },
     { id: "LC09-20260424", cloud: 18, score: 81, date: "2026-04-24" },
-  ].filter((scene) => scene.cloud <= cloudCover).map((scene) => ({
-    ...scene,
-    collection: scene.id.startsWith("LC") ? "landsat-c2-l2" : "sentinel-2-l2a",
-    geometry: bboxGeometry([west, south, east, north]),
-    bbox: [west, south, east, north],
-  }));
+  ]
+    .filter((scene) => scene.cloud <= cloudCover)
+    .map((scene) => ({
+      ...scene,
+      collection: scene.id.startsWith("LC")
+        ? "landsat-c2-l2"
+        : "sentinel-2-l2a",
+      geometry: bboxGeometry([west, south, east, north]),
+      bbox: [west, south, east, north],
+    }));
+}, [cloudCover, west, south, east, north]);
 
-  const scenes = apiScenes.length ? apiScenes : fallbackScenes;
+const scenes = useMemo(
+  () => (apiScenes.length ? apiScenes : fallbackScenes),
+  [apiScenes, fallbackScenes]
+);
 
   type AnalysisType = SatelliteAnalysisType;
   const activeAnalysis = (falseColorEnabled ? "SWIR" : band) as AnalysisType;
@@ -713,6 +729,36 @@ export function SatelliteDataPanel({
         };
     }
   };
+
+  useEffect(() => {
+  if (!clipToShape || !polygonRing) {
+    setClippedThumbs({});
+    return;
+  }
+  let cancelled = false;
+  (async () => {
+    const next: Record<string, string> = {};
+    for (const scene of scenes) {
+      const src = scene.thumbnail ?? scene.previewUrl;
+      const bbox = scene.bbox ?? [west, south, east, north];
+      if (!src || !bbox) continue;
+      try {
+        const [w, s, e, n] = bbox;
+        const clipped = await clipImageToPolygon(src, [[s, w], [n, e]], polygonRing);
+        if (!cancelled) next[scene.id] = clipped;
+      } catch {
+        // leave unclipped on failure
+      }
+    }
+    if (!cancelled) setClippedThumbs(next);
+  })();
+  return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [scenes, clipToShape, polygonRing]);
+
+// useEffect(() => {
+//   console.log("effect fired");
+// }, [scenes]);
 
   const activeVisualization = getVisualization(activeAnalysis, source === "landsat" ? "landsat-c2-l2" : "sentinel-2-l2a");
   const legendConfig = SATELLITE_LEGENDS[activeAnalysis];
@@ -801,6 +847,8 @@ export function SatelliteDataPanel({
 
     return url.toString();
   };
+
+  
 
   const fetchScenes = async () => {
     setSceneStatus("loading");
@@ -939,10 +987,10 @@ export function SatelliteDataPanel({
   }, [activeAnalysis]);
 
   const handleOpenScene = (scene: SatelliteScene) => {
-    const url = makePlanetaryComputerPreviewUrl(scene, activeAnalysis);
-    if (!url) return;
-    window.open(url, "_blank", "noopener,noreferrer");
-  };
+  const url = clippedThumbs[scene.id] ?? scene.previewUrl ?? scene.thumbnail ?? scene.itemUrl;
+  if (!url) return;
+  window.open(url, "_blank", "noopener,noreferrer");
+};
 
   const handleDownloadScene = async (scene: SatelliteScene) => {
     const format = sceneFormats[scene.id] ?? "png";
@@ -1236,9 +1284,9 @@ export function SatelliteDataPanel({
         {scenes.length ? scenes.map((scene) => (
           <div key={scene.id} className="rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">
             <div className="flex items-center gap-3">
-              {scene.thumbnail ? (
+              {(clippedThumbs[scene.id] ?? scene.thumbnail) ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={scene.thumbnail} alt="" className="w-8 h-8 rounded-md border border-white/[0.08] object-cover bg-slate-900" />
+                <img src={clippedThumbs[scene.id] ?? scene.thumbnail} alt="" className="w-8 h-8 rounded-md border border-white/[0.08] object-cover bg-slate-900" />
               ) : (
                 <div className="w-8 h-8 rounded-md border border-white/[0.08] bg-gradient-to-br from-slate-700 via-emerald-800 to-cyan-700" />
               )}

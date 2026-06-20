@@ -16,7 +16,7 @@ const schema = z.object({
 
 type RegisterValues = z.infer<typeof schema>;
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://gis-back-chi.vercel.app";
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://webgiss.duckdns.org";
 
 // ─── Component ─────────────────────────────────────────────────────────────────
 export default function RegisterForm() {  // ← removed "async"
