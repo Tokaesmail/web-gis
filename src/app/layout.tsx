@@ -3,6 +3,7 @@ import { LangProvider } from "./_components/translations";
 import "./globals.css";
 import { SessionProvider } from "next-auth/react"
 import Providers from "./providers";
+import { SpeedInsights } from "@vercel/speed-insights/next"
 
 export const metadata: Metadata = {
   title: "GeoSense AI",
@@ -20,6 +21,7 @@ export default function RootLayout({
         <LangProvider>
           <Providers>
             {children}
+            <SpeedInsights />
           </Providers>
         </LangProvider>
       </body>

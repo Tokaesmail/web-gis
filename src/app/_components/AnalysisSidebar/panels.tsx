@@ -135,10 +135,10 @@ export const panels: PanelItem[] = [
       </svg>
     ),
   },
-   {                                                    // ← new block starts here
+  {                                                   
     id: "elevation",
-    labelEn: "Elevation",
-    labelAr: "الارتفاع",
+    labelEn: "Contours",
+    labelAr: "خطوط الكنتور",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M3 17l4-8 4 4 4-6 4 10" />

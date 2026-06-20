@@ -1,18 +1,24 @@
 "use client";
 
 // ─── ElevationContourPanel.tsx ──────────────────────────────────────────────────
-// Combines:
-//   • Open-Meteo weather (same pattern as WeatherLivePanel in AnalysisSidebar)
-//   • Open-Elevation / Open-Meteo elevation grid sampling (lib/elevation.ts)
-//   • Client-side marching-squares contour interpolation (lib/marchingSquares.ts)
+// Now hosts TWO contour modes, switched via tabs at the top:
+//   🗻 Elevation Contours (existing) — Open-Elevation/Open-Meteo elevation grid
+//      → marching-squares interpolation → lines colored/labeled by meters.
+//   🌡 Weather Contours (new)       — Open-Meteo current-temperature grid
+//      → the SAME marching-squares interpolation (lib/marchingSquares.ts is
+//        generic over any numeric grid) → isotherm lines colored by °C.
 //
-// The generated contour lines are emitted as a GeoJSON FeatureCollection via
-// onContoursGenerated, so the parent (MapClient/AnalysisSidebar) can add them
-// to the map the same way uploaded GeoJSON layers are added.
+// Both modes share: the live weather card, the AOI bounds box, and the
+// "Add to Map" action (which emits a GeoJSON FeatureCollection the same way
+// for either mode via onContoursGenerated).
 
 import React, { useState, useCallback, useMemo } from "react";
 import { buildElevationGrid, type ElevationGrid } from "../../../../lib/elevation";
 import { gridToContours } from "../../../../lib/marchingSquares";
+import { buildTemperatureGrid, type TemperatureGrid } from "../../../../lib/temperatureGrid";
+import { gridToTemperatureContours } from "../../../../lib/temperatureContours";
+
+type ContourMode = "elevation" | "weather";
 
 // ── helper: bbox from a GeoJSON feature, with sane fallback ────────────────────
 function getFeatureBounds(feature?: GeoJSON.Feature | null) {
@@ -53,9 +59,11 @@ const wmoIcon = (c: number) =>
 function GridPreview({
   grid,
   contours,
+  mode,
 }: {
-  grid: ElevationGrid;
+  grid: ElevationGrid | TemperatureGrid;
   contours: GeoJSON.FeatureCollection | null;
+  mode: ContourMode;
 }) {
   const W = 260;
   const H = 170;
@@ -65,10 +73,18 @@ function GridPreview({
   const colorFor = (v: number) => {
     if (!Number.isFinite(v)) return "rgba(255,255,255,0.03)";
     const t = (v - min) / span;
-    // low → high: deep blue, teal, green, yellow, brown
-    const stops: [number, number, number][] = [
-      [30, 64, 175], [34, 197, 94], [250, 204, 21], [217, 119, 6], [120, 53, 15],
-    ];
+    const stops: [number, number, number][] =
+      mode === "weather"
+        ? [
+            [29, 78, 216], // cold blue
+            [56, 189, 248], // sky
+            [250, 204, 21], // yellow
+            [249, 115, 22], // orange
+            [220, 38, 38], // hot red
+          ]
+        : [
+            [30, 64, 175], [34, 197, 94], [250, 204, 21], [217, 119, 6], [120, 53, 15],
+          ];
     const step = 1 / (stops.length - 1);
     const idx = Math.min(Math.floor(t / step), stops.length - 2);
     const local = (t - idx * step) / step;
@@ -124,14 +140,26 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
   const bounds = useMemo(() => getFeatureBounds(selectedFeature), [selectedFeature]);
   const center = useMemo(() => midOf(bounds), [bounds]);
 
+  // ── Mode switch ──────────────────────────────────────────────────────────
+  const [mode, setMode] = useState<ContourMode>("elevation");
+
+  // ── Elevation state ──────────────────────────────────────────────────────
   const [resolution, setResolution] = useState(18);
   const [interval, setIntervalM] = useState(25);
-
   const [grid, setGrid] = useState<ElevationGrid | null>(null);
   const [contours, setContours] = useState<GeoJSON.FeatureCollection | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // ── Weather (isotherm) state ─────────────────────────────────────────────
+  const [tempResolution, setTempResolution] = useState(8);
+  const [tempInterval, setTempInterval] = useState(2);
+  const [tempGrid, setTempGrid] = useState<TemperatureGrid | null>(null);
+  const [tempContours, setTempContours] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [tempLoading, setTempLoading] = useState(false);
+  const [tempError, setTempError] = useState<string | null>(null);
+
+  // ── Shared live weather card ─────────────────────────────────────────────
   const [weather, setWeather] = useState<any>(null);
   const [weatherLoading, setWeatherLoading] = useState(false);
 
@@ -150,6 +178,24 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
     }
   }, [bounds, resolution, interval]);
 
+  const runWeatherContours = useCallback(async () => {
+    setTempLoading(true);
+    setTempError(null);
+    try {
+      const g = await buildTemperatureGrid(bounds, tempResolution);
+      setTempGrid(g);
+      const c = gridToTemperatureContours(g, { interval: tempInterval });
+      setTempContours(c);
+      if (c.features.length === 0) {
+        setTempError("No isotherm crossings found in this AOI — try a smaller interval or a larger area.");
+      }
+    } catch (e: any) {
+      setTempError(e?.message ?? "Temperature lookup failed");
+    } finally {
+      setTempLoading(false);
+    }
+  }, [bounds, tempResolution, tempInterval]);
+
   const fetchWeather = useCallback(async () => {
     setWeatherLoading(true);
     try {
@@ -167,11 +213,17 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
     }
   }, [center.lat, center.lng]);
 
-  const handleAddToMap = useCallback(() => {
+  const handleAddElevationToMap = useCallback(() => {
     if (!contours) return;
     const fileName = `elevation-contours-${Date.now()}.geojson`;
     onContoursGenerated?.(contours, fileName);
   }, [contours, onContoursGenerated]);
+
+  const handleAddWeatherToMap = useCallback(() => {
+    if (!tempContours) return;
+    const fileName = `weather-contours-${Date.now()}.geojson`;
+    onContoursGenerated?.(tempContours, fileName);
+  }, [tempContours, onContoursGenerated]);
 
   // re-interpolate contours instantly when interval changes (no new fetch needed)
   const handleIntervalChange = (val: number) => {
@@ -179,18 +231,51 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
     if (grid) setContours(gridToContours(grid, { interval: val }));
   };
 
+  const handleTempIntervalChange = (val: number) => {
+    setTempInterval(val);
+    if (tempGrid) setTempContours(gridToTemperatureContours(tempGrid, { interval: val }));
+  };
+
   const cur = weather?.current;
   const daily = weather?.daily;
 
   return (
     <div className="space-y-4">
-      {/* ── Header ── */}
-      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3">
-        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Elevation & Contours</p>
-        <p className="text-xs text-slate-300">Open-Meteo weather · Open-Elevation terrain · client-side contour interpolation</p>
+      {/* ── Mode switch ── */}
+      <div className="flex items-center bg-white/[0.03] border border-white/[0.07] rounded-xl p-1 gap-1">
+        {([
+          { key: "elevation" as ContourMode, icon: "🗻", label: "Elevation Contours" },
+          { key: "weather" as ContourMode, icon: "🌡", label: "Weather Contours" },
+        ]).map((m) => (
+          <button
+            key={m.key}
+            type="button"
+            onClick={() => setMode(m.key)}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              mode === m.key
+                ? "bg-cyan-400 text-[#040d1a] shadow-[0_0_12px_rgba(0,212,255,0.3)]"
+                : "text-slate-500 hover:text-slate-300"
+            }`}
+          >
+            <span>{m.icon}</span>
+            {m.label}
+          </button>
+        ))}
       </div>
 
-      {/* ── Weather ── */}
+      {/* ── Header ── */}
+      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">
+          {mode === "elevation" ? "Elevation & Contours" : "Weather & Isotherms"}
+        </p>
+        <p className="text-xs text-slate-300">
+          {mode === "elevation"
+            ? "Open-Meteo weather · Open-Elevation terrain · client-side contour interpolation"
+            : "Open-Meteo current temperature · client-side isotherm interpolation"}
+        </p>
+      </div>
+
+      {/* ── Weather (shared current conditions card) ── */}
       <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3">
         <div className="flex items-center justify-between mb-2">
           <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Weather · {center.lat.toFixed(3)}, {center.lng.toFixed(3)}</p>
@@ -227,113 +312,247 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
         )}
       </div>
 
-      {/* ── Elevation controls ── */}
-      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 space-y-3">
-        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Sample Grid</p>
+      {/* ════════════════════════════════════════════════════════════════ */}
+      {/* ELEVATION MODE */}
+      {/* ════════════════════════════════════════════════════════════════ */}
+      {mode === "elevation" && (
+        <>
+          <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 space-y-3">
+            <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Sample Grid</p>
 
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[0.65rem] text-slate-400">Grid resolution</span>
-            <span className="text-[0.65rem] text-cyan-300 font-mono">{resolution}×{resolution}</span>
-          </div>
-          <input
-            type="range" min={6} max={32} value={resolution}
-            onChange={(e) => setResolution(Number(e.target.value))}
-            className="w-full accent-cyan-400"
-          />
-        </div>
-
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[0.65rem] text-slate-400">Contour interval</span>
-            <span className="text-[0.65rem] text-cyan-300 font-mono">{interval} m</span>
-          </div>
-          <input
-            type="range" min={5} max={200} step={5} value={interval}
-            onChange={(e) => handleIntervalChange(Number(e.target.value))}
-            className="w-full accent-cyan-400"
-          />
-        </div>
-
-        <p className="text-[0.58rem] text-slate-600">
-          BBOX {bounds.west.toFixed(4)}, {bounds.south.toFixed(4)}, {bounds.east.toFixed(4)}, {bounds.north.toFixed(4)}
-        </p>
-
-        <button
-          onClick={runElevation}
-          disabled={loading}
-          className="w-full h-9 rounded-lg bg-cyan-400 hover:bg-cyan-300 disabled:opacity-60 disabled:cursor-wait text-[#03101d] text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2"
-        >
-          {loading ? (
-            <>
-              <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-              </svg>
-              Fetching elevation…
-            </>
-          ) : (
-            <>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M3 17l4-8 4 4 4-6 4 10" />
-              </svg>
-              Build Elevation Grid
-            </>
-          )}
-        </button>
-
-        {error && (
-          <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-2.5 py-2 text-[0.62rem] text-red-300">
-            {error}
-          </div>
-        )}
-      </div>
-
-      {/* ── Result ── */}
-      {grid && (
-        <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Preview</p>
-            <span className={`text-[0.55rem] px-1.5 py-0.5 rounded-full border ${
-              grid.source === "open-meteo" ? "bg-cyan-400/10 text-cyan-300 border-cyan-400/20" :
-              grid.source === "open-elevation" ? "bg-amber-400/10 text-amber-300 border-amber-400/20" :
-              "bg-violet-400/10 text-violet-300 border-violet-400/20"
-            }`}>
-              {grid.source === "open-meteo" ? "Open-Meteo" : grid.source === "open-elevation" ? "Open-Elevation (fallback)" : "Mixed sources"}
-            </span>
-          </div>
-
-          <GridPreview grid={grid} contours={contours} />
-
-          <div className="grid grid-cols-3 gap-1.5">
-            {[
-              { l: "Min", v: `${grid.min.toFixed(0)} m`, c: "text-blue-400" },
-              { l: "Max", v: `${grid.max.toFixed(0)} m`, c: "text-amber-400" },
-              { l: "Lines", v: String(contours?.features.length ?? 0), c: "text-cyan-400" },
-            ].map((s) => (
-              <div key={s.l} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2 text-center">
-                <p className={`text-xs font-bold ${s.c}`}>{s.v}</p>
-                <p className="text-[0.55rem] text-slate-500 mt-0.5">{s.l}</p>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[0.65rem] text-slate-400">Grid resolution</span>
+                <span className="text-[0.65rem] text-cyan-300 font-mono">{resolution}×{resolution}</span>
               </div>
-            ))}
+              <input
+                type="range" min={6} max={32} value={resolution}
+                onChange={(e) => setResolution(Number(e.target.value))}
+                className="w-full accent-cyan-400"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[0.65rem] text-slate-400">Contour interval</span>
+                <span className="text-[0.65rem] text-cyan-300 font-mono">{interval} m</span>
+              </div>
+              <input
+                type="range" min={5} max={200} step={5} value={interval}
+                onChange={(e) => handleIntervalChange(Number(e.target.value))}
+                className="w-full accent-cyan-400"
+              />
+            </div>
+
+            <p className="text-[0.58rem] text-slate-600">
+              BBOX {bounds.west.toFixed(4)}, {bounds.south.toFixed(4)}, {bounds.east.toFixed(4)}, {bounds.north.toFixed(4)}
+            </p>
+
+            <button
+              onClick={runElevation}
+              disabled={loading}
+              className="w-full h-9 rounded-lg bg-cyan-400 hover:bg-cyan-300 disabled:opacity-60 disabled:cursor-wait text-[#03101d] text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2"
+            >
+              {loading ? (
+                <>
+                  <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                  </svg>
+                  Fetching elevation…
+                </>
+              ) : (
+                <>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M3 17l4-8 4 4 4-6 4 10" />
+                  </svg>
+                  Build Elevation Grid
+                </>
+              )}
+            </button>
+
+            {error && (
+              <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-2.5 py-2 text-[0.62rem] text-red-300">
+                {error}
+              </div>
+            )}
           </div>
 
-          <button
-            onClick={handleAddToMap}
-            disabled={!contours?.features.length}
-            className="w-full h-9 rounded-lg bg-emerald-400/10 hover:bg-emerald-400/20 border border-emerald-400/25 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-300 text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-2"
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            Add Contours to Map
-          </button>
-        </div>
+          {grid && (
+            <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Preview</p>
+                <span className={`text-[0.55rem] px-1.5 py-0.5 rounded-full border ${
+                  grid.source === "open-meteo" ? "bg-cyan-400/10 text-cyan-300 border-cyan-400/20" :
+                  grid.source === "open-elevation" ? "bg-amber-400/10 text-amber-300 border-amber-400/20" :
+                  "bg-violet-400/10 text-violet-300 border-violet-400/20"
+                }`}>
+                  {grid.source === "open-meteo" ? "Open-Meteo" : grid.source === "open-elevation" ? "Open-Elevation (fallback)" : "Mixed sources"}
+                </span>
+              </div>
+
+              <GridPreview grid={grid} contours={contours} mode="elevation" />
+
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { l: "Min", v: `${grid.min.toFixed(0)} m`, c: "text-blue-400" },
+                  { l: "Max", v: `${grid.max.toFixed(0)} m`, c: "text-amber-400" },
+                  { l: "Lines", v: String(contours?.features.length ?? 0), c: "text-cyan-400" },
+                ].map((s) => (
+                  <div key={s.l} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2 text-center">
+                    <p className={`text-xs font-bold ${s.c}`}>{s.v}</p>
+                    <p className="text-[0.55rem] text-slate-500 mt-0.5">{s.l}</p>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={handleAddElevationToMap}
+                disabled={!contours?.features.length}
+                className="w-full h-9 rounded-lg bg-emerald-400/10 hover:bg-emerald-400/20 border border-emerald-400/25 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-300 text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-2"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                Add Contours to Map
+              </button>
+            </div>
+          )}
+
+          <p className="text-[0.58rem] text-slate-600 text-center leading-relaxed">
+            Elevation comes from Open-Meteo (Copernicus DEM, 90m) with automatic fallback to Open-Elevation (SRTM).
+            Contours are interpolated locally using marching squares — no server round-trip.
+          </p>
+        </>
       )}
 
-      <p className="text-[0.58rem] text-slate-600 text-center leading-relaxed">
-        Elevation comes from Open-Meteo (Copernicus DEM, 90m) with automatic fallback to Open-Elevation (SRTM).
-        Contours are interpolated locally using marching squares — no server round-trip.
-      </p>
+      {/* ════════════════════════════════════════════════════════════════ */}
+      {/* WEATHER MODE (Isotherms) */}
+      {/* ════════════════════════════════════════════════════════════════ */}
+      {mode === "weather" && (
+        <>
+          <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 space-y-3">
+            <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Temperature Sample Grid</p>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[0.65rem] text-slate-400">Grid resolution</span>
+                <span className="text-[0.65rem] text-cyan-300 font-mono">{tempResolution}×{tempResolution}</span>
+              </div>
+              <input
+                type="range" min={3} max={14} value={tempResolution}
+                onChange={(e) => setTempResolution(Number(e.target.value))}
+                className="w-full accent-cyan-400"
+              />
+              <p className="text-[0.55rem] text-slate-600">
+                Each cell is one live API call — keep this modest to stay fast.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[0.65rem] text-slate-400">Isotherm interval</span>
+                <span className="text-[0.65rem] text-cyan-300 font-mono">{tempInterval} °C</span>
+              </div>
+              <input
+                type="range" min={0.5} max={5} step={0.5} value={tempInterval}
+                onChange={(e) => handleTempIntervalChange(Number(e.target.value))}
+                className="w-full accent-cyan-400"
+              />
+            </div>
+
+            <p className="text-[0.58rem] text-slate-600">
+              BBOX {bounds.west.toFixed(4)}, {bounds.south.toFixed(4)}, {bounds.east.toFixed(4)}, {bounds.north.toFixed(4)}
+            </p>
+
+            <button
+              onClick={runWeatherContours}
+              disabled={tempLoading}
+              className="w-full h-9 rounded-lg bg-cyan-400 hover:bg-cyan-300 disabled:opacity-60 disabled:cursor-wait text-[#03101d] text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2"
+            >
+              {tempLoading ? (
+                <>
+                  <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                  </svg>
+                  Sampling temperature…
+                </>
+              ) : (
+                <>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
+                  </svg>
+                  Build Weather Contours
+                </>
+              )}
+            </button>
+
+            {tempError && (
+              <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-2.5 py-2 text-[0.62rem] text-amber-300">
+                {tempError}
+              </div>
+            )}
+          </div>
+
+          {tempGrid && (
+            <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Preview</p>
+                <span className="text-[0.55rem] px-1.5 py-0.5 rounded-full border bg-cyan-400/10 text-cyan-300 border-cyan-400/20">
+                  Open-Meteo · live
+                </span>
+              </div>
+
+              <GridPreview grid={tempGrid} contours={tempContours} mode="weather" />
+
+              {/* Temperature color legend */}
+              <div>
+                <div className="flex justify-between text-[0.6rem] text-slate-500 mb-1">
+                  <span>{tempGrid.min.toFixed(1)}°C</span>
+                  <span>Isotherm Scale</span>
+                  <span>{tempGrid.max.toFixed(1)}°C</span>
+                </div>
+                <div className="h-2 rounded-full" style={{ background: "linear-gradient(to right,#1d4ed8,#38bdf8,#facc15,#f97316,#dc2626)" }} />
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { l: "Min", v: `${tempGrid.min.toFixed(1)}°C`, c: "text-blue-400" },
+                  { l: "Max", v: `${tempGrid.max.toFixed(1)}°C`, c: "text-orange-400" },
+                  { l: "Lines", v: String(tempContours?.features.length ?? 0), c: "text-cyan-400" },
+                ].map((s) => (
+                  <div key={s.l} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2 text-center">
+                    <p className={`text-xs font-bold ${s.c}`}>{s.v}</p>
+                    <p className="text-[0.55rem] text-slate-500 mt-0.5">{s.l}</p>
+                  </div>
+                ))}
+              </div>
+
+              {tempGrid.sampledAt && (
+                <p className="text-[0.55rem] text-slate-600 text-center">
+                  Sampled at {new Date(tempGrid.sampledAt).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </p>
+              )}
+
+              <button
+                onClick={handleAddWeatherToMap}
+                disabled={!tempContours?.features.length}
+                className="w-full h-9 rounded-lg bg-emerald-400/10 hover:bg-emerald-400/20 border border-emerald-400/25 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-300 text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-2"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                Add Isotherms to Map
+              </button>
+            </div>
+          )}
+
+          <p className="text-[0.58rem] text-slate-600 text-center leading-relaxed">
+            Temperature comes live from Open-Meteo's current-conditions endpoint, sampled per grid cell.
+            Isotherms (lines of constant temperature) are interpolated locally using the same marching-squares
+            technique as elevation contours.
+          </p>
+        </>
+      )}
     </div>
   );
 }
