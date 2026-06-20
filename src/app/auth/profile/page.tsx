@@ -5,7 +5,7 @@ import { LogoutButton, LogoutAllButton } from "./_logout-buttons";
 
 export default async function ProfilePage() {
   const user = await getCurrentUser();
-  if (!user) redirect("/backend/auth/login");
+  if (!user) redirect("/auth/login");
 
   const initials = (user.username ?? user.email ?? "?")
     .slice(0, 2)
@@ -67,7 +67,7 @@ export default async function ProfilePage() {
         <p className="text-[0.65rem] text-slate-600 uppercase tracking-wider px-1">Account</p>
         {[
           {
-            href: "/backend/auth/change-password",
+            href: "/auth/change-password",
             label: "Change Password",
             icon: (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -78,7 +78,7 @@ export default async function ProfilePage() {
             color: "text-cyan-400",
           },
           {
-            href: "/backend/auth/sessions",
+            href: "/auth/sessions",
             label: "Active Sessions",
             icon: (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

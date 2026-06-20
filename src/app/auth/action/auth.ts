@@ -4,7 +4,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "../../../authoptions";
 import { redirect } from "next/navigation";
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://gis-back-chi.vercel.app";
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://webgiss.duckdns.org";
 
 // ─── Helper ────────────────────────────────────────────────────────────────────
 async function getAccessToken(): Promise<string | null> {
@@ -48,7 +48,7 @@ export async function logoutAction() {
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => {});
   }
-  redirect("/backend/auth/login");
+  redirect("/auth/login");
 }
 
 // ─── Logout All ────────────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ export async function logoutAllAction() {
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => {});
   }
-  redirect("/backend/auth/login");
+  redirect("/auth/login");
 }
 
 // ─── Change Password ───────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ export async function registerAction(_: unknown, formData: FormData) {
     return { error: data.message ?? "Registration failed" };
   }
 
-  redirect("/backend/auth/login?registered=1");
+  redirect("/auth/login?registered=1");
 }
 
 // ─── Refresh Token ─────────────────────────────────────────────────────────────

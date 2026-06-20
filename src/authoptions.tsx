@@ -1,7 +1,7 @@
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://gis-back-chi.vercel.app";
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://webgiss.duckdns.org";
 
 // ── Re-login to get a fresh access token ──────────────────────────────────────
 async function reLoginForToken(token: any) {
@@ -44,8 +44,8 @@ export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET,
 
   pages: {
-    signIn: "/backend/auth/login",
-    error: "/backend/auth/login",
+    signIn: "/auth/login",
+    error: "/auth/login",
   },
 
   session: {
