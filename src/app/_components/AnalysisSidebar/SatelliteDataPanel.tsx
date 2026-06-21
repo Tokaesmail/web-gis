@@ -941,42 +941,55 @@ const scenes = useMemo(
   };
 
   const handlePreviewScene = async (scene: SatelliteScene) => {
-    const analysis = activeAnalysis;
-    const previewUrl = makePlanetaryComputerPreviewUrl(scene, analysis);
-    const sceneBounds = stacBBoxToBounds(scene.bbox, bounds);
-    const sceneCoords = boundsCenter(sceneBounds);
-    const visualization = getVisualization(analysis, scene.collection);
-    const overviewUrl = scene.previewUrl ?? scene.thumbnail ?? makePlanetaryComputerPreviewUrl(scene, "RGB");
+  const analysis = activeAnalysis;
+  const rawPreviewUrl = makePlanetaryComputerPreviewUrl(scene, analysis);
+  const sceneBounds = stacBBoxToBounds(scene.bbox, bounds);
+  const sceneCoords = boundsCenter(sceneBounds);
+  const visualization = getVisualization(analysis, scene.collection);
+  const overviewUrl = scene.previewUrl ?? scene.thumbnail ?? makePlanetaryComputerPreviewUrl(scene, "RGB");
 
-    setPreviewingSceneId(scene.id);
-    setSceneError(null);
-    if (previewUrl) setScenePreviewUrls((prev) => ({ ...prev, [scene.id]: previewUrl }));
-    setPreviewingSceneId(null);
+  setPreviewingSceneId(scene.id);
+  setSceneError(null);
 
-    setActivePreviewSceneId(scene.id);
-    onPreview?.({
-      source,
-      satKey,
+  // الكليب هنا شغال على البكسلات بس (canvas mask) — مش مرتبط بنوع
+  // الـ band/expression، فهو بيشتغل تلقائيًا مع أي تحليل من الخمسة
+  // (RGB / NDVI / NDWI / NDMI / SWIR) من غير ما نكتب كود مخصوص لكل نوع.
+  let previewUrl = rawPreviewUrl;
+  if (clipToShape && polygonRing && rawPreviewUrl) {
+    try {
+      previewUrl = await clipImageToPolygon(rawPreviewUrl, sceneBounds, polygonRing);
+    } catch {
+      previewUrl = rawPreviewUrl; // لو الكليب فشل، يرجع للمستطيل العادي
+    }
+  }
+
+  if (previewUrl) setScenePreviewUrls((prev) => ({ ...prev, [scene.id]: previewUrl }));
+  setPreviewingSceneId(null);
+
+  setActivePreviewSceneId(scene.id);
+  onPreview?.({
+    source,
+    satKey,
+    band: analysis,
+    dateFrom,
+    dateTo,
+    cloudCover,
+    opacity: opacity / 100,
+    scenePreview: {
+      name: `${scene.id}_overview`,
       band: analysis,
-      dateFrom,
-      dateTo,
-      cloudCover,
-      opacity: opacity / 100,
-      scenePreview: {
-        name: `${scene.id}_overview`,
-        band: analysis,
-        expression: visualization.expression,
-        assets: visualization.assets,
-        assetUrls: getSceneAssetUrls(scene, analysis),
-        bounds: sceneBounds,
-        coords: sceneCoords,
-        previewUrl,
-        overviewUrl,
-        geometry: scene.geometry ?? null,
-      },
-    });
-    setPreviewReady(true);
-  };
+      expression: visualization.expression,
+      assets: visualization.assets,
+      assetUrls: getSceneAssetUrls(scene, analysis),
+      bounds: sceneBounds,
+      coords: sceneCoords,
+      previewUrl,
+      overviewUrl,
+      geometry: scene.geometry ?? null,
+    },
+  });
+  setPreviewReady(true);
+};
 
   useEffect(() => {
     if (!activePreviewSceneId) return;

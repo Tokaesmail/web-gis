@@ -49,24 +49,24 @@ export const panels: PanelItem[] = [
     ),
     badge: "SAT",
   },
-   {
-    id: "raster",
-    labelEn: "Raster Calculator",
-    labelAr: "Raster Calculator",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="5" y="3" width="14" height="18" rx="2" />
-        <path d="M8 7h8" />
-        <path d="M8 11h2M12 11h2M16 11h.01" />
-        <path d="M8 15h2M12 15h2M16 15h.01" />
-        <path d="M8 18h8" />
-      </svg>
-    ),
-    badge: "CALC",
-  },
+  //  {
+  //   id: "raster",
+  //   labelEn: "Raster Calculator",
+  //   labelAr: "Raster Calculator",
+  //   icon: (
+  //     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+  //       <rect x="5" y="3" width="14" height="18" rx="2" />
+  //       <path d="M8 7h8" />
+  //       <path d="M8 11h2M12 11h2M16 11h.01" />
+  //       <path d="M8 15h2M12 15h2M16 15h.01" />
+  //       <path d="M8 18h8" />
+  //     </svg>
+  //   ),
+  //   badge: "CALC",
+  // },
   {
   id: "planetary-raster",
-  labelEn: "PC Raster",
+  labelEn: "Raster Calculator",
   labelAr: "حاسبة PC",
   icon: (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
