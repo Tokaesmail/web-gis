@@ -345,6 +345,80 @@ function SceneSlot({
   );
 }
 
+// Satellite-style draggable swipe comparison: left = Before, right = After.
+function BeforeAfterSwipe({ beforeUrl, afterUrl }: { beforeUrl: string; afterUrl: string }) {
+  const [pos, setPos] = useState(50);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+
+  const updateFromClientX = useCallback((clientX: number) => {
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0) return;
+    const pct = ((clientX - rect.left) / rect.width) * 100;
+    setPos(Math.max(0, Math.min(100, pct)));
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (!draggingRef.current) return;
+      updateFromClientX(e.clientX);
+    };
+    const onUp = () => {
+      draggingRef.current = false;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [updateFromClientX]);
+
+  return (
+    <div className="space-y-2">
+      <p className="text-[0.58rem] uppercase tracking-wider text-slate-500">Before / After comparison</p>
+      <div
+        ref={containerRef}
+        onPointerDown={(e) => {
+          draggingRef.current = true;
+          updateFromClientX(e.clientX);
+        }}
+        className="relative w-full aspect-square select-none cursor-ew-resize rounded-md overflow-hidden border border-white/[0.07] bg-slate-950"
+      >
+        {/* Base layer = After (revealed on the right) */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={afterUrl} alt="After" draggable={false} className="absolute inset-0 w-full h-full object-cover" />
+        {/* Overlay = Before, clipped to the left portion */}
+        <div className="absolute inset-0 overflow-hidden" style={{ clipPath: `inset(0 ${100 - pos}% 0 0)` }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={beforeUrl} alt="Before" draggable={false} className="absolute inset-0 w-full h-full object-cover" />
+        </div>
+        {/* Divider + handle */}
+        <div
+          className="absolute top-0 bottom-0 w-0.5 -ml-px bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]"
+          style={{ left: `${pos}%` }}
+        >
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-full border border-white/40 bg-cyan-400 text-[#03101d] shadow-[0_0_8px_rgba(34,211,238,0.7)]">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6" />
+              <polyline points="9 18 15 12 9 6" transform="translate(6,0)" />
+            </svg>
+          </div>
+        </div>
+        <span className="absolute top-1.5 left-1.5 text-[0.5rem] font-bold uppercase bg-black/60 text-sky-300 px-1.5 py-0.5 rounded pointer-events-none">Before</span>
+        <span className="absolute top-1.5 right-1.5 text-[0.5rem] font-bold uppercase bg-black/60 text-orange-300 px-1.5 py-0.5 rounded pointer-events-none">After</span>
+      </div>
+      <input
+        type="range" min={0} max={100} value={pos}
+        onChange={(e) => setPos(Number(e.target.value))}
+        className="w-full accent-cyan-400"
+      />
+    </div>
+  );
+}
+
 interface ChangeDetectionPanelProps {
   selectedFeature?: GeoJSON.Feature | null;
   onPreview?: (config: ChangeDetectionPreviewConfig) => void;
@@ -384,7 +458,6 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
   const [computeError, setComputeError] = useState<string | null>(null);
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
   const [diffDataUrl, setDiffDataUrl] = useState<string | null>(null);
-  const [compareSlider, setCompareSlider] = useState(50);
 
   const resultCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -615,6 +688,16 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
         onSearch={() => searchScenes(afterFrom, afterTo, cloudCoverAfter, setAfterScenes, setAfterStatus, setAfterError)}
       />
 
+      {/* Side-by-side swipe comparison of the two selected scenes */}
+      {beforePreviewUrl && afterPreviewUrl && (
+        <div className="rounded-lg border border-white/[0.07] bg-[#020817]/70 p-3 space-y-2">
+          <BeforeAfterSwipe beforeUrl={beforePreviewUrl} afterUrl={afterPreviewUrl} />
+          <p className="text-[0.55rem] text-slate-600 leading-relaxed">
+            Drag the divider (or use the slider) to wipe between the two dates. Left = Before, Right = After.
+          </p>
+        </div>
+      )}
+
       {/* Sensitivity */}
       <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3 space-y-2">
         <div className="flex items-center justify-between">
@@ -690,34 +773,6 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
             </div>
           )}
 
-          {/* Before / After comparison slider */}
-          {beforePreviewUrl && afterPreviewUrl && (
-            <div className="space-y-2">
-              <p className="text-[0.58rem] uppercase tracking-wider text-slate-500">Before / After comparison</p>
-              <div className="relative w-full aspect-square rounded-md overflow-hidden border border-white/[0.07] bg-slate-950">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={beforePreviewUrl} alt="Before" className="absolute inset-0 w-full h-full object-cover" />
-                <div
-                  className="absolute inset-0 overflow-hidden"
-                  style={{ clipPath: `inset(0 ${100 - compareSlider}% 0 0)` }}
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={afterPreviewUrl} alt="After" className="w-full h-full object-cover" style={{ width: `${10000 / compareSlider}%`, maxWidth: "none" }} />
-                </div>
-                <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]"
-                  style={{ left: `${compareSlider}%` }}
-                />
-                <span className="absolute top-1.5 left-1.5 text-[0.5rem] font-bold uppercase bg-black/60 text-sky-300 px-1.5 py-0.5 rounded">Before</span>
-                <span className="absolute top-1.5 right-1.5 text-[0.5rem] font-bold uppercase bg-black/60 text-orange-300 px-1.5 py-0.5 rounded">After</span>
-              </div>
-              <input
-                type="range" min={0} max={100} value={compareSlider}
-                onChange={(e) => setCompareSlider(Number(e.target.value))}
-                className="w-full accent-cyan-400"
-              />
-            </div>
-          )}
         </div>
       )}
 
