@@ -6,6 +6,7 @@
 // ② Polygon بكليك واحد للإنهاء — زر "Close Shape" أو كليك على النقطة الأولى
 // ③ Double-click zoom متوقف تماماً
 // ④ الألوان للعرض بس — مش بتتبعت للباك
+// ⑤ AOI Editor: تعديل الرؤوس (move vertices) + Validation (self-intersection + max size)
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -15,6 +16,8 @@ import {
   DrawTool, SAT_LAYERS, INDEX_TILES,
   SatKey, IdxKey, LatLngPoint, CaptureMetadata, CaptureResult, CaptureTarget,
 } from "./mapTypes_proxy";
+import { AOIEditor } from "./AOIEditor";
+import { validateAOI, MAX_AOI_SIZE_HA } from "./aoiValidation";
 
 type ExtrusionConfig = {
   enabled: boolean;
@@ -114,41 +117,6 @@ function makePolygonFeature(name: string, points: [number, number][], area: numb
   };
 }
 
-const EARTH_RADIUS_M = 6378137;
-const toRad = (deg: number) => (deg * Math.PI) / 180;
-type DistanceMap = { distance: (from: [number, number], to: [number, number]) => number };
-type UnitLabels = { km: string };
-
-function calculateGeodesicAreaHa(points: [number, number][]): number {
-  if (points.length < 3) return 0;
-
-  let area = 0;
-  for (let i = 0; i < points.length; i++) {
-    const [lat1, lng1] = points[i];
-    const [lat2, lng2] = points[(i + 1) % points.length];
-    area += toRad(lng2 - lng1) * (2 + Math.sin(toRad(lat1)) + Math.sin(toRad(lat2)));
-  }
-
-  return Number(Math.abs((area * EARTH_RADIUS_M * EARTH_RADIUS_M) / 2 / 10000).toFixed(2));
-}
-
-function calculatePolylineDistanceM(map: DistanceMap, points: [number, number][]): number {
-  let distance = 0;
-  for (let i = 1; i < points.length; i++) {
-    distance += map.distance(points[i - 1], points[i]);
-  }
-  return distance;
-}
-
-function formatDistance(distanceM: number, t: UnitLabels): string {
-  if (distanceM >= 1000) return `${(distanceM / 1000).toFixed(3)} ${t.km}`;
-  return `${distanceM.toFixed(1)} m`;
-}
-
-function isEscapeEvent(e: KeyboardEvent): boolean {
-  return e.key === "Escape" || e.key === "Esc" || e.code === "Escape" || e.keyCode === 27;
-}
-
 export default function LeafletMap({
   activeTool, captureTarget, onAreaSelected, onCoordsUpdate,
   flyToRef, clearRef, onSatChange, onIdxChange, onOpacityChangeRegister, onCapture,
@@ -196,6 +164,8 @@ export default function LeafletMap({
     hintEl?: HTMLDivElement | null;
   } | null>(null);
   const overlaysUiRef = useRef<HTMLDivElement | null>(null);
+  // ── AOI Editor ref (move vertices / resize / validate) ──────────────────────
+  const aoiEditorRef = useRef<AOIEditor | null>(null);
 
   const {
     drawPolygon, drawRect, drawCircle, drawMeasure, drawMarker,
@@ -235,12 +205,6 @@ export default function LeafletMap({
     }
     drawPointsRef.current = [];
     if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
-  };
-
-  const showFinishButton = (label: string) => {
-    if (!closeBtnRef.current) return;
-    closeBtnRef.current.textContent = label;
-    closeBtnRef.current.style.display = "block";
   };
 
   const persistImageOverlays = () => {
@@ -409,31 +373,25 @@ export default function LeafletMap({
   // Escape cancels only the in-progress interaction.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (!isEscapeEvent(e)) return;
+      if (e.key !== "Escape") return;
       e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
+
+      if (aoiEditorRef.current?.isActive) {
+        aoiEditorRef.current.stopEditing(false);
+        return;
+      }
 
       if (placingImageRef.current) {
         stopImagePlacement();
         return;
       }
 
-      const tool = activeToolRef.current;
-      if (drawPointsRef.current.length > 0 || tool === "measure" || tool === "polygon") {
+      if (drawPointsRef.current.length > 0) {
         cancelCurrentDrawing();
       }
     };
-    document.addEventListener("keydown", handler, true);
-    document.addEventListener("keyup", handler, true);
-    window.addEventListener("keydown", handler, true);
-    window.addEventListener("keyup", handler, true);
-    return () => {
-      document.removeEventListener("keydown", handler, true);
-      document.removeEventListener("keyup", handler, true);
-      window.removeEventListener("keydown", handler, true);
-      window.removeEventListener("keyup", handler, true);
-    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, []);
 
   const drawExtrusions = () => {
@@ -800,6 +758,25 @@ export default function LeafletMap({
     canvas: HTMLCanvasElement, map: any, L: any,
     coordinates: LatLngPoint[], metadata: CaptureMetadata
   ) => {
+    // ── AOI validation: no self-intersection + within max size ────────────────
+    // Only meaningful for polygon-like shapes with >= 3 points; markers/measure
+    // lines (areaSizeHa === 0, < 3 points) skip this check.
+    if (coordinates.length >= 3) {
+      const feature = makePolygonFeature(
+        metadata.areaName,
+        coordinates.map((p) => [p.lat, p.lng]),
+        metadata.areaSizeHa
+      );
+      const validation = validateAOI(feature);
+      if (!validation.valid) {
+        toast.error(validation.errors[0] ?? (isRTL ? "شكل المنطقة غير صالح" : "Invalid AOI geometry"));
+        return;
+      }
+      if (validation.warnings.length) {
+        toast.warning(validation.warnings[0]);
+      }
+    }
+
     try {
       const captureResult = await capture(canvas, map, L, coordinates, metadata, captureTarget);
       const { smallBlob, largeBlob, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
@@ -816,6 +793,17 @@ export default function LeafletMap({
     }
   };
 
+  // ── Start editing an existing finished AOI layer (move vertices / resize) ──
+  const startAOIEdit = (layer: any, kind: "polygon" | "rectangle") => {
+    const map = mapObjRef.current;
+    if (!map || !aoiEditorRef.current) return;
+
+    map.closePopup();
+    drawLayersRef.current = drawLayersRef.current.filter((l) => l !== layer);
+
+    aoiEditorRef.current.startEditing(layer, kind);
+  };
+
   const finishPolygon = async (map: any, L: any) => {
     const pts = drawPointsRef.current;
     if (pts.length < 3) return;
@@ -825,8 +813,27 @@ export default function LeafletMap({
     const c    = TOOL_COLORS.polygon;
     const poly = L.polygon(pts, { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
     drawLayersRef.current.push(poly);
-    const area = calculateGeodesicAreaHa(pts);
-    poly.bindPopup(`🔵 ${t.polygon} · ≈ ${area} ${t.ha}`).openPopup();
+    const area = parseFloat((Math.abs(pts.reduce((acc: number, p: [number, number], i: number) => {
+      const j = (i + 1) % pts.length;
+      return acc + p[1] * pts[j][0] - pts[j][1] * p[0];
+    }, 0)) / 2 * 12345).toFixed(1));
+
+    // ── Popup with "Edit AOI" button ───────────────────────────────────────
+    poly.bindPopup(() => {
+      const div = document.createElement("div");
+      const label = document.createElement("div");
+      label.innerHTML = `🔵 ${t.polygon} · ≈ ${area} ${t.ha}`;
+      div.appendChild(label);
+
+      const editBtn = document.createElement("button");
+      editBtn.textContent = isRTL ? "✏️ تعديل المنطقة" : "✏️ Edit AOI";
+      editBtn.style.cssText = "margin-top:6px;background:#00d4ff22;border:1px solid #00d4ff55;color:#00d4ff;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
+      editBtn.onclick = () => startAOIEdit(poly, "polygon");
+      div.appendChild(editBtn);
+
+      return div;
+    }).openPopup();
+
     const feature = makePolygonFeature("Drawn Polygon", pts, area);
     onAreaSelected("Drawn Polygon", area, feature);
     onFeatureClick?.(feature);
@@ -857,8 +864,9 @@ export default function LeafletMap({
 
     const line = L.polyline(pts, { color: TOOL_COLORS.measure.stroke, weight: 2.5 }).addTo(map);
     drawLayersRef.current.push(line);
-    const dist = calculatePolylineDistanceM(map, pts);
-    line.bindPopup(`📏 ${formatDistance(dist, t)}`).openPopup();
+    let dist = 0;
+    for (let i = 1; i < pts.length; i++) dist += map.distance(pts[i - 1], pts[i]);
+    line.bindPopup(`📏 ${(dist / 1000).toFixed(3)} ${t.km}`).openPopup();
 
     const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
     lastCoordsRef.current = coordinates;
@@ -909,6 +917,50 @@ export default function LeafletMap({
       map.createPane("imagePane");
       Object.assign(map.getPane("imagePane")!.style, { zIndex: "350" });
       imagePaneReadyRef.current = true;
+
+      // ── AOI Editor instance (move vertices / resize / validate) ────────────
+      aoiEditorRef.current = new AOIEditor(map, L, {
+        onChange: () => {
+          // live drag feedback is handled inside AOIEditor's own status pill
+        },
+        onSave: (points, isValid, areaHa) => {
+          if (!isValid) return;
+          const c = TOOL_COLORS.polygon;
+          const poly = L.polygon(points, { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
+          drawLayersRef.current.push(poly);
+
+          const roundedArea = parseFloat(areaHa.toFixed(1));
+          poly.bindPopup(() => {
+            const div = document.createElement("div");
+            const label = document.createElement("div");
+            label.innerHTML = `🔵 ${isRTL ? "منطقة مُعدَّلة" : "Edited AOI"} · ≈ ${roundedArea} ${t.ha}`;
+            div.appendChild(label);
+            const editBtn = document.createElement("button");
+            editBtn.textContent = isRTL ? "✏️ تعديل المنطقة" : "✏️ Edit AOI";
+            editBtn.style.cssText = "margin-top:6px;background:#00d4ff22;border:1px solid #00d4ff55;color:#00d4ff;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
+            editBtn.onclick = () => startAOIEdit(poly, "polygon");
+            div.appendChild(editBtn);
+            return div;
+          }).openPopup();
+
+          const feature = makePolygonFeature("Edited AOI", points, roundedArea);
+          onAreaSelected("Edited AOI", roundedArea, feature);
+          onFeatureClick?.(feature);
+
+          lastCoordsRef.current = points.map(([lat, lng]) => ({ lat, lng }));
+          lastToolRef.current = "polygon";
+
+          toast.success(
+            isRTL
+              ? `تم حفظ المنطقة · ${roundedArea} هكتار`
+              : `AOI saved · ${roundedArea} ha`
+          );
+        },
+        onCancel: () => {
+          // nothing to restore: original drawn layer is simply gone if it was
+          // mid-edit; user can redraw if needed
+        },
+      });
 
       // ① Esri WorldImagery عبر الـ proxy
       baseTileRef.current = L.tileLayer(
@@ -983,7 +1035,7 @@ export default function LeafletMap({
         backdropFilter: "blur(10px)", boxShadow: "0 4px 20px rgba(0,212,255,0.25)",
         fontFamily: "DM Sans, sans-serif", letterSpacing: "0.3px",
       });
-      closeBtn.textContent = "✓ Finish";
+      closeBtn.textContent = "✓ Close Shape";
       closeBtn.addEventListener("mouseenter", () => closeBtn.style.background = "#0a1628");
       closeBtn.addEventListener("mouseleave", () => closeBtn.style.background = "#0a1628cc");
       closeBtn.addEventListener("click", () => {
@@ -992,14 +1044,6 @@ export default function LeafletMap({
         if (tool === "measure") finishMeasure(map, L);
       });
       mapRef.current!.appendChild(closeBtn);
-
-      map.on("dblclick", (e: { originalEvent: Event }) => {
-        const tool = activeToolRef.current;
-        if (tool !== "polygon" && tool !== "measure") return;
-        L.DomEvent.stop(e.originalEvent);
-        if (tool === "polygon") finishPolygon(map, L);
-        if (tool === "measure") finishMeasure(map, L);
-      });
 
       // ── Image overlays manager UI ─────────────────────────────────────────
       const overlaysUi = document.createElement("div");
@@ -1071,6 +1115,9 @@ export default function LeafletMap({
         if (canvasRef.current) clearCanvas(canvasRef.current);
         if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
 
+        // cancel any in-progress AOI edit
+        if (aoiEditorRef.current?.isActive) aoiEditorRef.current.stopEditing(false);
+
         // clear image overlays
         imageOverlaysRef.current.forEach((ov) => {
           try { map.removeLayer(ov.layer); } catch (_) {}
@@ -1091,6 +1138,10 @@ export default function LeafletMap({
         const { lat, lng } = e.latlng;
         // throttle setState to avoid React re-renders on every click
         requestAnimationFrame(() => onCoordsUpdate(lat, lng));
+
+        // While editing an AOI, ignore normal drawing-tool clicks so the user
+        // can finish the edit via the Save/Cancel controls instead.
+        if (aoiEditorRef.current?.isActive) return;
 
         // Trigger onFeatureClick with a virtual feature to update panels (Weather/NDVI) for any click
         if (tool === "pointer") {
@@ -1210,7 +1261,7 @@ export default function LeafletMap({
             }).addTo(map);
           drawLayersRef.current.push(marker);
           draftLayersRef.current.push(marker);
-          if (pts.length >= 3) showFinishButton(isRTL ? "✓ إنهاء المساحة" : "✓ Finish Area");
+          if (pts.length >= 3 && closeBtnRef.current) closeBtnRef.current.style.display = "block";
           return;
         }
 
@@ -1227,7 +1278,7 @@ export default function LeafletMap({
           const marker = L.circleMarker([lat, lng], { radius: 4, color: TOOL_COLORS.measure.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map);
           drawLayersRef.current.push(marker);
           draftLayersRef.current.push(marker);
-          if (pts.length >= 2) showFinishButton(isRTL ? "✓ إنهاء القياس" : "✓ Finish Distance");
+          if (pts.length >= 2 && closeBtnRef.current) closeBtnRef.current.style.display = "block";
           return;
         }
 
@@ -1242,10 +1293,26 @@ export default function LeafletMap({
           } else {
             const p1   = drawPointsRef.current[0];
             const rect = L.rectangle([p1, [lat, lng]], { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
-            const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
-            const area = calculateGeodesicAreaHa(coordinates.map((point) => [point.lat, point.lng]));
-            rect.bindPopup(`📐 ${t.rectangle} · Area: ${area} ${t.ha}`).openPopup();
+            const area = parseFloat((Math.abs(p1[0] - lat) * Math.abs(p1[1] - lng) * 12345).toFixed(1));
+
+            // ── Popup with "Edit AOI" button ─────────────────────────────────
+            rect.bindPopup(() => {
+              const div = document.createElement("div");
+              const label = document.createElement("div");
+              label.innerHTML = `📐 ${t.rectangle} · ≈ ${area} ${t.ha}`;
+              div.appendChild(label);
+
+              const editBtn = document.createElement("button");
+              editBtn.textContent = isRTL ? "✏️ تعديل المنطقة" : "✏️ Edit AOI";
+              editBtn.style.cssText = "margin-top:6px;background:#a78bfa22;border:1px solid #a78bfa55;color:#a78bfa;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
+              editBtn.onclick = () => startAOIEdit(rect, "rectangle");
+              div.appendChild(editBtn);
+
+              return div;
+            }).openPopup();
+
             drawLayersRef.current.push(rect);
+            const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
             const feature = makePolygonFeature("Drawn Rectangle", coordinates.map((point) => [point.lat, point.lng]), area);
             onAreaSelected("Drawn Rectangle", area, feature);
             onFeatureClick?.(feature);
@@ -1275,7 +1342,7 @@ export default function LeafletMap({
             const radius = map.distance(center, [lat, lng]);
             const circ   = L.circle(center, { radius, color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
             const area   = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
-            circ.bindPopup(`🟢 ${t.circle} · Radius: ${radius.toFixed(0)} m · Area: ${area} ${t.ha}`).openPopup();
+            circ.bindPopup(`🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(circ);
             const bounds = circ.getBounds();
             const circleBox: [number, number][] = [
@@ -1343,6 +1410,10 @@ export default function LeafletMap({
         overlaysUiRef.current.remove();
         overlaysUiRef.current = null;
       }
+      if (aoiEditorRef.current) {
+        if (aoiEditorRef.current.isActive) aoiEditorRef.current.stopEditing(false);
+        aoiEditorRef.current = null;
+      }
       if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; }
     };
   }, []);
@@ -1367,6 +1438,7 @@ export default function LeafletMap({
         .leaflet-popup-tip{background:#0a1628!important}
         .leaflet-popup-close-button{color:#64748b!important}
         .leaflet-control-attribution{background:rgba(4,13,26,.8)!important;color:#475569!important;font-size:.55rem!important}
+        .aoi-vertex-handle{cursor:grab!important}
         @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         .animate-fadeUp{animation:fadeUp .25s ease both}
       `}</style>

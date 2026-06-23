@@ -20,6 +20,7 @@ import LayerPanel, { MapLayer } from "./LayerPanel";
 import ProjectStartDialog from "./projects/ProjectStartDialog";
 import { updateProject } from "./projects/projectStorage";
 import type { ProjectSnapshot, UserProject } from "./projects/projectTypes";
+import type { ChangeDetectionPreviewConfig } from "../_components/AnalysisSidebar/ChangeDetectionPanel";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
@@ -809,6 +810,40 @@ export default function MapPage() {
     });
   }, []);
 
+  const handleChangeDetectionPreview = useCallback((config: ChangeDetectionPreviewConfig) => {
+  // Change Detection reuses the same raster-overlay pipeline as the Raster
+  // Calculator: it pushes a colorized PNG data URL onto the map via
+  // rasterOverlayRef, and registers/updates a "change-detection" map layer.
+  rasterOverlayRef.current?.({
+    name: config.name,
+    indexKey: config.indexKey as any,
+    expression: config.expression,
+    date: config.date,
+    coords: config.coords,
+    bounds: config.bounds,
+    opacity: config.opacity,
+    colorRamp: config.colorRamp,
+    dataUrl: config.dataUrl,
+  });
+  changeIdxRef.current?.(config.indexKey as any);
+  changeOpacityRef.current?.(config.opacity);
+ 
+  setLayers((prev) => {
+    const resultLayer: MapLayer = {
+      id: "change-detection-result",
+      name: config.name,
+      nameAr: config.name,
+      type: "raster",
+      visible: true,
+      opacity: config.opacity,
+      color: "#fb923c",
+      source: `${config.expression} | ${config.date} | ${config.colorRamp}`,
+    };
+    const withoutOld = prev.filter((layer) => layer.id !== "change-detection-result");
+    return [resultLayer, ...withoutOld];
+  });
+}, []);
+
   // Sync uploaded GeoJSON as layers
   useEffect(() => {
     const uploadedIds = Object.keys(uploadedGeoJsonMap).map(name => `uploaded_${name}`);
@@ -1004,6 +1039,7 @@ export default function MapPage() {
     handleLayerZoom,
     handleSatellitePreview,
     handleRasterPreview,
+    handleChangeDetectionPreview,
   ]);
 
   const toggle2DButton = useMemo(() => (

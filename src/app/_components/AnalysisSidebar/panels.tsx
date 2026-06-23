@@ -1,10 +1,10 @@
 ﻿import React from "react";
 
 export type PanelId =
-  | "planetary-raster"
   | "elevation" 
   | "satellite"
   | "raster"
+  | "change-detection"
   | "ndvi"
   | "weather"
   | "overview"
@@ -49,33 +49,36 @@ export const panels: PanelItem[] = [
     ),
     badge: "SAT",
   },
-  //  {
-  //   id: "raster",
-  //   labelEn: "Raster Calculator",
-  //   labelAr: "Raster Calculator",
-  //   icon: (
-  //     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-  //       <rect x="5" y="3" width="14" height="18" rx="2" />
-  //       <path d="M8 7h8" />
-  //       <path d="M8 11h2M12 11h2M16 11h.01" />
-  //       <path d="M8 15h2M12 15h2M16 15h.01" />
-  //       <path d="M8 18h8" />
-  //     </svg>
-  //   ),
-  //   badge: "CALC",
-  // },
+   {
+    id: "raster",
+    labelEn: "Raster Calculator",
+    labelAr: "Raster Calculator",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="5" y="3" width="14" height="18" rx="2" />
+        <path d="M8 7h8" />
+        <path d="M8 11h2M12 11h2M16 11h.01" />
+        <path d="M8 15h2M12 15h2M16 15h.01" />
+        <path d="M8 18h8" />
+      </svg>
+    ),
+    badge: "CALC",
+  },
+
   {
-  id: "planetary-raster",
-  labelEn: "Raster Calculator",
-  labelAr: "حاسبة PC",
-  icon: (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
-    </svg>
-  ),
-  badge: "API",
-},
+    id: "change-detection",
+    labelEn: "Change Detection",
+    labelAr: "كشف التغيير",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="2" y="4" width="8" height="8" rx="1" />
+        <rect x="14" y="12" width="8" height="8" rx="1" />
+        <path d="M10 8h4M16 12V8a2 2 0 0 0-2-2h-4" />
+        <path d="m13 5 3 3-3 3" />
+      </svg>
+    ),
+    badge: "NEW",
+  },
 
   {
     id: "crops",
@@ -148,10 +151,10 @@ export const panels: PanelItem[] = [
       </svg>
     ),
   },
-  {                                                   
+   {                                                    // ← new block starts here
     id: "elevation",
-    labelEn: "Contours",
-    labelAr: "خطوط الكنتور",
+    labelEn: "Elevation",
+    labelAr: "الارتفاع",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M3 17l4-8 4 4 4-6 4 10" />
@@ -161,5 +164,3 @@ export const panels: PanelItem[] = [
     badge: "DEM",
   },   
 ];
-
-

@@ -5,13 +5,13 @@ import LayerPanel, { MapLayer } from "../../map/LayerPanel";
 import ExportButton from "../../map/ExportButton";
 import { CapturesPanel } from "./CapturesPanel";
 import { NDVILivePanel, OverviewLivePanel, WeatherLivePanel } from "./LivePanels";
-// import { RasterCalculatorPanel } from "./RasterCalculatorPanel";
+import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
 import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
+import { ChangeDetectionPanel, type ChangeDetectionPreviewConfig } from "./ChangeDetectionPanel";
 import { getMidCoords } from "./geoFeatureUtils";
 import { PanelId } from "./panels";
 import { CropsPanel } from "./CropsPanel";
 import ElevationContourPanel from "./ElevationContourPanel";
-import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
 
 export function PanelContent({
   id,
@@ -41,6 +41,7 @@ export function PanelContent({
   onLayer3D,
   onSatellitePreview,
   onRasterPreview,
+  onChangeDetectionPreview,
 }: {
   id: PanelId;
   selectedFeature?: GeoJSON.Feature | null;
@@ -69,6 +70,7 @@ export function PanelContent({
   onLayer3D?: (id: string) => void;
   onSatellitePreview?: (config: SatellitePreviewConfig) => void;
   onRasterPreview?: (config: RasterPreviewConfig) => void;
+  onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
 }) {
   const [ndviExportData, setNdviExportData] = useState<any>(null);
   const ndviPanelRef = useRef<HTMLDivElement>(null);
@@ -81,13 +83,13 @@ export function PanelContent({
     return <SatelliteDataPanel selectedFeature={selectedFeature} onPreview={onSatellitePreview} />;
   }
 
-  // if (id === "raster") {
-  //   return <RasterCalculatorPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />;
-  // }
+  if (id === "raster") {
+    return <PlanetaryRasterPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />;
+  }
 
-  if (id === "planetary-raster") {
-  return <PlanetaryRasterPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />;
-}
+  if (id === "change-detection") {
+    return <ChangeDetectionPanel selectedFeature={selectedFeature} onPreview={onChangeDetectionPreview} />;
+  }
 
   if (id === "ndvi") {
     const coords = getMidCoords(selectedFeature);
@@ -240,12 +242,6 @@ export function PanelContent({
 
     return (
       <div className="space-y-2">
-        {/* Header */}
-        {/* <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 mb-3">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">Available Analyses</p>
-          <p className="text-xs text-slate-300">Select an analysis type to run on the selected area</p>
-        </div> */}
-
         {/* No feature warning */}
         {!selectedFeature && (
           <div className="flex items-center gap-2 bg-amber-400/[0.07] border border-amber-400/20 rounded-xl px-3 py-2.5 mb-1">
@@ -318,4 +314,3 @@ export function PanelContent({
     </div>
   );
 }
-

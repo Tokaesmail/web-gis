@@ -8,10 +8,8 @@ import { MapLayer } from "../../map/LayerPanel";
 import { PanelContent } from "./PanelContent";
 import { panels, type PanelId } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
+import { type ChangeDetectionPreviewConfig } from "./ChangeDetectionPanel";
 import ElevationContourPanel from "./ElevationContourPanel"; 
-import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
-import { getPolygonRing, clipImageToPolygon } from "./geoClipUtils";
-// (or wherever geoClipUtils.ts ends up — see note at bottom)
 
 export default function AnalysisSidebar(
   {
@@ -46,6 +44,7 @@ export default function AnalysisSidebar(
   onLayer3D,
   onSatellitePreview,
   onRasterPreview,
+  onChangeDetectionPreview,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
@@ -78,6 +77,7 @@ export default function AnalysisSidebar(
   onLayer3D?: (id: string) => void;
   onSatellitePreview?: (config: SatellitePreviewConfig) => void;
   onRasterPreview?: (config: RasterPreviewConfig) => void;
+  onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
 }) {
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -126,7 +126,7 @@ export default function AnalysisSidebar(
         >
           <div className="h-full w-[min(340px,calc(100vw-52px))] bg-[#070f1e]/97 backdrop-blur-xl border-l border-white/[0.08] flex flex-col overflow-hidden shadow-[-8px_0_32px_rgba(0,0,0,0.4)]">
 
-            //* {/* Panel header */}
+            {/* Panel header */}
             <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-white/[0.06] shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-7 h-7 rounded-lg bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400">
@@ -178,6 +178,7 @@ export default function AnalysisSidebar(
                   onLayer3D={onLayer3D}
                   onSatellitePreview={onSatellitePreview}
                   onRasterPreview={onRasterPreview}
+                  onChangeDetectionPreview={onChangeDetectionPreview}
                 />
               )}
             </div>
@@ -275,4 +276,3 @@ export default function AnalysisSidebar(
     </>
   );
 }
-
