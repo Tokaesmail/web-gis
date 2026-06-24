@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useMapCanvas }      from "./useMapCanvas";
 import { useLang }           from "../_components/translations";
+import * as turf from "@turf/turf";
 import {
   DrawTool, SAT_LAYERS, INDEX_TILES,
   SatKey, IdxKey, LatLngPoint, CaptureMetadata, CaptureResult, CaptureTarget,
@@ -149,6 +150,7 @@ export default function LeafletMap({
   const mapObjRef      = useRef<any>(null);
   const LRef           = useRef<any>(null);
   const geoJsonLayerRef     = useRef<any>(null);
+  const searchMarkerRef = useRef<any>(null);
   const extraGeoJsonLayerRef = useRef<any>(null);
   const rafRef              = useRef<number | null>(null);
   const lastMoveRef         = useRef<any>(null);
@@ -813,10 +815,13 @@ export default function LeafletMap({
     const c    = TOOL_COLORS.polygon;
     const poly = L.polygon(pts, { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
     drawLayersRef.current.push(poly);
-    const area = parseFloat((Math.abs(pts.reduce((acc: number, p: [number, number], i: number) => {
-      const j = (i + 1) % pts.length;
-      return acc + p[1] * pts[j][0] - pts[j][1] * p[0];
-    }, 0)) / 2 * 12345).toFixed(1));
+    const coords = [...pts, pts[0]].map(([lat, lng]) => [lng, lat]);
+
+const polygon = turf.polygon([coords]);
+
+const area = parseFloat(
+  (turf.area(polygon) / 10000).toFixed(1)
+);
 
     // ── Popup with "Edit AOI" button ───────────────────────────────────────
     poly.bindPopup(() => {
@@ -1044,8 +1049,9 @@ export default function LeafletMap({
         if (tool === "measure") finishMeasure(map, L);
       });
       mapRef.current!.appendChild(closeBtn);
+      const coordPanel = document.createElement("div");
 
-      // ── Image overlays manager UI ─────────────────────────────────────────
+    // ── Image overlays manager UI ─────────────────────────────────────────
       const overlaysUi = document.createElement("div");
       overlaysUiRef.current = overlaysUi;
       overlaysUi.style.cssText = `
@@ -1098,14 +1104,38 @@ export default function LeafletMap({
       document.getElementById("map-zoom-out")?.addEventListener("click", () => map.zoomOut());
 
       flyToRef.current = (lat, lng) => {
-        const safeLat = Number(lat);
-        const safeLng = Number(lng);
-        if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return;
+  const safeLat = Number(lat);
+  const safeLng = Number(lng);
 
-        map.flyTo([safeLat, safeLng], 13, { duration: 1.6 });
-        setTimeout(() => L.circleMarker([safeLat, safeLng], { radius: 9, color: "#00d4ff", fillColor: "#00d4ff", fillOpacity: 0.7, weight: 2 })
-          .addTo(map).bindPopup(`<b>📍 Location</b><br/>${safeLat.toFixed(5)}°N, ${safeLng.toFixed(5)}°E`).openPopup(), 1700);
-      };
+  if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return;
+
+  map.flyTo([safeLat, safeLng], 13, { duration: 1.6 });
+
+  setTimeout(() => {
+
+    if (searchMarkerRef.current) {
+      map.removeLayer(searchMarkerRef.current);
+      searchMarkerRef.current = null;
+    }
+
+    searchMarkerRef.current = L.circleMarker(
+      [safeLat, safeLng],
+      {
+        radius: 9,
+        color: "#00d4ff",
+        fillColor: "#00d4ff",
+        fillOpacity: 0.7,
+        weight: 2,
+      }
+    )
+      .addTo(map)
+      .bindPopup(
+        `<b>📍 Location</b><br/>${safeLat.toFixed(5)}°N, ${safeLng.toFixed(5)}°E`
+      )
+      .openPopup();
+
+  }, 1700);
+};
 
       clearRef.current = () => {
         drawLayersRef.current.forEach((l) => map.removeLayer(l));
@@ -1293,8 +1323,21 @@ export default function LeafletMap({
           } else {
             const p1   = drawPointsRef.current[0];
             const rect = L.rectangle([p1, [lat, lng]], { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
-            const area = parseFloat((Math.abs(p1[0] - lat) * Math.abs(p1[1] - lng) * 12345).toFixed(1));
+const rectCoords = [
+  [p1[1], p1[0]],
+  [lng, p1[0]],
+  [lng, lat],
+  [p1[1], lat],
+  [p1[1], p1[0]],
+];
 
+const polygon = turf.polygon([rectCoords]);
+
+const area = parseFloat(
+  (turf.area(polygon) / 10000).toFixed(1)
+);
+console.log("Area ha:", area);
+console.log("Area m²:", turf.area(polygon));
             // ── Popup with "Edit AOI" button ─────────────────────────────────
             rect.bindPopup(() => {
               const div = document.createElement("div");

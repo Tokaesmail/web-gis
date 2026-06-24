@@ -52,6 +52,7 @@ const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
   { key: "rdylbu_r", label: "Heat",       gradient: "linear-gradient(90deg,#313695,#fee090,#a50026)" },
 ];
 
+
 const PC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search";
 const PC_DATA_URL = "https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png";
 
@@ -345,6 +346,31 @@ const [classification, setClassification] = useState<string>("");
         reader.onerror = () => reject(new Error("Could not read image data"));
         reader.readAsDataURL(blob);
       });
+
+            const realStats = await fetchStats(selectedScene.collection, selectedScene.id, expression);
+      const imageStats = await analyzeImage(dataUrl);
+      if (realStats && imageStats) {
+  setStats({
+    min: realStats.min,
+    max: realStats.max,
+    mean: (realStats.min + realStats.max) / 2, // أو القيمة العائدة من السيرفر إن وجدت
+    histogram: imageStats.histogram
+  });
+  if (activePreset === "NDWI") {
+    // في الـ NDWI القيم الموجبة العالية تعني مياه صريحة
+    if (realStats.max > 0.1) {
+      setClassification("💧 المسطحات المائية / نهر النيل");
+    } else {
+      setClassification("🏜 يابسة / مناطق جافة");
+    }
+  } else if (activePreset === "NDVI") {
+    if (realStats.max > 0.4) setClassification("🌿 Dense vegetation");
+    else if (realStats.max > 0.15) setClassification("🌱 Sparse vegetation");
+    else setClassification("🏙 Urban / Bare land");
+  } else {
+    setClassification("📊 Custom Expression Rendered");
+  }
+}
 
       setPreviewImg(dataUrl);
 setPreviewStatus("success");
@@ -715,7 +741,7 @@ else setClassification("🏙 Urban / water / bare land");
 
       {activePreset === "NDWI" && (
         <p>
-          💧 NDWI: high values = water presence, low values = dry land
+          💧 NDWI: low values = water presence, high values = dry land
         </p>
       )}
 

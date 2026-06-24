@@ -403,7 +403,6 @@ export function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | nul
         </div>
       </div>
 
-      {/* â”€â”€ Location â”€â”€ */}
       <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4">
         <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-3">Location</p>
         <div className="grid grid-cols-2 gap-2">

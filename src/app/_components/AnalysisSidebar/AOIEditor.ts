@@ -307,7 +307,7 @@ export class AOIEditor {
       color:#94a3b8; white-space:nowrap; min-width:80px; text-align:center;
     `;
 
-    // Save button
+    // Save buttoشn
     const save = document.createElement("button");
     save.textContent = this.locale === "ar" ? "✓ حفظ" : "✓ Save AOI";
     save.style.cssText = `

@@ -1,7 +1,13 @@
 // ─── mapTypes.ts ──────────────────────────────────────────────────────────────
 
-export type DrawTool = "pointer" | "polygon" | "rectangle" | "circle" | "measure" | "marker";
-export type CaptureTarget = "small" | "large";
+export type DrawTool =
+  | "pointer"
+  | "polygon"
+  | "rectangle"
+  | "circle"
+  | "measure"
+  | "marker"
+  | "coordinates";export type CaptureTarget = "small" | "large";
 
 export interface LatLngPoint {
   lat: number;

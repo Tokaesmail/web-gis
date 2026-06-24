@@ -44,6 +44,22 @@ export default function MapSearch({
     onFlyTo(r.lat, r.lng);
   };
 
+  const handleCoordinateSearch = () => {
+  const parts = query.split(",");
+
+  if (parts.length !== 2) return;
+
+  const lat = parseFloat(parts[0].trim());
+  const lng = parseFloat(parts[1].trim());
+
+  if (isNaN(lat) || isNaN(lng)) return;
+
+  onFlyTo(lat, lng);
+
+  setResults([]);
+  setOpen(false);
+};
+
   return (
     <div className="absolute top-16 xl:top-4 left-2 right-16 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-1000 w-auto sm:w-[460px] pointer-events-auto">
       <div
@@ -63,10 +79,17 @@ export default function MapSearch({
         <input
           ref={inputRef}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+  const value = e.target.value;
+  setQuery(value);
+
+  if (/^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test(value)) {
+    handleCoordinateSearch();
+  }
+}}
           onFocus={() => setFocused(true)}
           onBlur={() => { setFocused(false); setTimeout(() => setOpen(false), 200); }}
-          placeholder="Search any location in the world..."
+          placeholder="Search place or enter: lat,lng"
           className="flex-1 bg-transparent text-slate-100 text-sm placeholder:text-slate-500 outline-none"
         />
         {query && (
