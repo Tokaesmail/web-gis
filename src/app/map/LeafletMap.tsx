@@ -1112,12 +1112,7 @@ const area = parseFloat(
   map.flyTo([safeLat, safeLng], 13, { duration: 1.6 });
 
   setTimeout(() => {
-
-    if (searchMarkerRef.current) {
-      map.removeLayer(searchMarkerRef.current);
-      searchMarkerRef.current = null;
-    }
-
+  if (!searchMarkerRef.current) {
     searchMarkerRef.current = L.circleMarker(
       [safeLat, safeLng],
       {
@@ -1127,14 +1122,18 @@ const area = parseFloat(
         fillOpacity: 0.7,
         weight: 2,
       }
-    )
-      .addTo(map)
-      .bindPopup(
-        `<b>📍 Location</b><br/>${safeLat.toFixed(5)}°N, ${safeLng.toFixed(5)}°E`
-      )
-      .openPopup();
+    ).addTo(map);
+  }
 
-  }, 1700);
+  searchMarkerRef.current.setLatLng([safeLat, safeLng]);
+
+  searchMarkerRef.current
+    .bindPopup(
+      `<b>📍 Location</b><br/>${safeLat.toFixed(5)}°N, ${safeLng.toFixed(5)}°E`
+    )
+    .openPopup();
+
+}, 1700);
 };
 
       clearRef.current = () => {
