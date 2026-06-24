@@ -9,7 +9,7 @@ import { PanelContent } from "./PanelContent";
 import { panels, type PanelId } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { type ChangeDetectionPreviewConfig } from "./ChangeDetectionPanel";
-import ElevationContourPanel from "./ElevationContourPanel"; 
+import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
 
 export default function AnalysisSidebar(
   {

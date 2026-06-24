@@ -32,14 +32,13 @@ const SENTINEL2_BANDS: { id: string; label: string; gsd: string; desc: string }[
 
 // ─── Quick-pick presets (still just plain expressions, nothing computed locally) ──
 const EXPRESSION_PRESETS: { key: string; label: string; expression: string; colormap: string; rescale: [number, number]; desc: string }[] = [
-  { key: "NDVI", label: "NDVI",  expression: "(B08-B04)/(B08+B04)",         colormap: "rdylgn", rescale: [-1, 1], desc: "Vegetation vigor" },
-  { key: "NDWI", label: "NDWI",  expression: "(B03-B08)/(B03+B08)",         colormap: "rdbu",   rescale: [-1, 1], desc: "Water content" },
-  { key: "NDMI", label: "NDMI",  expression: "(B8A-B11)/(B8A+B11)",         colormap: "bugn_r", rescale: [-1, 1], desc: "Moisture / drought stress" },
-  { key: "NDBI", label: "NDBI",  expression: "(B11-B08)/(B11+B08)",         colormap: "magma",  rescale: [-1, 1], desc: "Built-up / urban areas" },
-  { key: "SAVI", label: "SAVI",  expression: "1.5*(B08-B04)/(B08+B04+0.5)", colormap: "rdylgn", rescale: [-1, 1], desc: "Soil-adjusted vegetation" },
-  { key: "EVI",  label: "EVI",   expression: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)", colormap: "greens", rescale: [-1, 2], desc: "Enhanced vegetation" },
+  { key: "NDVI", label: "NDVI",  expression: "(B08-B04)/(B08+B04)",         colormap: "viridis", rescale: [0, 0.45], desc: "Vegetation vigor" },
+  { key: "NDWI", label: "NDWI",  expression: "(B03-B08)/(B03+B08)",         colormap: "rdbu",   rescale: [-0.3, 0.4], desc: "Water content" },
+  { key: "NDMI", label: "NDMI",  expression: "(B8A-B11)/(B8A+B11)",         colormap: "bugn_r", rescale: [-0.4, 0.6], desc: "Moisture / drought stress" },
+  { key: "NDBI", label: "NDBI",  expression: "(B11-B08)/(B11+B08)",         colormap: "magma",  rescale: [-0.4, 0.4], desc: "Built-up / urban areas" },
+  { key: "SAVI", label: "SAVI",  expression: "1.5*(B08-B04)/(B08+B04+0.5)", colormap: "rdylgn", rescale: [0, 0.6], desc: "Soil-adjusted vegetation" },
+  { key: "EVI",  label: "EVI",   expression: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)", colormap: "greens", rescale: [0, 1], desc: "Enhanced vegetation" },
 ];
-
 // ─── Color ramps shown as visual swatches (matching the app's existing
 // "Water / Vegetation / Spectral" style) instead of a plain colormap name list ──
 const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
@@ -137,6 +136,53 @@ function validateExpression(expr: string): { ok: boolean; usedBands: string[]; u
   return { ok: usedBands.length > 0 && unknownTokens.length === 0 && bracketsOk, usedBands, unknownTokens };
 }
 
+function analyzeImage(imgSrc: string) {
+  return new Promise<{
+    min: number;
+    max: number;
+    mean: number;
+    histogram: number[];
+  }>((resolve) => {
+    const img = new Image();
+    img.src = imgSrc;
+
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d")!;
+      canvas.width = img.width;
+      canvas.height = img.height;
+
+      ctx.drawImage(img, 0, 0);
+
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+      let min = 255;
+      let max = 0;
+      let sum = 0;
+
+      const histogram = new Array(10).fill(0);
+
+      for (let i = 0; i < data.length; i += 4) {
+        const v = data[i];
+
+        min = Math.min(min, v);
+        max = Math.max(max, v);
+        sum += v;
+
+        const bucket = Math.floor((v / 255) * 9);
+        histogram[bucket]++;
+      }
+
+      resolve({
+        min,
+        max,
+        mean: sum / (data.length / 4),
+        histogram,
+      });
+    };
+  });
+}
+
 export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Props) {
   const coords = getMidCoords(selectedFeature);
   const fallbackCoords = coords ? { lat: coords[0], lng: coords[1] } : undefined;
@@ -148,7 +194,7 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   const [rescaleMax, setRescaleMax] = useState(EXPRESSION_PRESETS[0].rescale[1]);
   const [opacity, setOpacity] = useState(85);
   const [clipToShape, setClipToShape] = useState(true);
-  const [cloudCover, setCloudCover] = useState(20);
+  const [cloudCover, setCloudCover] = useState(10);
   const [dateFrom, setDateFrom] = useState("2026-04-01");
   const [dateTo, setDateTo] = useState("2026-05-31");
   const [showBandRef, setShowBandRef] = useState(true);
@@ -161,6 +207,13 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   const [previewStatus, setPreviewStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewImg, setPreviewImg] = useState<string | null>(null);
+  const [stats, setStats] = useState<{
+  min: number;
+  max: number;
+  mean: number;
+  histogram: number[];
+} | null>(null);
+const [classification, setClassification] = useState<string>("");
 
   const bbox = useMemo(() => getFeatureBBox(selectedFeature, fallbackCoords), [selectedFeature, fallbackCoords?.lat, fallbackCoords?.lng]);
   const polygonRing = useMemo(() => getPolygonRing(selectedFeature), [selectedFeature]);
@@ -182,7 +235,7 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
             bbox,
             datetime: `${dateFrom}T00:00:00Z/${dateTo}T23:59:59Z`,
             query: { "eo:cloud_cover": { lt: cloudCover } },
-            limit: 8,
+            limit: 20,
           }),
         });
         if (!res.ok) throw new Error(`STAC search failed (${res.status})`);
@@ -231,6 +284,35 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
     setExpression((prev) => (prev ? `${prev}${bandId}` : bandId));
   };
 
+  async function fetchStats(
+  collection: string,
+  item: string,
+  expression: string
+) {
+  try {
+    const url =
+      `https://planetarycomputer.microsoft.com/api/data/v1/collections/${collection}/items/${item}/statistics` +
+      `?asset_as_band=true&expression=${encodeURIComponent(expression)}`;
+
+    const res = await fetch(url);
+    if (!res.ok) return null;
+
+    const json = await res.json();
+
+    const key = Object.keys(json)[0];
+    const band = json[key];
+
+    return {
+      min: band.min,
+      max: band.max,
+      p2: band.percentile_2,
+      p98: band.percentile_98,
+    };
+  } catch {
+    return null;
+  }
+}
+
   const runPreview = async () => {
     if (!selectedScene || !validation.ok) return;
     setPreviewStatus("loading");
@@ -242,9 +324,12 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
         item: selectedScene.id,
         expression,
         asset_as_band: "true",
+        return_mask: "false",
         rescale: `${rescaleMin},${rescaleMax}`,
         colormap_name: colormap,
         format: "png",
+        width: "1024",
+        height: "1024",
       });
       const url = `${PC_DATA_URL}?${params.toString()}`;
 
@@ -261,7 +346,22 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
         reader.readAsDataURL(blob);
       });
 
-      const [west, south, east, north] = selectedScene.bbox ?? bbox;
+      setPreviewImg(dataUrl);
+setPreviewStatus("success");
+
+// 👇 هنا التحليل الصح
+const s = await analyzeImage(dataUrl);
+if (!s) return;
+
+setStats(s);
+
+const meanNorm = s.mean / 255;
+
+if (meanNorm > 0.6) setClassification("🌿 Dense vegetation");
+else if (meanNorm > 0.3) setClassification("🌱 Soil / sparse vegetation");
+else setClassification("🏙 Urban / water / bare land");
+
+      const [west, south, east, north] = bbox;
       const renderedBounds: [[number, number], [number, number]] = [[south, west], [north, east]];
 
       // Server always returns a rectangle covering the bbox. If the user drew
@@ -277,6 +377,8 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
 
       setPreviewImg(dataUrl);
       setPreviewStatus("success");
+      
+
 
       onPreview?.({
         name: `${activePreset || "Expression"} · ${selectedScene.id}`,
@@ -547,6 +649,84 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
       >
         {previewStatus === "loading" ? "Rendering on Planetary Computer…" : "Render & Preview on Map"}
       </button>
+      {stats && previewStatus === "success" && (
+  <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-3 space-y-2">
+
+    <p className="text-[0.62rem] uppercase text-slate-500">
+      Pixel Insight
+    </p>
+
+    <div className="text-[0.6rem] text-slate-300 space-y-1">
+      <p>Min: {stats.min.toFixed(2)}</p>
+      <p>Max: {stats.max.toFixed(2)}</p>
+      <p>Mean: {stats.mean.toFixed(2)}</p>
+    </div>
+
+    <div className="text-[0.65rem] font-semibold text-cyan-300">
+      {classification}
+    </div>
+
+    <div className="flex items-end gap-[2px] h-16 mt-2">
+      {stats.histogram.map((h, i) => (
+        <div
+          key={i}
+          className="bg-cyan-400/50 w-full"
+          style={{
+            height: `${(h / Math.max(...stats.histogram)) * 100}%`,
+          }}
+        />
+      ))}
+    </div>
+
+    <p className="text-[0.5rem] text-slate-600">
+      Histogram (pixel value distribution 0–255)
+    </p>
+  </div>
+)}
+      {stats && (
+  <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
+    
+    {/* Title */}
+    <p className="text-[0.6rem] uppercase tracking-wider text-slate-400">
+      Pixel Value Meaning
+    </p>
+
+    {/* Min / Max */}
+    <div className="flex justify-between text-[0.6rem] text-slate-300">
+      <span>Min: {stats.min.toFixed(3)}</span>
+      <span>Max: {stats.max.toFixed(3)}</span>
+    </div>
+
+    {/* Color bar */}
+    <div
+      className="h-2 rounded"
+      style={{
+        background: colormapPreviewGradient(colormap),
+      }}
+    />
+
+    {/* Explanation depending on index */}
+    <div className="text-[0.58rem] text-slate-400 leading-relaxed">
+      {activePreset === "NDVI" && (
+        <p>
+          🌱 NDVI: negative = water/cloud, low = bare soil, high = healthy vegetation
+        </p>
+      )}
+
+      {activePreset === "NDWI" && (
+        <p>
+          💧 NDWI: high values = water presence, low values = dry land
+        </p>
+      )}
+
+      {!activePreset && (
+        <p>
+          Raster values come from satellite reflectance bands. Each pixel = real ground reflectance value.
+        </p>
+      )}
+    </div>
+  </div>
+)}
 
       {previewError && (
         <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2.5 text-[0.65rem] text-red-300">

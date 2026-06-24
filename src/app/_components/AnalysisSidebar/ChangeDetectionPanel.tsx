@@ -223,6 +223,221 @@ function formatDateDMY(value: string) {
   return `${day}/${month}/${year}`;
 }
 
+function ImageSwipeCompare({
+  beforeUrl,
+  afterUrl,
+  beforeLabel = "Before",
+  afterLabel = "After",
+  className = "",
+}: {
+  beforeUrl: string;
+  afterUrl: string;
+  beforeLabel?: string;
+  afterLabel?: string;
+  className?: string;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState(50);
+  const draggingRef = useRef(false);
+
+  const setPositionFromClientX = useCallback((clientX: number) => {
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const pct = ((clientX - rect.left) / rect.width) * 100;
+    setPosition(Math.max(2, Math.min(98, pct)));
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (!draggingRef.current) return;
+      setPositionFromClientX(e.clientX);
+    };
+    const onUp = () => { draggingRef.current = false; };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [setPositionFromClientX]);
+
+  return (
+    <div className={`space-y-2 ${className}`}>
+      <div
+        ref={containerRef}
+        className="relative w-full aspect-[4/3] rounded-md overflow-hidden border border-white/[0.07] bg-slate-950 cursor-ew-resize select-none touch-none"
+        onPointerDown={(e) => {
+          draggingRef.current = true;
+          containerRef.current?.setPointerCapture(e.pointerId);
+          setPositionFromClientX(e.clientX);
+        }}
+        onPointerMove={(e) => {
+          if (!draggingRef.current) return;
+          setPositionFromClientX(e.clientX);
+        }}
+        onPointerUp={() => { draggingRef.current = false; }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={beforeUrl} alt={beforeLabel} draggable={false} className="absolute inset-0 w-full h-full object-cover pointer-events-none" />
+        <div
+          className="absolute inset-0 overflow-hidden pointer-events-none"
+          style={{ clipPath: `inset(0 ${100 - position}% 0 0)` }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={afterUrl} alt={afterLabel} draggable={false} className="absolute inset-0 w-full h-full object-cover" />
+        </div>
+
+        <div
+          className="absolute top-0 bottom-0 z-10 w-0.5 -translate-x-1/2 bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.7)] pointer-events-none"
+          style={{ left: `${position}%` }}
+        >
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-full border-2 border-cyan-400 bg-[#020817]/90 shadow-lg text-cyan-300 text-xs font-bold">
+            ↔
+          </div>
+        </div>
+
+        <span className="absolute top-2 left-2 z-10 text-[0.55rem] font-bold uppercase bg-black/65 text-sky-300 px-2 py-0.5 rounded pointer-events-none">
+          {beforeLabel}
+        </span>
+        <span className="absolute top-2 right-2 z-10 text-[0.55rem] font-bold uppercase bg-black/65 text-orange-300 px-2 py-0.5 rounded pointer-events-none">
+          {afterLabel}
+        </span>
+      </div>
+
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={position}
+        onChange={(e) => setPosition(Number(e.target.value))}
+        className="w-full accent-cyan-400"
+        aria-label="Swipe between before and after images"
+      />
+      <p className="text-[0.52rem] text-slate-600 text-center">اسحبي على الصورة أو الـ slider لمقارنة Before ↔ After</p>
+    </div>
+  );
+}
+
+function ComparePanel({
+  url,
+  label,
+  accent,
+}: {
+  url: string;
+  label: string;
+  accent?: string;
+}) {
+  return (
+    <figure className="flex flex-col gap-2 min-w-0">
+      <div className="relative aspect-[4/3] overflow-hidden rounded-lg border border-white/[0.08] bg-slate-950">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={url} alt={label} className="absolute inset-0 h-full w-full object-cover" />
+      </div>
+      <figcaption
+        className="text-center text-xs font-medium text-slate-300"
+        style={accent ? { color: accent } : undefined}
+      >
+        {label}
+      </figcaption>
+    </figure>
+  );
+}
+
+function ChangeCompareModal({
+  open,
+  onClose,
+  beforeUrl,
+  afterUrl,
+  changeUrl,
+  beforeDate,
+  afterDate,
+  indexKey,
+}: {
+  open: boolean;
+  onClose: () => void;
+  beforeUrl: string;
+  afterUrl: string;
+  changeUrl?: string | null;
+  beforeDate?: string;
+  afterDate?: string;
+  indexKey: ChangeIndexKey;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const cols = changeUrl ? "grid-cols-3" : "grid-cols-2";
+
+  return (
+    <div
+      className="fixed inset-0 z-[3600] flex items-center justify-center p-3 sm:p-6"
+      style={{ pointerEvents: "all" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" />
+
+      <div className="relative z-10 flex w-full max-w-6xl max-h-[95dvh] flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-[#060d1b] shadow-[0_32px_96px_rgba(0,0,0,0.85)]">
+        {/* Header */}
+        <div className="flex items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3.5 shrink-0">
+          <div>
+            <p className="text-sm font-semibold text-slate-100">Before / After Comparison</p>
+            <p className="text-[0.65rem] text-slate-500 mt-0.5">
+              {beforeDate && afterDate
+                ? `${formatDateDMY(beforeDate)} → ${formatDateDMY(afterDate)} · ${indexKey}`
+                : indexKey}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/[0.07] hover:text-slate-200"
+            aria-label="Close comparison"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto custom-scroll">
+          {/* ── Swipe comparison — full width, large ── */}
+          <div className="p-4 border-b border-white/[0.06]">
+            <p className="text-[0.6rem] uppercase tracking-wider text-cyan-300/70 mb-2.5">
+              ↔ اسحب للمقارنة بين Before و After
+            </p>
+            <ImageSwipeCompare
+              beforeUrl={beforeUrl}
+              afterUrl={afterUrl}
+              beforeLabel={beforeDate ? `Before · ${formatDateDMY(beforeDate)}` : "Before"}
+              afterLabel={afterDate ? `After · ${formatDateDMY(afterDate)}` : "After"}
+              className="max-h-[55vh]"
+            />
+          </div>
+
+          {/* ── 3 images side by side, always horizontal ── */}
+          <div className="p-4">
+            <p className="text-[0.6rem] uppercase tracking-wider text-slate-500 mb-3">Side-by-side view</p>
+            <div className={`grid ${cols} gap-3`}>
+              <ComparePanel url={beforeUrl} label="Before change" accent="#38bdf8" />
+              <ComparePanel url={afterUrl} label="After Change" accent="#fb923c" />
+              {changeUrl && <ComparePanel url={changeUrl} label="Change label" accent="#a78bfa" />}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DatePickerField({
   label, value, min, max, onChange,
 }: { label: string; value: string; min?: string; max?: string; onChange: (v: string) => void }) {
@@ -315,7 +530,11 @@ function SceneSlot({
       )}
 
       {scenes.length > 0 && (
-        <div className="space-y-1.5 max-h-40 overflow-y-auto custom-scroll pr-0.5">
+        <div className="space-y-1.5">
+          {!selectedScene && (
+            <p className="text-[0.55rem] text-amber-300/90 px-0.5">← Click a scene below to select it</p>
+          )}
+          <div className="max-h-40 overflow-y-auto custom-scroll pr-0.5 space-y-1.5">
           {scenes.map((scene) => (
             <button
               key={scene.id}
@@ -339,6 +558,7 @@ function SceneSlot({
               </div>
             </button>
           ))}
+          </div>
         </div>
       )}
     </div>
@@ -384,8 +604,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
   const [computeError, setComputeError] = useState<string | null>(null);
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
   const [diffDataUrl, setDiffDataUrl] = useState<string | null>(null);
-  const [compareSlider, setCompareSlider] = useState(50);
-
+  const [compareModalOpen, setCompareModalOpen] = useState(false);
   const resultCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const indexDef = CHANGE_INDEX_DEFS[indexKey];
@@ -398,7 +617,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
     setScenes: (s: SatelliteScene[]) => void,
     setStatus: (s: "idle" | "loading" | "success" | "error") => void,
     setError: (e: string | null) => void,
-  ) => {
+  ): Promise<SatelliteScene[]> => {
     setStatus("loading");
     setError(null);
     try {
@@ -452,25 +671,53 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
       setScenes(nextScenes);
       setStatus("success");
       if (!nextScenes.length) setError("No matching scenes for this AOI/date/cloud filter.");
+      return nextScenes;
     } catch (err) {
       setScenes([]);
       setStatus("error");
       setError(err instanceof Error ? err.message : "STAC search failed.");
+      return [];
     }
   }, [collection, west, south, east, north]);
 
-  const handleSelectBefore = (scene: SatelliteScene) => {
+  const pickSceneAfterSearch = useCallback((
+    results: SatelliteScene[],
+    current: SatelliteScene | null,
+    select: (scene: SatelliteScene) => void,
+  ) => {
+    if (!results.length) return;
+    const stillValid = current && results.some((s) => s.id === current.id);
+    if (!stillValid) select(results[0]);
+  }, []);
+
+  const handleSelectBefore = useCallback((scene: SatelliteScene) => {
     setBeforeScene(scene);
     setDiffResult(null);
     setDiffDataUrl(null);
     setComputeError(null);
-  };
-  const handleSelectAfter = (scene: SatelliteScene) => {
+  }, []);
+  const handleSelectAfter = useCallback((scene: SatelliteScene) => {
     setAfterScene(scene);
     setDiffResult(null);
     setDiffDataUrl(null);
     setComputeError(null);
-  };
+  }, []);
+
+  const handleSearchBefore = useCallback(async () => {
+    const results = await searchScenes(
+      beforeFrom, beforeTo, cloudCoverBefore,
+      setBeforeScenes, setBeforeStatus, setBeforeError,
+    );
+    pickSceneAfterSearch(results, beforeScene, handleSelectBefore);
+  }, [searchScenes, beforeFrom, beforeTo, cloudCoverBefore, beforeScene, pickSceneAfterSearch, handleSelectBefore]);
+
+  const handleSearchAfter = useCallback(async () => {
+    const results = await searchScenes(
+      afterFrom, afterTo, cloudCoverAfter,
+      setAfterScenes, setAfterStatus, setAfterError,
+    );
+    pickSceneAfterSearch(results, afterScene, handleSelectAfter);
+  }, [searchScenes, afterFrom, afterTo, cloudCoverAfter, afterScene, pickSceneAfterSearch, handleSelectAfter]);
 
   // refresh preview URLs whenever scene or index changes
   useEffect(() => {
@@ -480,10 +727,22 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
     setAfterPreviewUrl(afterScene ? makePreviewUrl(afterScene, indexDef.assets) ?? null : null);
   }, [afterScene, indexDef]);
 
-  const canRun = !!beforePreviewUrl && !!afterPreviewUrl;
+  const canRun = !!beforeScene && !!afterScene;
+
+  const runButtonLabel = useMemo(() => {
+    if (computing) return "Computing change map...";
+    if (!beforeScene && !afterScene) return "Search & select Before + After scenes";
+    if (!beforeScene) return "Select a Before scene ↑";
+    if (!afterScene) return "Select an After scene ↑";
+    return "Run Change Detection";
+  }, [computing, beforeScene, afterScene]);
 
   const runChangeDetection = useCallback(async () => {
-    if (!beforePreviewUrl || !afterPreviewUrl || !beforeScene || !afterScene) return;
+    if (!beforeScene || !afterScene) return;
+    if (!beforePreviewUrl || !afterPreviewUrl) {
+      setComputeError("Could not build a preview for one of the selected scenes. Try picking another scene.");
+      return;
+    }
     setComputing(true);
     setComputeError(null);
     setDiffResult(null);
@@ -497,6 +756,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
       const result = computeDiff(beforeImg, afterImg, threshold);
       setDiffResult(result);
       setDiffDataUrl(result.canvas.toDataURL("image/png"));
+      setCompareModalOpen(true);
 
       const resultBounds = stacBBoxToBounds(afterScene.bbox ?? beforeScene.bbox, bounds);
       const center = boundsCenter(resultBounds);
@@ -595,7 +855,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
         error={beforeError}
         selectedScene={beforeScene}
         onSelectScene={handleSelectBefore}
-        onSearch={() => searchScenes(beforeFrom, beforeTo, cloudCoverBefore, setBeforeScenes, setBeforeStatus, setBeforeError)}
+        onSearch={handleSearchBefore}
       />
 
       <SceneSlot
@@ -612,7 +872,43 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
         error={afterError}
         selectedScene={afterScene}
         onSelectScene={handleSelectAfter}
-        onSearch={() => searchScenes(afterFrom, afterTo, cloudCoverAfter, setAfterScenes, setAfterStatus, setAfterError)}
+        onSearch={handleSearchAfter}
+      />
+
+      {/* Before / After swipe comparison — visible as soon as both scenes are selected */}
+      {beforePreviewUrl && afterPreviewUrl && (
+        <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/[0.04] p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[0.62rem] uppercase tracking-wider text-slate-400">Before / After comparison</p>
+            <button
+              type="button"
+              onClick={() => setCompareModalOpen(true)}
+              className="text-[0.58rem] font-semibold text-cyan-300 hover:text-cyan-200 border border-cyan-400/25 rounded-md px-2 py-0.5 transition"
+            >
+              Expand ↗
+            </button>
+          </div>
+          <span className="block text-[0.52rem] text-slate-500 font-mono -mt-1">
+            {beforeScene?.date && afterScene?.date ? `${formatDateDMY(beforeScene.date)} → ${formatDateDMY(afterScene.date)}` : ""}
+          </span>
+          <ImageSwipeCompare
+            beforeUrl={beforePreviewUrl}
+            afterUrl={afterPreviewUrl}
+            beforeLabel="Before"
+            afterLabel="After"
+          />
+        </div>
+      )}
+
+      <ChangeCompareModal
+        open={compareModalOpen}
+        onClose={() => setCompareModalOpen(false)}
+        beforeUrl={beforePreviewUrl ?? ""}
+        afterUrl={afterPreviewUrl ?? ""}
+        changeUrl={diffDataUrl}
+        beforeDate={beforeScene?.date}
+        afterDate={afterScene?.date}
+        indexKey={indexKey}
       />
 
       {/* Sensitivity */}
@@ -630,13 +926,27 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
       </div>
 
       {/* Run */}
+      {!canRun && (
+        <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 space-y-1">
+          <p className="text-[0.58rem] text-amber-200 font-medium">Required before running:</p>
+          <div className="flex flex-wrap gap-1.5">
+            <span className={`text-[0.55rem] rounded-full px-2 py-0.5 border ${beforeScene ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-white/[0.08] text-slate-500"}`}>
+              {beforeScene ? `✓ Before · ${formatDateDMY(beforeScene.date)}` : "✗ Before scene"}
+            </span>
+            <span className={`text-[0.55rem] rounded-full px-2 py-0.5 border ${afterScene ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-white/[0.08] text-slate-500"}`}>
+              {afterScene ? `✓ After · ${formatDateDMY(afterScene.date)}` : "✗ After scene"}
+            </span>
+          </div>
+        </div>
+      )}
+
       <button
         type="button"
         onClick={runChangeDetection}
         disabled={!canRun || computing}
         className="w-full rounded-lg bg-cyan-400 px-3 py-3 text-xs font-bold text-[#03101d] transition-colors hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-55"
       >
-        {computing ? "Computing change map..." : canRun ? "Run Change Detection" : "Select both scenes first"}
+        {runButtonLabel}
       </button>
 
       {computeError && (
@@ -650,7 +960,17 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
         <div className="rounded-lg border border-white/[0.07] bg-[#020817]/70 p-3 space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Change Map</p>
-            <button
+            <div className="flex items-center gap-1.5">
+              {beforePreviewUrl && afterPreviewUrl && (
+                <button
+                  type="button"
+                  onClick={() => setCompareModalOpen(true)}
+                  className="text-[0.6rem] text-slate-400 hover:text-cyan-400 border border-white/[0.08] hover:border-cyan-400/30 rounded-lg px-2 py-1 transition-all cursor-pointer"
+                >
+                  Compare
+                </button>
+              )}
+              <button
               type="button"
               onClick={downloadDiff}
               className="flex items-center gap-1.5 text-[0.6rem] text-slate-400 hover:text-cyan-400 border border-white/[0.08] hover:border-cyan-400/30 rounded-lg px-2 py-1 transition-all cursor-pointer"
@@ -662,6 +982,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
               </svg>
               PNG
             </button>
+            </div>
           </div>
 
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -687,35 +1008,6 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
                 <p className="text-xs font-bold text-slate-300">{filteredStats.stablePct.toFixed(1)}%</p>
                 <p className="text-[0.5rem] text-slate-500 mt-0.5">Stable</p>
               </div>
-            </div>
-          )}
-
-          {/* Before / After comparison slider */}
-          {beforePreviewUrl && afterPreviewUrl && (
-            <div className="space-y-2">
-              <p className="text-[0.58rem] uppercase tracking-wider text-slate-500">Before / After comparison</p>
-              <div className="relative w-full aspect-square rounded-md overflow-hidden border border-white/[0.07] bg-slate-950">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={beforePreviewUrl} alt="Before" className="absolute inset-0 w-full h-full object-cover" />
-                <div
-                  className="absolute inset-0 overflow-hidden"
-                  style={{ clipPath: `inset(0 ${100 - compareSlider}% 0 0)` }}
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={afterPreviewUrl} alt="After" className="w-full h-full object-cover" style={{ width: `${10000 / compareSlider}%`, maxWidth: "none" }} />
-                </div>
-                <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]"
-                  style={{ left: `${compareSlider}%` }}
-                />
-                <span className="absolute top-1.5 left-1.5 text-[0.5rem] font-bold uppercase bg-black/60 text-sky-300 px-1.5 py-0.5 rounded">Before</span>
-                <span className="absolute top-1.5 right-1.5 text-[0.5rem] font-bold uppercase bg-black/60 text-orange-300 px-1.5 py-0.5 rounded">After</span>
-              </div>
-              <input
-                type="range" min={0} max={100} value={compareSlider}
-                onChange={(e) => setCompareSlider(Number(e.target.value))}
-                className="w-full accent-cyan-400"
-              />
             </div>
           )}
         </div>
