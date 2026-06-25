@@ -13,6 +13,7 @@ import MapToolbar from "./MapToolbar";
 import MapSearch from "./MapSearch";
 import MapLayerBar from "./MapLayerBar";
 import LeafletMap from "./LeafletMap";
+import { FloatingElevationPanel } from "../_components/AnalysisSidebar/ElevationContourPanel";
 import CoordsPopup from "./CoordsPopup";
 import AITriggerButton from "./AITriggerButton";
 import Mapbox3DView from "./Mapbox3DView";
@@ -97,6 +98,7 @@ export default function MapPage() {
   const [projectStartOpen, setProjectStartOpen]  = useState(true);
   const [activeProject,    setActiveProject]     = useState<UserProject | null>(null);
   const [projectSaving,    setProjectSaving]     = useState(false);
+  const [elevationFloatOpen, setElevationFloatOpen] = useState(false);
 
   const [geoJsonData,     setGeoJsonData]     = useState<any>(null);
   const [geoJsonLoading,  setGeoJsonLoading]  = useState(false);
@@ -1010,6 +1012,7 @@ export default function MapPage() {
       onLayer3D={handleOpen3D}
       onSatellitePreview={handleSatellitePreview}
       onRasterPreview={handleRasterPreview}
+      onOpenElevationFloat={() => setElevationFloatOpen(true)}
     />
   ), [
     selectedFeature,
@@ -1311,6 +1314,15 @@ export default function MapPage() {
             <AITriggerButton onClick={() => setAiOpen(!aiOpen)} active={aiOpen} />
             <AIAssistant open={aiOpen} onClose={() => setAiOpen(false)} />
             {sharedSidebar}
+
+            {/* ── Floating Elevation Panel — renders above the map, not inside sidebar ── */}
+            <FloatingElevationPanel
+              open={elevationFloatOpen}
+              onClose={() => setElevationFloatOpen(false)}
+              selectedFeature={selectedFeature}
+              onContoursGenerated={(geojson, fileName) => handleGeoJSONUpload(geojson, fileName)}
+              initialPosition={{ x: 16, y: 64 }}
+            />
           </>
         )}
 

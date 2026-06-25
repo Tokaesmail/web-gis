@@ -45,6 +45,7 @@ export default function AnalysisSidebar(
   onSatellitePreview,
   onRasterPreview,
   onChangeDetectionPreview,
+  onOpenElevationFloat,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
@@ -78,6 +79,7 @@ export default function AnalysisSidebar(
   onSatellitePreview?: (config: SatellitePreviewConfig) => void;
   onRasterPreview?: (config: RasterPreviewConfig) => void;
   onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
+  onOpenElevationFloat?: () => void;
 }) {
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -179,6 +181,7 @@ export default function AnalysisSidebar(
                   onSatellitePreview={onSatellitePreview}
                   onRasterPreview={onRasterPreview}
                   onChangeDetectionPreview={onChangeDetectionPreview}
+                  onOpenElevationFloat={onOpenElevationFloat}
                 />
               )}
             </div>

@@ -11,7 +11,7 @@ import { ChangeDetectionPanel, type ChangeDetectionPreviewConfig } from "./Chang
 import { getMidCoords } from "./geoFeatureUtils";
 import { PanelId } from "./panels";
 import { CropsPanel } from "./CropsPanel";
-import ElevationContourPanel from "./ElevationContourPanel";
+// ElevationContourPanel is now rendered as a FloatingElevationPanel in MapClient
 
 export function PanelContent({
   id,
@@ -42,8 +42,10 @@ export function PanelContent({
   onSatellitePreview,
   onRasterPreview,
   onChangeDetectionPreview,
+  onOpenElevationFloat,
 }: {
   id: PanelId;
+  onOpenElevationFloat?: () => void;
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
   captures: any[];
@@ -165,13 +167,32 @@ export function PanelContent({
     );
   }
 
-  // ── ELEVATION & CONTOURS ──                         
+  // ── ELEVATION & CONTOURS — opens as floating panel above the map ──
   if (id === "elevation") {
     return (
-      <ElevationContourPanel
-        selectedFeature={selectedFeature}
-        onContoursGenerated={(geojson, fileName) => onGeoJSONUpload?.(geojson, fileName)}
-      />
+      <div className="flex flex-col items-center justify-center gap-4 py-10 px-2">
+        <div className="w-14 h-14 rounded-2xl bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+            <path d="M3 17l4-8 4 4 4-6 4 10" />
+            <path d="M3 20h18" />
+          </svg>
+        </div>
+        <div className="text-center space-y-1">
+          <p className="text-sm font-semibold text-slate-200">Elevation &amp; Contours</p>
+          <p className="text-[0.65rem] text-slate-500 leading-relaxed max-w-[200px]">
+            Opens as a floating panel above the map so you can interact with both at the same time.
+          </p>
+        </div>
+        <button
+          onClick={onOpenElevationFloat}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-[#03101d] text-xs font-bold transition-all cursor-pointer shadow-[0_0_16px_rgba(0,212,255,0.3)]"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+          </svg>
+          Open Floating Panel
+        </button>
+      </div>
     );
   }
 
