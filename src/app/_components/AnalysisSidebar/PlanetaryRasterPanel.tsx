@@ -32,24 +32,33 @@ const SENTINEL2_BANDS: { id: string; label: string; gsd: string; desc: string }[
 
 // ─── Quick-pick presets (still just plain expressions, nothing computed locally) ──
 const EXPRESSION_PRESETS: { key: string; label: string; expression: string; colormap: string; rescale: [number, number]; desc: string }[] = [
-  { key: "NDVI", label: "NDVI",  expression: "(B08-B04)/(B08+B04)",         colormap: "viridis", rescale: [0, 0.45], desc: "Vegetation vigor" },
-  { key: "NDWI", label: "NDWI",  expression: "(B03-B08)/(B03+B08)",         colormap: "rdbu",   rescale: [-0.3, 0.4], desc: "Water content" },
-  { key: "NDMI", label: "NDMI",  expression: "(B8A-B11)/(B8A+B11)",         colormap: "bugn_r", rescale: [-0.4, 0.6], desc: "Moisture / drought stress" },
-  { key: "NDBI", label: "NDBI",  expression: "(B11-B08)/(B11+B08)",         colormap: "magma",  rescale: [-0.4, 0.4], desc: "Built-up / urban areas" },
-  { key: "SAVI", label: "SAVI",  expression: "1.5*(B08-B04)/(B08+B04+0.5)", colormap: "rdylgn", rescale: [0, 0.6], desc: "Soil-adjusted vegetation" },
-  { key: "EVI",  label: "EVI",   expression: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)", colormap: "greens", rescale: [0, 1], desc: "Enhanced vegetation" },
+  // NDVI: real-world desert-agriculture range is roughly -0.1 (sand) to 0.75 (dense crops).
+  // Using viridis clips variation — rdylgn maps red(bare)→green(vegetation) which is intuitive.
+  { key: "NDVI", label: "NDVI",  expression: "(B08-B04)/(B08+B04)",         colormap: "rdylgn", rescale: [-0.1, 0.75], desc: "Vegetation vigor" },
+  // NDWI: water is positive, dry land negative. rdbu: blue=water, red=dry.
+  { key: "NDWI", label: "NDWI",  expression: "(B03-B08)/(B03+B08)",         colormap: "rdbu",   rescale: [-0.5, 0.5],  desc: "Water content" },
+  // NDMI: moisture stress. Full -1→1 range, reversed so moist=blue, dry=brown.
+  { key: "NDMI", label: "NDMI",  expression: "(B8A-B11)/(B8A+B11)",         colormap: "rdbu_r", rescale: [-0.5, 0.5],  desc: "Moisture / drought stress" },
+  // NDBI: built-up positive, vegetation negative. magma shows density well.
+  { key: "NDBI", label: "NDBI",  expression: "(B11-B08)/(B11+B08)",         colormap: "magma",  rescale: [-0.5, 0.5],  desc: "Built-up / urban areas" },
+  // SAVI: soil-adjusted, values ~0 (bare)→0.7 (dense). rdylgn matches NDVI palette.
+  { key: "SAVI", label: "SAVI",  expression: "1.5*(B08-B04)/(B08+B04+0.5)", colormap: "rdylgn", rescale: [-0.1, 0.7],  desc: "Soil-adjusted vegetation" },
+  // EVI: enhanced vegetation, range wider than NDVI in dense canopy.
+  { key: "EVI",  label: "EVI",   expression: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)", colormap: "rdylgn", rescale: [-0.1, 0.8], desc: "Enhanced vegetation" },
+  // True Color: R/G/B visual composite — rescale 0→3000 SR → 0→255.
+  { key: "BSI",  label: "BSI",   expression: "((B11+B04)-(B08+B02))/((B11+B04)+(B08+B02))", colormap: "spectral_r", rescale: [-0.5, 0.5], desc: "Bare soil index" },
 ];
 // ─── Color ramps shown as visual swatches (matching the app's existing
 // "Water / Vegetation / Spectral" style) instead of a plain colormap name list ──
 const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
-  { key: "rdylgn",   label: "Vegetation", gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#1a9850)" },
-  { key: "rdbu",     label: "Water",      gradient: "linear-gradient(90deg,#67001f,#f4a582,#f7f7f7,#92c5de,#053061)" },
-  { key: "spectral", label: "Spectral",   gradient: "linear-gradient(90deg,#9e0142,#fdae61,#ffffbf,#abdda4,#5e4fa2)" },
-  { key: "bugn_r",   label: "Moisture",   gradient: "linear-gradient(90deg,#00441b,#66c2a4,#edf8fb)" },
-  { key: "magma",    label: "Thermal",    gradient: "linear-gradient(90deg,#000004,#721f81,#fb8761,#fcfdbf)" },
-  { key: "greens",   label: "Greens",     gradient: "linear-gradient(90deg,#00441b,#66c2a4,#f7fcf5)" },
-  { key: "viridis",  label: "Viridis",    gradient: "linear-gradient(90deg,#440154,#21918c,#fde725)" },
-  { key: "rdylbu_r", label: "Heat",       gradient: "linear-gradient(90deg,#313695,#fee090,#a50026)" },
+  { key: "rdylgn",    label: "Vegetation", gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#1a9850)" },
+  { key: "rdbu",      label: "Water",      gradient: "linear-gradient(90deg,#67001f,#f4a582,#f7f7f7,#92c5de,#053061)" },
+  { key: "rdbu_r",    label: "Moisture",   gradient: "linear-gradient(90deg,#053061,#92c5de,#f7f7f7,#f4a582,#67001f)" },
+  { key: "spectral",  label: "Spectral",   gradient: "linear-gradient(90deg,#9e0142,#fdae61,#ffffbf,#abdda4,#5e4fa2)" },
+  { key: "spectral_r",label: "Spectral R", gradient: "linear-gradient(90deg,#5e4fa2,#abdda4,#ffffbf,#fdae61,#9e0142)" },
+  { key: "magma",     label: "Thermal",    gradient: "linear-gradient(90deg,#000004,#721f81,#fb8761,#fcfdbf)" },
+  { key: "greens",    label: "Greens",     gradient: "linear-gradient(90deg,#f7fcf5,#74c476,#00441b)" },
+  { key: "rdylbu_r",  label: "Heat",       gradient: "linear-gradient(90deg,#313695,#fee090,#a50026)" },
 ];
 
 
@@ -292,8 +301,8 @@ const [classification, setClassification] = useState<string>("");
 ) {
   try {
     const url =
-      `https://planetarycomputer.microsoft.com/api/data/v1/collections/${collection}/items/${item}/statistics` +
-      `?asset_as_band=true&expression=${encodeURIComponent(expression)}`;
+      `https://planetarycomputer.microsoft.com/api/data/v1/item/statistics` +
+      `?collection=${collection}&item=${item}&asset_as_band=true&expression=${encodeURIComponent(expression)}`;
 
     const res = await fetch(url);
     if (!res.ok) return null;
@@ -318,15 +327,26 @@ const [classification, setClassification] = useState<string>("");
     if (!selectedScene || !validation.ok) return;
     setPreviewStatus("loading");
     setPreviewError(null);
+    setStats(null);
+    setClassification("");
 
     try {
+      // ── 1. Fetch real band statistics first (p2/p98 give the actual data range) ──
+      // This is the key fix: instead of guessing rescale values upfront, we ask
+      // Planetary Computer what the real range is for this scene, then rescale
+      // to that range so the colormap spans the actual data distribution.
+      const realStats = await fetchStats(selectedScene.collection, selectedScene.id, expression);
+      const autoMin = realStats?.p2  ?? rescaleMin;
+      const autoMax = realStats?.p98 ?? rescaleMax;
+
+      // ── 2. Render the PNG using the accurate rescale range ─────────────────
       const params = new URLSearchParams({
         collection: selectedScene.collection,
         item: selectedScene.id,
         expression,
         asset_as_band: "true",
         return_mask: "false",
-        rescale: `${rescaleMin},${rescaleMax}`,
+        rescale: `${autoMin},${autoMax}`,
         colormap_name: colormap,
         format: "png",
         width: "1024",
@@ -347,64 +367,58 @@ const [classification, setClassification] = useState<string>("");
         reader.readAsDataURL(blob);
       });
 
-            const realStats = await fetchStats(selectedScene.collection, selectedScene.id, expression);
-      const imageStats = await analyzeImage(dataUrl);
-      if (realStats && imageStats) {
-  setStats({
-    min: realStats.min,
-    max: realStats.max,
-    mean: (realStats.min + realStats.max) / 2, // أو القيمة العائدة من السيرفر إن وجدت
-    histogram: imageStats.histogram
-  });
-  if (activePreset === "NDWI") {
-    // في الـ NDWI القيم الموجبة العالية تعني مياه صريحة
-    if (realStats.max > 0.1) {
-      setClassification("💧 المسطحات المائية / نهر النيل");
-    } else {
-      setClassification("🏜 يابسة / مناطق جافة");
-    }
-  } else if (activePreset === "NDVI") {
-    if (realStats.max > 0.4) setClassification("🌿 Dense vegetation");
-    else if (realStats.max > 0.15) setClassification("🌱 Sparse vegetation");
-    else setClassification("🏙 Urban / Bare land");
-  } else {
-    setClassification("📊 Custom Expression Rendered");
-  }
-}
-
-      setPreviewImg(dataUrl);
-setPreviewStatus("success");
-
-// 👇 هنا التحليل الصح
-const s = await analyzeImage(dataUrl);
-if (!s) return;
-
-setStats(s);
-
-const meanNorm = s.mean / 255;
-
-if (meanNorm > 0.6) setClassification("🌿 Dense vegetation");
-else if (meanNorm > 0.3) setClassification("🌱 Soil / sparse vegetation");
-else setClassification("🏙 Urban / water / bare land");
-
+      // ── 3. Clip to drawn polygon if requested ──────────────────────────────
       const [west, south, east, north] = bbox;
       const renderedBounds: [[number, number], [number, number]] = [[south, west], [north, east]];
 
-      // Server always returns a rectangle covering the bbox. If the user drew
-      // an actual polygon (not just a point/rectangle), mask out everything
-      // outside its outline so only the selected shape shows on the map.
       if (clipToShape && polygonRing) {
         try {
           dataUrl = await clipImageToPolygon(dataUrl, renderedBounds, polygonRing);
         } catch {
-          // If clipping fails for any reason, fall back to the unclipped rectangle.
+          // fall back to unclipped rectangle
+        }
+      }
+
+  // ── 4. Analyze image pixels + set classification ───────────────────────
+    const imageStats = await analyzeImage(dataUrl);
+    if (imageStats) {
+      setStats({
+        min:       realStats?.min  ?? imageStats.min / 255,
+        max:       realStats?.max  ?? imageStats.max / 255,
+        mean:      realStats != null ? (realStats.p2 + realStats.p98) / 2 : imageStats.mean / 255,
+        histogram: imageStats.histogram,
+      });
+
+      console.log("Real Stats:", realStats);
+      console.log("Image Stats:", imageStats);
+
+      // Use real p98 value (actual max NDVI for this scene) for classification,
+      // not pixel brightness which depends on colormap.
+      // 1. حساب قيمة عليا وقيمة متوسطة بشكل آمن متوافق مع TypeScript والـ API
+      const topVal = realStats?.p98 ?? (imageStats.max / 255);
+      const minVal = realStats?.p2 ?? (imageStats.min / 255);
+      // بديل ديناميكي للمتوسط الإحصائي بين النقطتين
+      const dynamicMid = (topVal + minVal) / 2; 
+
+      // 2. التحليل الديناميكي المستقل للمصفوفة
+      if (activePreset) {
+        // لو فيه بريسيت جاهز (NDVI, NDWI...) بنعرض اسمه
+        setClassification(`📊 Value Range: ${activePreset} Analysis`);
+      } else {
+        // لو معادلة ديناميكية تماماً من الـ Raster Calculator
+        if (dynamicMid > 0.3) {
+          setClassification("📈 High-Reflectance / Highly Positive Response");
+        } else if (dynamicMid > 0.05) {
+          setClassification("📉 Mid-Range / Moderate Response");
+        } else if (dynamicMid > -0.1) {
+          setClassification("⏳ Low / Near-Zero Response");
+        } else {
+          setClassification("📉 Negative Response / Absorbing Target");
         }
       }
 
       setPreviewImg(dataUrl);
       setPreviewStatus("success");
-      
-
 
       onPreview?.({
         name: `${activePreset || "Expression"} · ${selectedScene.id}`,
@@ -417,11 +431,13 @@ else setClassification("🏙 Urban / water / bare land");
         colorRamp: colormap,
         coords: fallbackCoords ?? { lat: (south + north) / 2, lng: (west + east) / 2 },
       });
-    } catch (err) {
-      setPreviewStatus("error");
-      setPreviewError(err instanceof Error ? err.message : "Render request failed.");
     }
-  };
+
+  } catch (err) {
+    setPreviewStatus("error");
+    setPreviewError(err instanceof Error ? err.message : "Render request failed.");
+  }
+}; // <--- القوس ده والمفتاح دول هما اللي كانوا ناقصين لتقفيل الـ view = async () => {
 
   return (
     <div className="space-y-4">
@@ -582,7 +598,7 @@ else setClassification("🏙 Urban / water / bare land");
         />
         {validation.unknownTokens.length > 0 && (
           <p className="text-[0.58rem] text-amber-300">
-            Unknown token{validation.unknownTokens.length > 1 ? "s" : ""}: {validation.unknownTokens.join(", ")} — use band IDs like B08, B04.
+            Unknown token{validation.unknownTokens.length > 1 ? "s" : ""}?: {validation.unknownTokens.join(", ")} — use band IDs like B08, B04.
           </p>
         )}
         <p className="text-[0.55rem] text-slate-600">
@@ -676,83 +692,31 @@ else setClassification("🏙 Urban / water / bare land");
         {previewStatus === "loading" ? "Rendering on Planetary Computer…" : "Render & Preview on Map"}
       </button>
       {stats && previewStatus === "success" && (
-  <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-3 space-y-2">
-
-    <p className="text-[0.62rem] uppercase text-slate-500">
-      Pixel Insight
-    </p>
-
-    <div className="text-[0.6rem] text-slate-300 space-y-1">
-      <p>Min: {stats.min.toFixed(2)}</p>
-      <p>Max: {stats.max.toFixed(2)}</p>
-      <p>Mean: {stats.mean.toFixed(2)}</p>
-    </div>
-
-    <div className="text-[0.65rem] font-semibold text-cyan-300">
-      {classification}
-    </div>
-
-    <div className="flex items-end gap-[2px] h-16 mt-2">
-      {stats.histogram.map((h, i) => (
-        <div
-          key={i}
-          className="bg-cyan-400/50 w-full"
-          style={{
-            height: `${(h / Math.max(...stats.histogram)) * 100}%`,
-          }}
-        />
-      ))}
-    </div>
-
-    <p className="text-[0.5rem] text-slate-600">
-      Histogram (pixel value distribution 0–255)
-    </p>
-  </div>
-)}
-      {stats && (
-  <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
-    
-    {/* Title */}
-    <p className="text-[0.6rem] uppercase tracking-wider text-slate-400">
-      Pixel Value Meaning
-    </p>
-
-    {/* Min / Max */}
-    <div className="flex justify-between text-[0.6rem] text-slate-300">
-      <span>Min: {stats.min.toFixed(3)}</span>
-      <span>Max: {stats.max.toFixed(3)}</span>
-    </div>
-
-    {/* Color bar */}
-    <div
-      className="h-2 rounded"
-      style={{
-        background: colormapPreviewGradient(colormap),
-      }}
-    />
-
-    {/* Explanation depending on index */}
-    <div className="text-[0.58rem] text-slate-400 leading-relaxed">
-      {activePreset === "NDVI" && (
-        <p>
-          🌱 NDVI: negative = water/cloud, low = bare soil, high = healthy vegetation
-        </p>
+        <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-3 space-y-2">
+          <p className="text-[0.62rem] uppercase text-slate-500">Band Statistics (real values)</p>
+          <div className="grid grid-cols-3 gap-1.5">
+            {[
+              { label: "Min",  value: stats.min.toFixed(3)  },
+              { label: "Max",  value: stats.max.toFixed(3)  },
+              { label: "Mean", value: stats.mean.toFixed(3) },
+            ].map((s) => (
+              <div key={s.label} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2 text-center">
+                <p className="text-xs font-semibold text-slate-200">{s.value}</p>
+                <p className="text-[0.55rem] text-slate-500 mt-0.5">{s.label}</p>
+              </div>
+            ))}
+          </div>
+          <div className="text-[0.65rem] font-semibold text-cyan-300">{classification}</div>
+          <div className="flex items-end gap-[2px] h-12 mt-1">
+            {stats.histogram.map((h, i) => (
+              <div key={i} className="bg-cyan-400/50 w-full rounded-sm"
+                style={{ height: `${(h / Math.max(...stats.histogram, 1)) * 100}%` }} />
+            ))}
+          </div>
+          <div className="h-2 rounded-full" style={{ background: colormapPreviewGradient(colormap) }} />
+          <p className="text-[0.5rem] text-slate-600">Pixel distribution · color bar = selected colormap</p>
+        </div>
       )}
-
-      {activePreset === "NDWI" && (
-        <p>
-          💧 NDWI: low values = water presence, high values = dry land
-        </p>
-      )}
-
-      {!activePreset && (
-        <p>
-          Raster values come from satellite reflectance bands. Each pixel = real ground reflectance value.
-        </p>
-      )}
-    </div>
-  </div>
-)}
 
       {previewError && (
         <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2.5 text-[0.65rem] text-red-300">

@@ -730,7 +730,10 @@ const scenes = useMemo(
     }
   };
 
-  useEffect(() => {
+  // 1. هنحول الـ bounds لنص ثابت برة الـ useEffect عشان نستخدمه في الـ dependency array بأمان
+const boundsString = bounds ? JSON.stringify(bounds) : "";
+
+useEffect(() => {
   if (!clipToShape || !polygonRing) {
     setClippedThumbs({});
     return;
@@ -740,21 +743,22 @@ const scenes = useMemo(
     const next: Record<string, string> = {};
     for (const scene of scenes) {
       const src = scene.thumbnail ?? scene.previewUrl;
-      const bbox = scene.bbox ?? [west, south, east, north];
-      if (!src || !bbox) continue;
+      
+      // نستخدم الـ bounds الأصلي هنا في الحسابات عادي
+      const currentBounds = bounds; 
+      if (!src || !currentBounds) continue;
       try {
-        const [w, s, e, n] = bbox;
-        const clipped = await clipImageToPolygon(src, [[s, w], [n, e]], polygonRing);
+        const clipped = await clipImageToPolygon(src, currentBounds, polygonRing);
         if (!cancelled) next[scene.id] = clipped;
       } catch {
-        // leave unclipped on failure
+        // إذا فشل الـ clip نتركها
       }
     }
     if (!cancelled) setClippedThumbs(next);
   })();
   return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [scenes, clipToShape, polygonRing]);
+}, [scenes, clipToShape, polygonRing, boundsString]); // الكود هنا معتمد على boundsString النصي وليس الـ Array! // أضفنا bounds للمصفوفة لضمان التحديث عند تغيير المكان
 
 // useEffect(() => {
 //   console.log("effect fired");
@@ -943,7 +947,10 @@ const scenes = useMemo(
   const handlePreviewScene = async (scene: SatelliteScene) => {
   const analysis = activeAnalysis;
   const rawPreviewUrl = makePlanetaryComputerPreviewUrl(scene, analysis);
-  const sceneBounds = stacBBoxToBounds(scene.bbox, bounds);
+  
+  // تعديل أساسي: اجعلي الخريطة تركز وتتعامل مع الـ AOI bounds الخاص بكِ مباشرة لمنع الـ Zoom Out العنيف
+  const sceneBounds = bounds; 
+  
   const sceneCoords = boundsCenter(sceneBounds);
   const visualization = getVisualization(analysis, scene.collection);
   const overviewUrl = scene.previewUrl ?? scene.thumbnail ?? makePlanetaryComputerPreviewUrl(scene, "RGB");
@@ -951,19 +958,18 @@ const scenes = useMemo(
   setPreviewingSceneId(scene.id);
   setSceneError(null);
 
-  // الكليب هنا شغال على البكسلات بس (canvas mask) — مش مرتبط بنوع
-  // الـ band/expression، فهو بيشتغل تلقائيًا مع أي تحليل من الخمسة
-  // (RGB / NDVI / NDWI / NDMI / SWIR) من غير ما نكتب كود مخصوص لكل نوع.
   let previewUrl = rawPreviewUrl;
   if (clipToShape && polygonRing && rawPreviewUrl) {
     try {
       previewUrl = await clipImageToPolygon(rawPreviewUrl, sceneBounds, polygonRing);
     } catch {
-      previewUrl = rawPreviewUrl; // لو الكليب فشل، يرجع للمستطيل العادي
+      previewUrl = rawPreviewUrl; 
     }
   }
 
-  if (previewUrl) setScenePreviewUrls((prev) => ({ ...prev, [scene.id]: previewUrl }));
+if (previewUrl && scenePreviewUrls[scene.id] !== previewUrl) {
+  setScenePreviewUrls((prev) => ({ ...prev, [scene.id]: previewUrl }));
+}
   setPreviewingSceneId(null);
 
   setActivePreviewSceneId(scene.id);
@@ -981,7 +987,7 @@ const scenes = useMemo(
       expression: visualization.expression,
       assets: visualization.assets,
       assetUrls: getSceneAssetUrls(scene, analysis),
-      bounds: sceneBounds,
+      bounds: sceneBounds, // سيعود بالـ AOI المحدد ولن يخرج خارج النطاق
       coords: sceneCoords,
       previewUrl,
       overviewUrl,
@@ -1066,92 +1072,96 @@ const scenes = useMemo(
   const showDownloadOnly = viewerMode === "download";
   const showSceneDownloads = viewerMode === "download";
 
-  return (
-    <div className="space-y-4">
-      <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Satellite Data Integration</p>
-            <p className="text-xs text-slate-300 mt-1">Separated legacy and multispectral data pipelines</p>
-          </div>
-          <div className="text-right shrink-0">
-            <p className="text-lg font-semibold" style={{ color: sourceMeta.color }}>{sourceMeta.resolution}</p>
-            <p className="text-[0.58rem] text-slate-500">{sourceMeta.cadence}</p>
-          </div>
+ return (
+  <div className="space-y-4">
+    {/* Satellite Data Integration Header */}
+    <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Satellite Data Integration</p>
+          <p className="text-xs text-slate-300 mt-1">Separated legacy and multispectral data pipelines</p>
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-lg font-semibold" style={{ color: sourceMeta.color }}>{sourceMeta.resolution}</p>
+          <p className="text-[0.58rem] text-slate-500">{sourceMeta.cadence}</p>
         </div>
       </div>
+    </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        {SATELLITE_PIPELINES.map((mode) => (
-          <button
-            key={mode.key}
-            type="button"
-            onClick={() => setViewerMode(mode.key)}
-            className={`rounded-lg border p-3 text-left transition-all cursor-pointer ${
-              viewerMode === mode.key ? "border-cyan-400/35 bg-cyan-400/10" : "border-white/[0.06] bg-white/[0.025] hover:border-white/[0.14]"
-            }`}
-          >
-            <span className="block text-[0.68rem] font-semibold text-slate-200">{mode.label}</span>
-            <span className="mt-1 block text-[0.53rem] text-slate-500">{mode.desc}</span>
-          </button>
-        ))}
-      </div>
+    {/* Pipelines Selection Buttons */}
+    <div className="grid grid-cols-2 gap-2">
+      {SATELLITE_PIPELINES.map((mode) => (
+        <button
+          key={mode.key}
+          type="button"
+          onClick={() => setViewerMode(mode.key)}
+          className={`rounded-lg border p-3 text-left transition-all cursor-pointer ${
+            viewerMode === mode.key ? "border-cyan-400/35 bg-cyan-400/10" : "border-white/[0.06] bg-white/[0.025] hover:border-white/[0.14]"
+          }`}
+        >
+          <span className="block text-[0.68rem] font-semibold text-slate-200">{mode.label}</span>
+          <span className="mt-1 block text-[0.53rem] text-slate-500">{mode.desc}</span>
+        </button>
+      ))}
+    </div>
 
-      <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Active pipeline</p>
-            <p className="mt-1 truncate font-mono text-[0.58rem] text-cyan-200">
-              {SATELLITE_PIPELINES.find((mode) => mode.key === viewerMode)?.pipeline}
-            </p>
-          </div>
-          <span className="shrink-0 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-[0.55rem] font-semibold text-emerald-300">
-            isolated
-          </span>
+    {/* Active Pipeline Status */}
+    <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Active pipeline</p>
+          <p className="mt-1 truncate font-mono text-[0.58rem] text-cyan-200">
+            {SATELLITE_PIPELINES.find((mode) => mode.key === viewerMode)?.pipeline}
+          </p>
         </div>
+        <span className="shrink-0 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-[0.55rem] font-semibold text-emerald-300">
+          isolated
+        </span>
       </div>
+    </div>
 
-      {showSourceControls && (
-        <>
-          <div className="grid grid-cols-2 gap-2">
-            {([
-              { key: "sentinel-2" as const, title: "Sentinel-2", sub: "Primary", color: "#22d3ee" },
-              { key: "landsat" as const, title: "Landsat", sub: "Secondary", color: "#f59e0b" },
-            ]).map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => setSource(item.key)}
-                className={`rounded-lg border p-3 text-left transition-all cursor-pointer ${
-                  source === item.key ? "bg-white/[0.07] border-cyan-400/35" : "bg-white/[0.025] border-white/[0.06] hover:border-white/[0.14]"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full" style={{ background: item.color, boxShadow: `0 0 8px ${item.color}` }} />
-                  <span className="text-xs font-semibold text-slate-200">{item.title}</span>
-                </div>
-                <p className="text-[0.58rem] text-slate-500 mt-1">{item.sub}</p>
-              </button>
-            ))}
+    {/* Source Controls (Satellite Type, Dates, Cloud Threshold) */}
+    {showSourceControls && (
+      <>
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { key: "sentinel-2" as const, title: "Sentinel-2", sub: "Primary", color: "#22d3ee" },
+            { key: "landsat" as const, title: "Landsat", sub: "Secondary", color: "#f59e0b" },
+          ].map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => setSource(item.key)}
+              className={`rounded-lg border p-3 text-left transition-all cursor-pointer ${
+                source === item.key ? "bg-white/[0.07] border-cyan-400/35" : "bg-white/[0.025] border-white/[0.06] hover:border-white/[0.14]"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full" style={{ background: item.color, boxShadow: `0 0 8px ${item.color}` }} />
+                <span className="text-xs font-semibold text-slate-200">{item.title}</span>
+              </div>
+              <p className="text-[0.58rem] text-slate-500 mt-1">{item.sub}</p>
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <DatePickerField label="From" value={dateFrom} max={dateTo} onChange={setDateFrom} />
+          <DatePickerField label="To" value={dateTo} min={dateFrom} onChange={setDateTo} />
+        </div>
+
+        <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Cloud cover threshold</span>
+            <span className="text-xs font-semibold text-cyan-300">{cloudCover}%</span>
           </div>
+          <input type="range" min={0} max={80} value={cloudCover} onChange={(e) => setCloudCover(Number(e.target.value))} className="w-full accent-cyan-400" />
+        </div>
+      </>
+    )}
 
-          <div className="grid grid-cols-2 gap-2">
-            <DatePickerField label="From" value={dateFrom} max={dateTo} onChange={setDateFrom} />
-            <DatePickerField label="To" value={dateTo} min={dateFrom} onChange={setDateTo} />
-          </div>
-
-          <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Cloud cover threshold</span>
-              <span className="text-xs font-semibold text-cyan-300">{cloudCover}%</span>
-            </div>
-            <input type="range" min={0} max={80} value={cloudCover} onChange={(e) => setCloudCover(Number(e.target.value))} className="w-full accent-cyan-400" />
-          </div>
-        </>
-      )}
-
-
-      {showMultispectralControls && (
+    {/* Multispectral Controls (Band selector & Legend) */}
+    {showMultispectralControls && (
       <div className="space-y-2">
         <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Band selector</p>
         <div className="grid grid-cols-2 gap-2">
@@ -1172,9 +1182,7 @@ const scenes = useMemo(
             </button>
           ))}
         </div>
-        <div className="grid grid-cols-1 gap-2">
-         
-        </div>
+
         <div className="rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">
           <div className="flex flex-wrap items-center gap-1.5">
             {activeVisualization.assets.map((asset) => (
@@ -1197,108 +1205,150 @@ const scenes = useMemo(
           </div>
         </div>
       </div>
-      )}
+    )}
 
-      {viewerMode === "analysis" && (
-        <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-3">
-          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Analysis Module</p>
-          <div className="mt-2 grid grid-cols-2 gap-2 text-[0.62rem]">
-            <div className="rounded-md border border-white/[0.06] bg-white/[0.025] px-2 py-2 text-slate-300">
-              Index: <span className="font-semibold text-cyan-200">{activeAnalysis}</span>
-            </div>
-            <div className="rounded-md border border-white/[0.06] bg-white/[0.025] px-2 py-2 text-slate-300">
-              Scenes: <span className="font-semibold text-emerald-200">{scenes.length}</span>
-            </div>
+    {/* Analysis Mode Dashboard */}
+    {viewerMode === "analysis" && (
+      <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-3">
+        <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Analysis Module</p>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-[0.62rem]">
+          <div className="rounded-md border border-white/[0.06] bg-white/[0.025] px-2 py-2 text-slate-300">
+            Index: <span className="font-semibold text-cyan-200">{activeAnalysis}</span>
           </div>
-        </div>
-      )}
-
-      <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">AOI filtering</p>
-            <p className="text-[0.65rem] text-slate-400 mt-1">
-              {coords ? `AOI center ${coords[0].toFixed(4)}, ${coords[1].toFixed(4)}` : "No AOI selected. Using current map preview."}
-            </p>
-            <p className="text-[0.55rem] text-slate-600 mt-1 font-mono">
-              BBOX {west.toFixed(4)}, {south.toFixed(4)}, {east.toFixed(4)}, {north.toFixed(4)}
-            </p>
+          <div className="rounded-md border border-white/[0.06] bg-white/[0.025] px-2 py-2 text-slate-300">
+            Scenes: <span className="font-semibold text-emerald-200">{scenes.length}</span>
           </div>
-          <span className={`shrink-0 rounded-full px-2 py-1 text-[0.55rem] font-semibold ${
-            coords ? "bg-emerald-400/10 text-emerald-300 border border-emerald-400/20" : "bg-amber-400/10 text-amber-300 border border-amber-400/20"
-          }`}>
-            {coords ? "AOI" : "MAP"}
-          </span>
         </div>
       </div>
+    )}
 
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Preview opacity</p>
-          <span className="text-[0.65rem] text-slate-400">{opacity}%</span>
+    {/* AOI Filtering / BBOX Card */}
+    <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">AOI filtering</p>
+          <p className="text-[0.65rem] text-slate-400 mt-1">
+            {coords ? `AOI center ${coords[0].toFixed(4)}, ${coords[1].toFixed(4)}` : "No AOI selected. Using current map preview."}
+          </p>
+          <p className="text-[0.55rem] text-slate-600 mt-1 font-mono">
+            BBOX {west.toFixed(4)}, {south.toFixed(4)}, {east.toFixed(4)}, {north.toFixed(4)}
+          </p>
         </div>
-        <input type="range" min={25} max={100} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} className="w-full accent-cyan-400" />
-       <button
-  onClick={handlePreview}
-  disabled={sceneStatus === "loading"}
-  className="mt-2 h-9 w-full rounded-lg border border-cyan-400/25 
-             bg-cyan-400/10 text-cyan-200 text-xs font-semibold
-             transition-all hover:bg-cyan-400/15 hover:border-cyan-400/40
-             disabled:opacity-60 disabled:cursor-not-allowed"
->
-  {sceneStatus === "loading" ? (
-    <span className="flex items-center justify-center gap-2">
-      <svg
-        className="h-4 w-4 animate-spin text-cyan-300"
-        viewBox="0 0 24 24"
-        fill="none"
+        <span className={`shrink-0 rounded-full px-2 py-1 text-[0.55rem] font-semibold ${
+          coords ? "bg-emerald-400/10 text-emerald-300 border border-emerald-400/20" : "bg-amber-400/10 text-amber-300 border border-amber-400/20"
+        }`}>
+          {coords ? "AOI" : "MAP"}
+        </span>
+      </div>
+    </div>
+
+    {/* Opacity Control & Load Button */}
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Preview opacity</p>
+        <span className="text-[0.65rem] text-slate-400">{opacity}%</span>
+      </div>
+      <input type="range" min={25} max={100} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} className="w-full accent-cyan-400" />
+      
+      <button
+        type="button"
+        onClick={handlePreview}
+        disabled={sceneStatus === "loading"}
+        className="mt-2 h-9 w-full rounded-lg border border-cyan-400/25 
+                   bg-cyan-400/10 text-cyan-200 text-xs font-semibold
+                   transition-all hover:bg-cyan-400/15 hover:border-cyan-400/40
+                   disabled:opacity-60 disabled:cursor-not-allowed"
       >
-        <circle
-          className="opacity-25"
-          cx="12"
-          cy="12"
-          r="10"
-          stroke="currentColor"
-          strokeWidth="4"
-        />
-        <path
-          className="opacity-75"
-          fill="currentColor"
-          d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-        />
-      </svg>
-      Loading Scenes...
-    </span>
-  ) : (
-    "Load Satellite Scenes"
-  )}
-</button>
-
-      </div>
-
-      {showSceneSearch && (
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Matching scenes</p>
-          <span className="text-[0.58rem] text-slate-500">
-            {sceneStatus === "loading" ? "loading" : `${scenes.length} found`}
+        {sceneStatus === "loading" ? (
+          <span className="flex items-center justify-center gap-2">
+            <svg className="h-4 w-4 animate-spin text-cyan-300" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+            </svg>
+            Loading Scenes...
           </span>
+        ) : (
+          "Load Satellite Scenes"
+        )}
+      </button>
+    </div>
+
+    {/* Matching Scenes Section Header */}
+    <div className="pt-2 space-y-2">
+      <div className="flex items-center justify-between">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Matching scenes</p>
+        <span className="text-[0.58rem] text-slate-500">
+          {sceneStatus === "loading" ? "loading" : `${scenes.length} found`}
+        </span>
+      </div>
+      
+      {sceneStatus === "success" && apiScenes.length > 0 && (
+        <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.05] px-3 py-2 text-[0.62rem] text-emerald-200">
+          External STAC API connected. Results are filtered by AOI, date range, and cloud cover.
         </div>
-        {sceneStatus === "success" && apiScenes.length > 0 && (
-          <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.05] px-3 py-2 text-[0.62rem] text-emerald-200">
-            External STAC API connected. Results are filtered by AOI, date range, and cloud cover.
-          </div>
-        )}
-        {sceneError && (
-          <div className="rounded-lg border border-amber-400/18 bg-amber-400/[0.05] px-3 py-2 text-[0.62rem] text-amber-200">
-            {sceneError} Showing local preview candidates instead.
-          </div>
-        )}
-        {scenes.length ? scenes.map((scene) => (
+      )}
+      
+      {sceneError && (
+        <div className="rounded-lg border border-amber-400/18 bg-amber-400/[0.05] px-3 py-2 text-[0.62rem] text-amber-200">
+          {sceneError} Showing local preview candidates instead.
+        </div>
+      )}
+    </div>
+
+    {/* CLIP TO DRAWN SHAPE TOGGLE (PERFECT DARK THEME DESIGN) */}
+    <div className="rounded-xl border border-white/[0.04] bg-[#020817]/40 p-4 transition-all duration-200">
+      <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-0.5">
+          <div className="flex items-center gap-2">
+  <span
+    className={`text-[0.65rem] font-bold tracking-wider uppercase ${
+      clipToShape ? "text-cyan-300" : "text-slate-400"
+    }`}
+  >
+    CLIP TO DRAWN SHAPE
+  </span>
+
+  <span
+    className={`rounded-full px-2 py-0.5 text-[0.55rem] font-bold ${
+      clipToShape
+        ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+        : "bg-slate-700/30 text-slate-400 border border-slate-600/50"
+    }`}
+  >
+    {clipToShape ? "ACTIVE" : "OFF"}
+  </span>
+</div>
+          <span className="text-[0.58rem] leading-normal text-slate-500 max-w-[210px]">
+  {clipToShape
+    ? "Only pixels inside the drawn polygon will be displayed."
+    : "Entire satellite scene will be displayed."}
+</span>
+        </div>
+
+        {/* المنزلق التفاعلي التابع لثيم GeoSense AI */}
+        <button
+          type="button"
+          onClick={() => setClipToShape(!clipToShape)}
+          className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border border-white/[0.06] transition-colors duration-200 ease-in-out focus:outline-none ${
+            clipToShape ? "bg-cyan-500/80 shadow-[0_0_12px_rgba(34,211,238,0.25)]" : "bg-[#020817]/80"
+          }`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-[14px] w-[14px] transform rounded-full bg-slate-300 shadow-md transition duration-200 ease-in-out mt-[2px] ml-[2px] ${
+              clipToShape ? "translate-x-4 bg-white" : "translate-x-0"
+            }`}
+          />
+        </button>
+      </div>
+    </div>
+
+    {/* Scenes Results List */}
+    <div className="space-y-2">
+      {scenes.length ? (
+        scenes.map((scene) => (
           <div key={scene.id} className="rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">
             <div className="flex items-center gap-3">
               {(clippedThumbs[scene.id] ?? scene.thumbnail) ? (
-                // eslint-disable-next-line @next/next/no-img-element
                 <img src={clippedThumbs[scene.id] ?? scene.thumbnail} alt="" className="w-8 h-8 rounded-md border border-white/[0.08] object-cover bg-slate-900" />
               ) : (
                 <div className="w-8 h-8 rounded-md border border-white/[0.08] bg-gradient-to-br from-slate-700 via-emerald-800 to-cyan-700" />
@@ -1309,6 +1359,7 @@ const scenes = useMemo(
               </div>
               <span className="text-[0.62rem] text-emerald-300">{scene.score}</span>
             </div>
+            
             <div className={`mt-2 grid gap-2 ${showSceneDownloads ? "grid-cols-[1fr_auto_auto]" : "grid-cols-1"}`}>
               {showSceneDownloads && (
                 <>
@@ -1345,16 +1396,17 @@ const scenes = useMemo(
                 {previewingSceneId === scene.id ? "..." : "Preview on map"}
               </button>
             </div>
+
             {activePreviewSceneId === scene.id && (
               <div className="mt-2 rounded-md border border-cyan-400/16 bg-cyan-400/[0.05] p-2 text-[0.58rem] text-cyan-100">
                 {scenePreviewUrls[scene.id] && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                <img src={scenePreviewUrls[scene.id]} alt={`${scene.id} ${activeAnalysis} preview`} className="mb-2 aspect-video w-full rounded-md border border-white/[0.08] bg-slate-950 object-cover" />
+                  <img src={scenePreviewUrls[scene.id]} alt={`${scene.id} ${activeAnalysis} preview`} className="mb-2 aspect-video w-full rounded-md border border-white/[0.08] bg-slate-950 object-cover" />
                 )}
                 Image preview uses {getVisualization(activeAnalysis, scene.collection).assets.join(", ")}
                 {getVisualization(activeAnalysis, scene.collection).expression ? ` | ${getVisualization(activeAnalysis, scene.collection).expression}` : " | RGB composite"}
               </div>
             )}
+
             {showSceneDownloads && (
               <div className="mt-2 grid grid-cols-1 gap-2">
                 <button
@@ -1371,19 +1423,19 @@ const scenes = useMemo(
               </div>
             )}
           </div>
-        )) : (
-          <div className="rounded-lg border border-amber-400/18 bg-amber-400/[0.05] px-3 py-2 text-[0.65rem] text-amber-200">
-            No scenes match the current cloud threshold.
-          </div>
-        )}
-      </div>
-      )}
-
-      {previewReady && (
-        <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2 text-[0.65rem] text-emerald-200">
-          Scenes ready. Choose a band, then preview or download the scene image.
+        ))
+      ) : (
+        <div className="rounded-lg border border-amber-400/18 bg-amber-400/[0.05] px-3 py-2 text-[0.65rem] text-amber-200">
+          No scenes match the current cloud threshold.
         </div>
       )}
     </div>
-  );
-}
+
+    {/* Footer Notification */}
+    {previewReady && (
+      <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2 text-[0.65rem] text-emerald-200">
+        Scenes ready. Choose a band, then preview or download the scene image.
+      </div>
+    )}
+  </div>
+);}

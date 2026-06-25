@@ -131,8 +131,13 @@ export default function LeafletMap({
 
   const IMAGE_OVERLAYS_STORAGE_KEY = "leaflet_image_overlays_v1";
 
+  const projectStateRef = useRef<any>({
+  aoi_polygons: [],
+  analyses: [],
+});
   const mapRef         = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
+  const restoredRef = useRef(false);
   const activeToolRef  = useRef<DrawTool>(activeTool);
   const drawLayersRef  = useRef<any[]>([]);
   const draftLayersRef = useRef<any[]>([]);
@@ -756,6 +761,24 @@ export default function LeafletMap({
     if (tool === "marker") { clearCanvas(canvas); px.forEach((p) => drawMarker(canvas, p)); }
   };
 
+  const validatePolygonBeforeSave = (pts: [number, number][]) => {
+  if (pts.length < 3) return { ok: false, msg: "Not enough points" };
+
+  const feature = makePolygonFeature(
+    "temp",
+    pts,
+    0
+  );
+
+  const result = validateAOI(feature);
+
+  if (!result.valid) {
+    return { ok: false, msg: result.errors?.[0] || "Invalid polygon" };
+  }
+
+  return { ok: true, msg: "" };
+};
+
   const handleCapture = async (
     canvas: HTMLCanvasElement, map: any, L: any,
     coordinates: LatLngPoint[], metadata: CaptureMetadata
@@ -808,13 +831,18 @@ export default function LeafletMap({
 
   const finishPolygon = async (map: any, L: any) => {
     const pts = drawPointsRef.current;
-    if (pts.length < 3) return;
+
+const check = validatePolygonBeforeSave(pts);
+if (!check.ok) {
+  toast.error(check.msg);
+  return;
+}
     if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
     if (closeBtnRef.current)  closeBtnRef.current.style.display = "none";
 
     const c    = TOOL_COLORS.polygon;
     const poly = L.polygon(pts, { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
-    drawLayersRef.current.push(poly);
+    
     const coords = [...pts, pts[0]].map(([lat, lng]) => [lng, lat]);
 
 const polygon = turf.polygon([coords]);
@@ -822,7 +850,6 @@ const polygon = turf.polygon([coords]);
 const area = parseFloat(
   (turf.area(polygon) / 10000).toFixed(1)
 );
-
     // ── Popup with "Edit AOI" button ───────────────────────────────────────
     poly.bindPopup(() => {
       const div = document.createElement("div");
@@ -923,6 +950,30 @@ const area = parseFloat(
       Object.assign(map.getPane("imagePane")!.style, { zIndex: "350" });
       imagePaneReadyRef.current = true;
 
+      // ── 🆕 RESTORE AOI AFTER REFRESH ─────────────────────────
+if (!restoredRef.current) {
+  const saved = JSON.parse(localStorage.getItem("aoi_polygons") || "[]");
+
+  saved.forEach((item: any) => {
+    const c = TOOL_COLORS.polygon;
+
+    const poly = L.polygon(item.coords, {
+      color: c.stroke,
+      weight: 2,
+      fillColor: c.fill,
+      fillOpacity: 0,
+    }).addTo(map);
+
+    drawLayersRef.current.push(poly);
+
+    poly.on("click", () => {
+      startAOIEdit(poly, "polygon");
+    });
+  });
+
+  restoredRef.current = true;
+}
+
       // ── AOI Editor instance (move vertices / resize / validate) ────────────
       aoiEditorRef.current = new AOIEditor(map, L, {
         onChange: () => {
@@ -980,6 +1031,35 @@ const area = parseFloat(
         "/api/tile/{z}/{x}/{y}?source=labels",
         { attribution: "", maxZoom: 22, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: "anonymous" }
       ).addTo(map);
+
+      labelsLayerRef.current = L.tileLayer(
+  "/api/tile/{z}/{x}/{y}?source=labels",
+  { attribution: "", maxZoom: 22, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: "anonymous" }
+).addTo(map);
+
+
+// ─────────────────────────────────────────────
+// ✅ HERE 👇 (restore AOI polygons after refresh)
+// ─────────────────────────────────────────────
+const saved = JSON.parse(localStorage.getItem("aoi_polygons") || "[]");
+
+saved.forEach((item: any) => {
+  const c = TOOL_COLORS.polygon;
+
+  const poly = L.polygon(item.coords, {
+    color: c.stroke,
+    weight: 2,
+    fillColor: c.fill,
+    fillOpacity: 0,
+  }).addTo(map);
+
+  drawLayersRef.current.push(poly);
+
+  // (اختياري مهم) لو عايزة edit بعد الريفريش:
+  poly.on("click", () => {
+    startAOIEdit(poly, "polygon");
+  });
+});
 
       // ── Canvas Layer ──────────────────────────────────────────────────────
       const CanvasLayer = (L.Layer as any).extend({
@@ -1337,6 +1417,9 @@ const area = parseFloat(
 );
 console.log("Area ha:", area);
 console.log("Area m²:", turf.area(polygon));
+
+
+
             // ── Popup with "Edit AOI" button ─────────────────────────────────
             rect.bindPopup(() => {
               const div = document.createElement("div");

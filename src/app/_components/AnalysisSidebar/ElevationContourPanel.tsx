@@ -11,8 +11,11 @@
 // Both modes share: the live weather card, the AOI bounds box, and the
 // "Add to Map" action (which emits a GeoJSON FeatureCollection the same way
 // for either mode via onContoursGenerated).
+//
+// FloatingElevationPanel wraps ElevationContourPanel in a draggable, resizable
+// floating panel that sits above the map — no sidebar needed.
 
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { buildElevationGrid, type ElevationGrid } from "../../../../lib/elevation";
 import { gridToContours } from "../../../../lib/marchingSquares";
 import { buildTemperatureGrid, type TemperatureGrid } from "../../../../lib/temperatureGrid";
@@ -552,6 +555,148 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
             technique as elevation contours.
           </p>
         </>
+      )}
+    </div>
+  );
+}
+
+// ── FloatingElevationPanel ────────────────────────────────────────────────────
+// Draggable floating panel that wraps ElevationContourPanel and renders above
+// the map. Import and use this instead of ElevationContourPanel directly when
+// you want a free-floating widget over the map canvas.
+//
+// Usage example (inside your Map component):
+//   import { FloatingElevationPanel } from "./ElevationContourPanel";
+//   const [open, setOpen] = useState(false);
+//   <FloatingElevationPanel
+//     open={open}
+//     onClose={() => setOpen(false)}
+//     selectedFeature={activeFeature}
+//     onContoursGenerated={handleContours}
+//   />
+
+interface FloatingProps extends Props {
+  /** whether the panel is visible */
+  open: boolean;
+  /** called when the user clicks × */
+  onClose: () => void;
+  /** starting position in px from viewport top-left — defaults to {x:16, y:16} */
+  initialPosition?: { x: number; y: number };
+}
+
+export function FloatingElevationPanel({
+  open,
+  onClose,
+  initialPosition = { x: 16, y: 16 },
+  ...panelProps
+}: FloatingProps) {
+  const [pos, setPos] = useState(initialPosition);
+  const [collapsed, setCollapsed] = useState(false);
+  const dragging = useRef(false);
+  const origin = useRef({ mx: 0, my: 0, px: 0, py: 0 });
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // ── drag ────────────────────────────────────────────────────────────────
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    dragging.current = true;
+    origin.current = { mx: e.clientX, my: e.clientY, px: pos.x, py: pos.y };
+    e.preventDefault();
+  }, [pos]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      setPos({
+        x: origin.current.px + (e.clientX - origin.current.mx),
+        y: origin.current.py + (e.clientY - origin.current.my),
+      });
+    };
+    const onUp = () => { dragging.current = false; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  if (!open) return null;
+
+  return (
+    <div
+      ref={panelRef}
+      style={{
+        position: "fixed",
+        left: pos.x,
+        top: pos.y,
+        zIndex: 1000,
+        width: 320,
+      }}
+      className="flex flex-col rounded-2xl overflow-hidden
+        shadow-[0_8px_40px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.06)]
+        border border-white/[0.08]
+        bg-[#040d1a]/90 backdrop-blur-xl"
+    >
+      {/* ── header / drag handle ── */}
+      <div
+        onMouseDown={onMouseDown}
+        className="flex items-center gap-2 px-3.5 py-2.5
+          cursor-grab active:cursor-grabbing select-none
+          border-b border-white/[0.07] bg-white/[0.025]"
+      >
+        {/* grip dots */}
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-slate-600 shrink-0">
+          {([0, 4, 8] as const).map((cy) =>
+            ([0, 4, 8] as const).map((cx) => (
+              <circle key={`${cx}-${cy}`} cx={cx + 2} cy={cy + 2} r="1" fill="currentColor" />
+            ))
+          )}
+        </svg>
+
+        <span className="flex-1 text-[0.68rem] font-semibold text-slate-300 tracking-wide truncate">
+          Elevation &amp; Weather Contours
+        </span>
+
+        {/* collapse */}
+        <button
+          onClick={() => setCollapsed((c) => !c)}
+          className="w-6 h-6 flex items-center justify-center rounded
+            hover:bg-white/[0.08] text-slate-500 hover:text-slate-300
+            transition-colors cursor-pointer"
+          title={collapsed ? "Expand" : "Collapse"}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8">
+            {collapsed ? (
+              <path d="M2 3.5l3 3 3-3" />
+            ) : (
+              <path d="M2 6.5l3-3 3 3" />
+            )}
+          </svg>
+        </button>
+
+        {/* close */}
+        <button
+          onClick={onClose}
+          className="w-6 h-6 flex items-center justify-center rounded
+            hover:bg-red-500/20 text-slate-500 hover:text-red-400
+            transition-colors cursor-pointer"
+          title="Close panel"
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <path d="M2 2l6 6M8 2l-6 6" />
+          </svg>
+        </button>
+      </div>
+
+      {/* ── scrollable content ── */}
+      {!collapsed && (
+        <div
+          className="overflow-y-auto p-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-white/10"
+          style={{ maxHeight: "calc(100vh - 96px)" }}
+        >
+          <ElevationContourPanel {...panelProps} />
+        </div>
       )}
     </div>
   );
