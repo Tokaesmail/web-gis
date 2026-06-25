@@ -34,11 +34,14 @@ export async function GET(req: NextRequest, { params }: Props) {
     const templateList = Array.isArray(templates) ? templates : [templates];
 
     let res: Response | null = null;
+    let lastUrl = "";
     for (const template of templateList) {
       const url = template
         .replace("{z}", z)
         .replace("{x}", x)
         .replace("{y}", y);
+
+        lastUrl = url;
 
       const absoluteUrl = url.startsWith("/")
         ? new URL(url, req.nextUrl.origin).toString()
@@ -55,7 +58,7 @@ export async function GET(req: NextRequest, { params }: Props) {
     if (!res?.ok) return new NextResponse("Not Found", { status: 404 });
 
     const contentType = res.headers.get("content-type") || "image/png";
-
+      console.log("Tile URL:", lastUrl, "z=", z, "x=", x, "y=", y);
     return new NextResponse(res.body, {
       headers: {
         "Content-Type": contentType,
@@ -66,4 +69,6 @@ export async function GET(req: NextRequest, { params }: Props) {
   } catch (error) {
     return new NextResponse("Internal Error", { status: 500 });
   }
+  
 }
+

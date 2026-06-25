@@ -1023,7 +1023,7 @@ if (!restoredRef.current) {
         "/api/tile/{z}/{x}/{y}?source=satellite", {
         attribution: "Tiles © Esri",
         maxZoom: 22,
-        maxNativeZoom: 18,
+        maxNativeZoom: 23,
         pane: "satellitePane", crossOrigin: "anonymous",
       }).addTo(map);
 

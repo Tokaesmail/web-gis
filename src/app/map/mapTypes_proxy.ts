@@ -51,7 +51,7 @@ export const SAT_LAYERS = {
     layers:         "",
     attribution:    "Tiles © Esri",
     maxZoom:        22,
-    maxNativeZoom:  18,
+    maxNativeZoom:  23,
   },
   "Sentinel-2": {
     url:            "/api/tile/{z}/{x}/{y}?source=sentinel",
