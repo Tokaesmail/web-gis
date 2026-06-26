@@ -84,6 +84,24 @@ export default function AnalysisSidebar(
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
   const [uploadOpen, setUploadOpen] = useState(false);
   const { isRTL } = useLang();
+  const [sidebarWidth, setSidebarWidth] = useState(340);
+  const isResizing = React.useRef(false);
+
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizing.current = true;
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMove = (ev: MouseEvent) => {
+      if (!isResizing.current) return;
+      const delta = isRTL ? ev.clientX - startX : startX - ev.clientX;
+      const next = Math.min(600, Math.max(260, startW + delta));
+      setSidebarWidth(next);
+    };
+    const onUp = () => { isResizing.current = false; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   // Determine which state to use
   const activePanel = controlledActivePanel !== undefined ? 
@@ -121,12 +139,18 @@ export default function AnalysisSidebar(
         <div
           className="h-full overflow-hidden transition-all duration-300 ease-in-out"
           style={{
-            width: activePanel ? "min(340px, calc(100vw - 52px))" : 0,
+            width: activePanel ? `min(${sidebarWidth}px, calc(100vw - 52px))` : 0,
             pointerEvents: activePanel ? "all" : "none",
             opacity: activePanel ? 1 : 0,
           }}
         >
-          <div className="h-full w-[min(340px,calc(100vw-52px))] bg-[#070f1e]/97 backdrop-blur-xl border-l border-white/[0.08] flex flex-col overflow-hidden shadow-[-8px_0_32px_rgba(0,0,0,0.4)]">
+          <div className="h-full bg-[#070f1e]/97 backdrop-blur-xl border-l border-white/[0.08] flex flex-col overflow-hidden shadow-[-8px_0_32px_rgba(0,0,0,0.4)]" style={{ width: `min(${sidebarWidth}px, calc(100vw - 52px))` }}>
+            {/* Drag handle */}
+            <div
+              onMouseDown={startResize}
+              className={`absolute top-0 bottom-0 w-1 z-50 cursor-col-resize hover:bg-cyan-400/40 transition-colors ${isRTL ? "right-0" : "left-0"}`}
+              style={{ userSelect: "none" }}
+            />
 
             {/* Panel header */}
             <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-white/[0.06] shrink-0">

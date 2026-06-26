@@ -362,6 +362,8 @@ export default function LeafletMap({
         rasterOverlayRef.current = null;
       }
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
+      console.log("Raster bounds:", config.bounds);
+console.log("Raster image:", config.dataUrl.substring(0, 80));
       rasterOverlayRef.current = L.imageOverlay(config.dataUrl, bounds, {
         opacity: config.opacity,
         pane: "imagePane",

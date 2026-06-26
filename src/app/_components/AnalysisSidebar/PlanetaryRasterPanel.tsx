@@ -34,7 +34,7 @@ const SENTINEL2_BANDS: { id: string; label: string; gsd: string; desc: string }[
 const EXPRESSION_PRESETS: { key: string; label: string; expression: string; colormap: string; rescale: [number, number]; desc: string }[] = [
   // NDVI: real-world desert-agriculture range is roughly -0.1 (sand) to 0.75 (dense crops).
   // Using viridis clips variation — rdylgn maps red(bare)→green(vegetation) which is intuitive.
-  { key: "NDVI", label: "NDVI",  expression: "(B08-B04)/(B08+B04)",         colormap: "rdylgn", rescale: [-0.1, 0.75], desc: "Vegetation vigor" },
+  { key: "NDVI", label: "NDVI",  expression: "(B08-B04)/(B08+B04)",         colormap: "rdylgn", rescale: [-0.2, 0.9],  desc: "Vegetation vigor" },
   // NDWI: water is positive, dry land negative. rdbu: blue=water, red=dry.
   { key: "NDWI", label: "NDWI",  expression: "(B03-B08)/(B03+B08)",         colormap: "rdbu",   rescale: [-0.5, 0.5],  desc: "Water content" },
   // NDMI: moisture stress. Full -1→1 range, reversed so moist=blue, dry=brown.
@@ -42,7 +42,7 @@ const EXPRESSION_PRESETS: { key: string; label: string; expression: string; colo
   // NDBI: built-up positive, vegetation negative. magma shows density well.
   { key: "NDBI", label: "NDBI",  expression: "(B11-B08)/(B11+B08)",         colormap: "magma",  rescale: [-0.5, 0.5],  desc: "Built-up / urban areas" },
   // SAVI: soil-adjusted, values ~0 (bare)→0.7 (dense). rdylgn matches NDVI palette.
-  { key: "SAVI", label: "SAVI",  expression: "1.5*(B08-B04)/(B08+B04+0.5)", colormap: "rdylgn", rescale: [-0.1, 0.7],  desc: "Soil-adjusted vegetation" },
+  { key: "SAVI", label: "SAVI",  expression: "1.5*(B08-B04)/(B08+B04+0.5)", colormap: "rdylgn", rescale: [0.0, 0.7],   desc: "Soil-adjusted vegetation" },
   // EVI: enhanced vegetation, range wider than NDVI in dense canopy.
   { key: "EVI",  label: "EVI",   expression: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)", colormap: "rdylgn", rescale: [-0.1, 0.8], desc: "Enhanced vegetation" },
   // True Color: R/G/B visual composite — rescale 0→3000 SR → 0→255.
@@ -64,6 +64,7 @@ const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
 
 const PC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search";
 const PC_DATA_URL = "https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png";
+const PC_BBOX_URL  = "https://planetarycomputer.microsoft.com/api/data/v1/item/bbox";
 
 type SceneOption = {
   id: string;
@@ -85,7 +86,8 @@ type RasterPreviewConfig = {
   bounds: [[number, number], [number, number]]; // [[south, west],[north, east]]
   opacity: number;
   colorRamp: string;
-  dataUrl: string;
+  dataUrl?: string;
+  tileUrl: string;
 };
 
 type Props = {
@@ -157,49 +159,26 @@ function validateExpression(expr: string): { ok: boolean; usedBands: string[]; u
 }
 
 function analyzeImage(imgSrc: string) {
-  return new Promise<{
-    min: number;
-    max: number;
-    mean: number;
-    histogram: number[];
-  }>((resolve) => {
+  return new Promise<{ min: number; max: number; mean: number; histogram: number[] }>((resolve) => {
     const img = new Image();
     img.src = imgSrc;
-
     img.onload = () => {
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d")!;
-      canvas.width = img.width;
-      canvas.height = img.height;
-
+      canvas.width = img.width; canvas.height = img.height;
       ctx.drawImage(img, 0, 0);
-
       const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-
-      let min = 255;
-      let max = 0;
-      let sum = 0;
-
+      let min = 255, max = 0, sum = 0;
       const histogram = new Array(10).fill(0);
-
       for (let i = 0; i < data.length; i += 4) {
         const v = data[i];
-
-        min = Math.min(min, v);
-        max = Math.max(max, v);
-        sum += v;
-
-        const bucket = Math.floor((v / 255) * 9);
-        histogram[bucket]++;
+        if (data[i + 3] < 10) continue;
+        min = Math.min(min, v); max = Math.max(max, v); sum += v;
+        histogram[Math.min(9, Math.floor((v / 255) * 10))]++;
       }
-
-      resolve({
-        min,
-        max,
-        mean: sum / (data.length / 4),
-        histogram,
-      });
+      resolve({ min, max, mean: sum / (data.length / 4), histogram });
     };
+    img.onerror = () => resolve({ min: 0, max: 255, mean: 128, histogram: new Array(10).fill(0) });
   });
 }
 
@@ -313,42 +292,7 @@ const polygonRing = useMemo(() => getPolygonRing(selectedFeature), [selectedFeat
     setExpression((prev) => (prev ? `${prev}${bandId}` : bandId));
   };
 
- async function fetchStats(
-  collection: string,
-  item: string,
-  expression: string,
-  bbox?: [number, number, number, number]   // ← أضف ده
-) {
-  try {
-    let url =
-      `https://planetarycomputer.microsoft.com/api/data/v1/item/statistics` +
-      `?collection=${collection}&item=${item}&asset_as_band=true` +
-      `&expression=${encodeURIComponent(expression)}`;
 
-    // ← لو في bbox، أضفه للطلب عشان يحسب statistics داخل المنطقة بس
-    if (bbox) {
-      url += `&bbox=${bbox.join(",")}`;
-    }
-
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const json = await res.json();
-
-    const key = Object.keys(json).find(k => json[k]?.percentile_2 !== undefined)
-              ?? Object.keys(json)[0];
-    const band = json[key];
-    if (!band) return null;
-
-    return {
-      min: band.min,
-      max: band.max,
-      p2:  band.percentile_2,
-      p98: band.percentile_98,
-    };
-  } catch {
-    return null;
-  }
-}
 
 const runPreview = async () => {
   if (!selectedScene || !validation.ok) return;
@@ -358,96 +302,93 @@ const runPreview = async () => {
   setClassification("");
 
   try {
-    // ── 1. Fetch real band statistics ─────────────────────────────────────
-    const realStats = await fetchStats(
-      selectedScene.collection,
-      selectedScene.id,
-      expression,
-      [renderBbox[0], renderBbox[1], renderBbox[2], renderBbox[3]]
-    );
-
-    // ── 2. حساب الـ rescale range ─────────────────────────────────────────
-    const FIXED_PRESETS = ["NDWI", "NDMI", "BSI", "NDBI"];
-    const isDynamic = !FIXED_PRESETS.includes(activePreset);
-
-    let finalMin = rescaleMin;
-    let finalMax = rescaleMax;
-
-    if (isDynamic && realStats?.p2 !== undefined && realStats?.p98 !== undefined) {
-      finalMin = parseFloat(realStats.p2.toFixed(3));
-      finalMax = parseFloat(realStats.p98.toFixed(3));
-      setRescaleMin(finalMin);
-      setRescaleMax(finalMax);
-    }
-
+    // ── 1. Rescale: دايما من الـ preset أو الـ manual input — مش من أي API
+    // الـ statistics API بيرجع قيم لكامل الـ Sentinel tile (100+ كم صحراء)
+    // فبيعطي p2/p98 ضيق جداً مش بيمثل الـ AOI
+    const currentPreset = EXPRESSION_PRESETS.find(p => p.key === activePreset);
+    let finalMin = currentPreset?.rescale[0] ?? rescaleMin;
+    let finalMax = currentPreset?.rescale[1] ?? rescaleMax;
     if (finalMax === finalMin) finalMax = finalMin + 0.01;
 
-    // ── 3. Render PNG ──────────────────────────────────────────────────────
-    const params = new URLSearchParams({
+    // ── 3. Helper: fetch one PNG from the bbox endpoint ──────────────────
+    const aoiWidth   = renderBbox[2] - renderBbox[0];
+    const aoiHeight  = renderBbox[3] - renderBbox[1];
+    const aspectRatio = aoiWidth / aoiHeight;
+    const BASE_PX = 1024;
+    const imgW = aspectRatio >= 1 ? BASE_PX : Math.round(BASE_PX * aspectRatio);
+    const imgH = aspectRatio >= 1 ? Math.round(BASE_PX / aspectRatio) : BASE_PX;
+    const [west, south, east, north_] = renderBbox;
+    const renderedBounds: [[number, number], [number, number]] = [[south, west], [north_, east]];
+
+    const fetchRender = async (rMin: number, rMax: number): Promise<string> => {
+      const p = new URLSearchParams({
+        collection:    selectedScene.collection,
+        item:          selectedScene.id,
+        expression,
+        asset_as_band: "true",
+        rescale:       `${rMin},${rMax}`,
+        colormap_name: colormap,
+        resampling:    "nearest",
+      });
+      const bboxPath = `${west},${south},${east},${north_}`;
+      const url = `${PC_BBOX_URL}/${bboxPath}/${imgW}x${imgH}.png?${p.toString()}`;
+      console.log("Render URL:", url);
+      const res = await fetch(url);
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Planetary Computer render failed (${res.status}). ${text.slice(0, 160)}`);
+      }
+      const blob = await res.blob();
+      return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload  = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error("Could not read image data"));
+        reader.readAsDataURL(blob);
+      });
+    };
+
+    // ── 4. First render with current best-guess rescale ────────────────────
+    let dataUrl = await fetchRender(finalMin, finalMax);
+
+    // ── 5. Clip to polygon ─────────────────────────────────────────────────
+    let clippedUrl = dataUrl;
+    if (clipToShape && polygonRing) {
+      try { clippedUrl = await clipImageToPolygon(dataUrl, renderedBounds, polygonRing); }
+      catch { /* fall back to unclipped */ }
+    }
+
+    // ── 6. Final dataUrl = clipped ─────────────────────────────────────────
+    const finalDataUrl = clippedUrl;
+
+    // ── 7. tileUrl ───────────────────────────────────────────────────────────
+    const tileParams = new URLSearchParams({
       collection:    selectedScene.collection,
       item:          selectedScene.id,
       expression,
       asset_as_band: "true",
-      return_mask:   "false",
       rescale:       `${finalMin},${finalMax}`,
       colormap_name: colormap,
-      format:        "png",
-      width:         "1024",
-      height:        "1024",
+      resampling:    "nearest",
     });
+    const tileUrl = `${PC_DATA_URL.replace("/preview.png", "/tile/{z}/{x}/{y}.png")}?${tileParams.toString()}`;
 
-    const url = `${PC_DATA_URL}?${params.toString()}`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`Planetary Computer render failed (${res.status}). ${text.slice(0, 160)}`);
-    }
-
-    const blob = await res.blob();
-    let dataUrl: string = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload  = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error("Could not read image data"));
-      reader.readAsDataURL(blob);
+    // ── 8. Quick pixel stats for the histogram display only ──────────────────
+    const imageStats = await analyzeImage(finalDataUrl);
+    const midVal = (finalMin + finalMax) / 2;
+    setStats({
+      min:       finalMin,
+      max:       finalMax,
+      mean:      midVal,
+      histogram: imageStats.histogram,
     });
+    setClassification(activePreset
+      ? `📊 ${activePreset} · ${finalMin.toFixed(3)} → ${finalMax.toFixed(3)}`
+      : midVal > 0.3  ? "📈 High response"
+      : midVal > 0.05 ? "📉 Moderate response"
+      : "⏳ Low response"
+    );
 
-    // ── 4. Clip to polygon ─────────────────────────────────────────────────
-    const [west, south, east, north] = renderBbox;
-    const renderedBounds: [[number, number], [number, number]] = [[south, west], [north, east]];
-
-    if (clipToShape && polygonRing) {
-      try {
-        dataUrl = await clipImageToPolygon(dataUrl, renderedBounds, polygonRing);
-      } catch {
-        // fall back to unclipped rectangle
-      }
-    }
-
-    // ── 5. Analyze + classify ──────────────────────────────────────────────
-    const imageStats = await analyzeImage(dataUrl);
-    if (imageStats) {
-      const p2Val  = realStats?.p2  ?? imageStats.min / 255;
-      const p98Val = realStats?.p98 ?? imageStats.max / 255;
-      const midVal = (p2Val + p98Val) / 2;
-
-      setStats({
-        min:       realStats?.min ?? imageStats.min / 255,
-        max:       realStats?.max ?? imageStats.max / 255,
-        mean:      midVal,
-        histogram: imageStats.histogram,
-      });
-
-      if (activePreset) {
-        setClassification(`📊 Value Range: ${activePreset} Analysis`);
-      } else {
-        if      (midVal > 0.3)  setClassification("📈 High-Reflectance / Highly Positive Response");
-        else if (midVal > 0.05) setClassification("📉 Mid-Range / Moderate Response");
-        else if (midVal > -0.1) setClassification("⏳ Low / Near-Zero Response");
-        else                    setClassification("📉 Negative Response / Absorbing Target");
-      }
-    }
-
-    setPreviewImg(dataUrl);
+    setPreviewImg(finalDataUrl);
     setPreviewStatus("success");
 
     onPreview?.({
@@ -455,11 +396,12 @@ const runPreview = async () => {
       indexKey:  activePreset || "CUSTOM",
       expression,
       date:      selectedScene.date,
-      dataUrl,
+      dataUrl:   finalDataUrl,
+      tileUrl,
       bounds:    renderedBounds,
       opacity:   opacity / 100,
       colorRamp: colormap,
-      coords:    fallbackCoords ?? { lat: (south + north) / 2, lng: (west + east) / 2 },
+      coords:    fallbackCoords ?? { lat: (south + north_) / 2, lng: (west + east) / 2 },
     });
 
   } catch (err) {
