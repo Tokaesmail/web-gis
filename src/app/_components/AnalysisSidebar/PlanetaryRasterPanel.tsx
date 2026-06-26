@@ -51,14 +51,22 @@ const EXPRESSION_PRESETS: { key: string; label: string; expression: string; colo
 // ─── Color ramps shown as visual swatches (matching the app's existing
 // "Water / Vegetation / Spectral" style) instead of a plain colormap name list ──
 const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
-  { key: "rdylgn",    label: "Vegetation", gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#1a9850)" },
-  { key: "rdbu",      label: "Water",      gradient: "linear-gradient(90deg,#67001f,#f4a582,#f7f7f7,#92c5de,#053061)" },
-  { key: "rdbu_r",    label: "Moisture",   gradient: "linear-gradient(90deg,#053061,#92c5de,#f7f7f7,#f4a582,#67001f)" },
-  { key: "spectral",  label: "Spectral",   gradient: "linear-gradient(90deg,#9e0142,#fdae61,#ffffbf,#abdda4,#5e4fa2)" },
-  { key: "spectral_r",label: "Spectral R", gradient: "linear-gradient(90deg,#5e4fa2,#abdda4,#ffffbf,#fdae61,#9e0142)" },
-  { key: "magma",     label: "Thermal",    gradient: "linear-gradient(90deg,#000004,#721f81,#fb8761,#fcfdbf)" },
-  { key: "greens",    label: "Greens",     gradient: "linear-gradient(90deg,#f7fcf5,#74c476,#00441b)" },
-  { key: "rdylbu_r",  label: "Heat",       gradient: "linear-gradient(90deg,#313695,#fee090,#a50026)" },
+  // NDVI — GEE classic rdylgn: dark-red → orange → yellow → yellow-green → green → dark-green
+  { key: "rdylgn",    label: "Vegetation", gradient: "linear-gradient(90deg,#d73027 0%,#f46d43 13%,#fdae61 26%,#fee08b 39%,#d9ef8b 52%,#a6d96a 65%,#66bd63 78%,#1a9850 100%)" },
+  // NDWI Water — RdBu: crimson(dry) → salmon → white → steel-blue → deep-navy(water)
+  { key: "rdbu",      label: "Water",      gradient: "linear-gradient(90deg,#67001f 0%,#b2182b 14%,#d6604d 26%,#f4a582 38%,#fddbc7 50%,#d1e5f0 62%,#4393c3 76%,#2166ac 88%,#053061 100%)" },
+  // NDMI Moisture — PuOr: burnt-orange(dry) → beige → purple(moist) matches Landsat NDMI
+  { key: "rdbu_r",    label: "Moisture",   gradient: "linear-gradient(90deg,#b35806 0%,#e08214 14%,#fdb863 26%,#fee0b6 38%,#f7f7f7 50%,#d8daeb 62%,#998ec3 76%,#7b3294 88%,#40004b 100%)" },
+  // Spectral — full spectral ramp matching USGS/EE style
+  { key: "spectral",  label: "Spectral",   gradient: "linear-gradient(90deg,#9e0142 0%,#d53e4f 14%,#f46d43 25%,#fdae61 37%,#fee08b 50%,#e6f598 62%,#abdda4 72%,#66c2a5 82%,#3288bd 91%,#5e4fa2 100%)" },
+  // NDBI Spectral_R — red(built-up high) → yellow → blue(vegetation/low) matches NDBI maps
+  { key: "spectral_r",label: "Spectral R", gradient: "linear-gradient(90deg,#d73027 0%,#f46d43 12%,#fdae61 24%,#ffffbf 38%,#d9ef8b 50%,#a6d96a 62%,#74add1 74%,#4575b4 86%,#313695 100%)" },
+  // Thermal / Magma — exact matplotlib magma: black → purple → pink → orange → yellow
+  { key: "magma",     label: "Thermal",    gradient: "linear-gradient(90deg,#000004 0%,#1b0c41 16%,#4a0c4e 26%,#781c6d 36%,#a52c60 46%,#cf4446 56%,#ed6925 66%,#fb9b06 76%,#f7d13d 88%,#fcfdbf 100%)" },
+  // SAVI Greens — YlGn: white(bare=0) → pale-yellow-green → lime → medium → dark-green
+  { key: "greens",    label: "Greens",     gradient: "linear-gradient(90deg,#ffffe5 0%,#f7fcb9 16%,#d9f0a3 30%,#addd8e 44%,#78c679 58%,#41ab5d 70%,#238443 82%,#005a32 100%)" },
+  // NDWI Blues — Climate Engine: white → pale-sky → steel-blue → deep-navy
+  { key: "rdylbu_r",  label: "Heat",       gradient: "linear-gradient(90deg,#f7fbff 0%,#deebf7 16%,#c6dbef 28%,#9ecae1 40%,#6baed6 52%,#4292c6 64%,#2171b5 76%,#08519c 88%,#08306b 100%)" },
 ];
 
 
@@ -86,7 +94,7 @@ type RasterPreviewConfig = {
   bounds: [[number, number], [number, number]]; // [[south, west],[north, east]]
   opacity: number;
   colorRamp: string;
-  dataUrl?: string;
+  dataUrl: string;
   tileUrl: string;
 };
 
@@ -661,32 +669,140 @@ const runPreview = async () => {
       >
         {previewStatus === "loading" ? "Rendering on Planetary Computer…" : "Render & Preview on Map"}
       </button>
-      {stats && previewStatus === "success" && (
-        <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-3 space-y-2">
-          <p className="text-[0.62rem] uppercase text-slate-500">Band Statistics (real values)</p>
-          <div className="grid grid-cols-3 gap-1.5">
-            {[
-              { label: "Min",  value: stats.min.toFixed(3)  },
-              { label: "Max",  value: stats.max.toFixed(3)  },
-              { label: "Mean", value: stats.mean.toFixed(3) },
-            ].map((s) => (
-              <div key={s.label} className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-2 text-center">
-                <p className="text-xs font-semibold text-slate-200">{s.value}</p>
-                <p className="text-[0.55rem] text-slate-500 mt-0.5">{s.label}</p>
+      {stats && previewStatus === "success" && (() => {
+        // ── Compute zone distribution from histogram ──────────────────────────
+        const totalPixels = stats.histogram.reduce((a, b) => a + b, 0) || 1;
+        const range = stats.max - stats.min;
+        const numZones = 5;
+        // Merge histogram bins (10) into 5 zones
+        const zoneCounts = Array.from({ length: numZones }, (_, zi) => {
+          const start = zi * 2, end = start + 2;
+          return stats.histogram.slice(start, end).reduce((a, b) => a + b, 0);
+        });
+        const zoneColors = ["#1a6b2f", "#4caf50", "#f9e04b", "#e05c1a", "#c0392b"];
+        const zoneLabels = Array.from({ length: numZones }, (_, i) => {
+          const lo = stats.min + (range * i) / numZones;
+          const hi = stats.min + (range * (i + 1)) / numZones;
+          return `Zone ${i + 1}: ${lo.toFixed(3)} – ${hi.toFixed(3)}`;
+        });
+
+        // ── Smooth histogram data for the bar chart ───────────────────────────
+        const maxH = Math.max(...stats.histogram, 1);
+        const histPct = stats.histogram.map((h) => (h / maxH) * 100);
+
+        // ── Dynamic legend range ──────────────────────────────────────────────
+        const legendMin = stats.min.toFixed(3);
+        const legendMax = stats.max.toFixed(3);
+
+        return (
+          <div className="rounded-lg border border-white/[0.09] bg-[#050d1c]/80 overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-3 pt-3 pb-2 border-b border-white/[0.06]">
+              <p className="text-[0.62rem] uppercase tracking-wider text-slate-400 font-semibold">Visualization</p>
+              <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-[0.55rem] font-bold text-emerald-300">
+                {activePreset || "Custom"}
+              </span>
+            </div>
+
+            <div className="p-3 space-y-3">
+              {/* Histogram bars */}
+              <div className="space-y-1">
+                <div className="flex items-end gap-[3px] h-16">
+                  {histPct.map((pct, i) => {
+                    // colour each bar by which zone it falls in
+                    const zoneIdx = Math.min(numZones - 1, Math.floor((i / histPct.length) * numZones));
+                    return (
+                      <div
+                        key={i}
+                        className="w-full rounded-t-sm transition-all"
+                        style={{
+                          height: `${Math.max(pct, 2)}%`,
+                          background: zoneColors[zoneIdx],
+                          opacity: 0.75 + (pct / 100) * 0.25,
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+                {/* X-axis labels */}
+                <div className="flex justify-between">
+                  <span className="text-[0.5rem] text-slate-600">{legendMin}</span>
+                  <span className="text-[0.5rem] text-slate-600">{((+legendMin + +legendMax) / 2).toFixed(3)}</span>
+                  <span className="text-[0.5rem] text-slate-600">{legendMax}</span>
+                </div>
               </div>
-            ))}
+
+              {/* Legend header */}
+              <div className="flex items-center justify-between">
+                <p className="text-[0.58rem] uppercase tracking-wider text-slate-500">Legend</p>
+                <div className="flex items-center gap-2">
+                  <span className="flex items-center gap-1 text-[0.55rem] text-slate-500">
+                    <span className="inline-block w-2 h-2 rounded-full border border-slate-500" />
+                    Theoretical
+                  </span>
+                  <span className="flex items-center gap-1 text-[0.55rem] text-cyan-400">
+                    <span className="inline-block w-2 h-2 rounded-full bg-cyan-400" />
+                    Dynamic
+                  </span>
+                </div>
+              </div>
+
+              {/* Gradient color bar */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-[0.5rem] text-slate-500">
+                  <span>{legendMin} (Zone 1)</span>
+                  <span>(Zone {numZones}) {legendMax}</span>
+                </div>
+                <div className="h-3 rounded-full overflow-hidden" style={{ background: colormapPreviewGradient(colormap) }} />
+                <div className="flex justify-between text-[0.52rem] text-slate-400 font-mono">
+                  <span>{(+legendMin + (+legendMax - +legendMin) * 0.15).toFixed(3)}</span>
+                  <span>{(+legendMin + (+legendMax - +legendMin) * 0.85).toFixed(3)}</span>
+                </div>
+              </div>
+
+              {/* Zone rows */}
+              <div className="space-y-1.5">
+                {zoneCounts.map((count, i) => {
+                  const pct = ((count / totalPixels) * 100).toFixed(3);
+                  const areaSqKm = ((count / totalPixels) * (
+                    // rough area estimate from bbox
+                    Math.abs(renderBbox[2] - renderBbox[0]) *
+                    Math.abs(renderBbox[3] - renderBbox[1]) *
+                    12321 // ~111km per degree squared
+                  )).toFixed(3);
+                  return (
+                    <div key={i} className="flex items-center gap-2">
+                      <span
+                        className="w-3 h-3 shrink-0 rounded-sm"
+                        style={{ background: zoneColors[i] }}
+                      />
+                      <span className="text-[0.62rem] text-slate-300 w-12 shrink-0">Zone {i + 1}</span>
+                      <div className="flex-1 bg-white/[0.04] rounded-full h-1.5 overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all"
+                          style={{ width: `${pct}%`, background: zoneColors[i] }}
+                        />
+                      </div>
+                      <span className="text-[0.6rem] font-semibold text-slate-200 w-12 text-right shrink-0">
+                        {pct}%
+                      </span>
+                      <span className="text-[0.52rem] text-slate-500 w-14 text-right shrink-0">
+                        ({areaSqKm}km²)
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Classification label */}
+              <div className="pt-1 border-t border-white/[0.05]">
+                <p className="text-[0.62rem] text-cyan-300 font-semibold">{classification}</p>
+                <p className="text-[0.5rem] text-slate-600 mt-0.5">Pixel distribution · color bar = selected colormap</p>
+              </div>
+            </div>
           </div>
-          <div className="text-[0.65rem] font-semibold text-cyan-300">{classification}</div>
-          <div className="flex items-end gap-[2px] h-12 mt-1">
-            {stats.histogram.map((h, i) => (
-              <div key={i} className="bg-cyan-400/50 w-full rounded-sm"
-                style={{ height: `${(h / Math.max(...stats.histogram, 1)) * 100}%` }} />
-            ))}
-          </div>
-          <div className="h-2 rounded-full" style={{ background: colormapPreviewGradient(colormap) }} />
-          <p className="text-[0.5rem] text-slate-600">Pixel distribution · color bar = selected colormap</p>
-        </div>
-      )}
+        );
+      })()}
 
       {previewError && (
         <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2.5 text-[0.65rem] text-red-300">
