@@ -113,7 +113,12 @@ function getMidCoords(feature?: GeoJSON.Feature | null): [number, number] | null
   return null;
 }
 
-function getFeatureBBox(feature?: GeoJSON.Feature | null, fallback?: { lat: number; lng: number }): [number, number, number, number] {
+// السطر 116 — عدّل الدالة تبعت bbox نوعين
+function getFeatureBBox(
+  feature?: GeoJSON.Feature | null,
+  fallback?: { lat: number; lng: number },
+  withPadding = true   // ← أضف parameter
+): [number, number, number, number] {
   const coords: number[][] = [];
   const walk = (v: any) => {
     if (!Array.isArray(v)) return;
@@ -127,13 +132,18 @@ function getFeatureBBox(feature?: GeoJSON.Feature | null, fallback?: { lat: numb
     const lats = coords.map((c) => c[1]);
     const west = Math.min(...lngs), east = Math.max(...lngs);
     const south = Math.min(...lats), north = Math.max(...lats);
-    const pad = Math.max(0.0008, Math.max(east - west, north - south) * 0.12);
+    
+    // ← padding بس للـ STAC search، مش للـ render
+    const pad = withPadding
+      ? Math.max(0.0008, Math.max(east - west, north - south) * 0.12)
+      : 0;
     return [west - pad, south - pad, east + pad, north + pad];
   }
 
   const lat = fallback?.lat ?? 30.0444;
   const lng = fallback?.lng ?? 31.2357;
-  return [lng - 0.03, lat - 0.03, lng + 0.03, lat + 0.03];
+  const pad = withPadding ? 0.03 : 0.01;
+  return [lng - pad, lat - pad, lng + pad, lat + pad];
 }
 
 // quick syntax check: only known band tokens + numbers/operators allowed
@@ -225,8 +235,17 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
 } | null>(null);
 const [classification, setClassification] = useState<string>("");
 
-  const bbox = useMemo(() => getFeatureBBox(selectedFeature, fallbackCoords), [selectedFeature, fallbackCoords?.lat, fallbackCoords?.lng]);
-  const polygonRing = useMemo(() => getPolygonRing(selectedFeature), [selectedFeature]);
+const bbox = useMemo(
+  () => getFeatureBBox(selectedFeature, fallbackCoords, true),
+  [selectedFeature, fallbackCoords?.lat, fallbackCoords?.lng]
+);
+
+// bbox للـ render — بدون padding عشان يتطابق مع الـ polygon
+const renderBbox = useMemo(
+  () => getFeatureBBox(selectedFeature, fallbackCoords, false),
+  [selectedFeature, fallbackCoords?.lat, fallbackCoords?.lng]
+);  
+const polygonRing = useMemo(() => getPolygonRing(selectedFeature), [selectedFeature]);
   const validation = useMemo(() => validateExpression(expression), [expression]);
   const selectedScene = scenes.find((s) => s.id === selectedSceneId) ?? null;
 
@@ -294,28 +313,36 @@ const [classification, setClassification] = useState<string>("");
     setExpression((prev) => (prev ? `${prev}${bandId}` : bandId));
   };
 
-  async function fetchStats(
+ async function fetchStats(
   collection: string,
   item: string,
-  expression: string
+  expression: string,
+  bbox?: [number, number, number, number]   // ← أضف ده
 ) {
   try {
-    const url =
+    let url =
       `https://planetarycomputer.microsoft.com/api/data/v1/item/statistics` +
-      `?collection=${collection}&item=${item}&asset_as_band=true&expression=${encodeURIComponent(expression)}`;
+      `?collection=${collection}&item=${item}&asset_as_band=true` +
+      `&expression=${encodeURIComponent(expression)}`;
+
+    // ← لو في bbox، أضفه للطلب عشان يحسب statistics داخل المنطقة بس
+    if (bbox) {
+      url += `&bbox=${bbox.join(",")}`;
+    }
 
     const res = await fetch(url);
     if (!res.ok) return null;
-
     const json = await res.json();
 
-    const key = Object.keys(json)[0];
+    const key = Object.keys(json).find(k => json[k]?.percentile_2 !== undefined)
+              ?? Object.keys(json)[0];
     const band = json[key];
+    if (!band) return null;
 
     return {
       min: band.min,
       max: band.max,
-      p2: band.percentile_2,
+      p2:  band.percentile_2,
       p98: band.percentile_98,
     };
   } catch {
@@ -323,122 +350,123 @@ const [classification, setClassification] = useState<string>("");
   }
 }
 
-  const runPreview = async () => {
-    if (!selectedScene || !validation.ok) return;
-    setPreviewStatus("loading");
-    setPreviewError(null);
-    setStats(null);
-    setClassification("");
+const runPreview = async () => {
+  if (!selectedScene || !validation.ok) return;
+  setPreviewStatus("loading");
+  setPreviewError(null);
+  setStats(null);
+  setClassification("");
 
-    try {
-      // ── 1. Fetch real band statistics first (p2/p98 give the actual data range) ──
-      // This is the key fix: instead of guessing rescale values upfront, we ask
-      // Planetary Computer what the real range is for this scene, then rescale
-      // to that range so the colormap spans the actual data distribution.
-      const realStats = await fetchStats(selectedScene.collection, selectedScene.id, expression);
-      const autoMin = realStats?.p2  ?? rescaleMin;
-      const autoMax = realStats?.p98 ?? rescaleMax;
+  try {
+    // ── 1. Fetch real band statistics ─────────────────────────────────────
+    const realStats = await fetchStats(
+      selectedScene.collection,
+      selectedScene.id,
+      expression,
+      [renderBbox[0], renderBbox[1], renderBbox[2], renderBbox[3]]
+    );
 
-      // ── 2. Render the PNG using the accurate rescale range ─────────────────
-      const params = new URLSearchParams({
-        collection: selectedScene.collection,
-        item: selectedScene.id,
-        expression,
-        asset_as_band: "true",
-        return_mask: "false",
-        rescale: `${autoMin},${autoMax}`,
-        colormap_name: colormap,
-        format: "png",
-        width: "1024",
-        height: "1024",
-      });
-      const url = `${PC_DATA_URL}?${params.toString()}`;
+    // ── 2. حساب الـ rescale range ─────────────────────────────────────────
+    const FIXED_PRESETS = ["NDWI", "NDMI", "BSI", "NDBI"];
+    const isDynamic = !FIXED_PRESETS.includes(activePreset);
 
-      const res = await fetch(url);
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Planetary Computer render failed (${res.status}). ${text.slice(0, 160)}`);
+    let finalMin = rescaleMin;
+    let finalMax = rescaleMax;
+
+    if (isDynamic && realStats?.p2 !== undefined && realStats?.p98 !== undefined) {
+      finalMin = parseFloat(realStats.p2.toFixed(3));
+      finalMax = parseFloat(realStats.p98.toFixed(3));
+      setRescaleMin(finalMin);
+      setRescaleMax(finalMax);
+    }
+
+    if (finalMax === finalMin) finalMax = finalMin + 0.01;
+
+    // ── 3. Render PNG ──────────────────────────────────────────────────────
+    const params = new URLSearchParams({
+      collection:    selectedScene.collection,
+      item:          selectedScene.id,
+      expression,
+      asset_as_band: "true",
+      return_mask:   "false",
+      rescale:       `${finalMin},${finalMax}`,
+      colormap_name: colormap,
+      format:        "png",
+      width:         "1024",
+      height:        "1024",
+    });
+
+    const url = `${PC_DATA_URL}?${params.toString()}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Planetary Computer render failed (${res.status}). ${text.slice(0, 160)}`);
+    }
+
+    const blob = await res.blob();
+    let dataUrl: string = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("Could not read image data"));
+      reader.readAsDataURL(blob);
+    });
+
+    // ── 4. Clip to polygon ─────────────────────────────────────────────────
+    const [west, south, east, north] = renderBbox;
+    const renderedBounds: [[number, number], [number, number]] = [[south, west], [north, east]];
+
+    if (clipToShape && polygonRing) {
+      try {
+        dataUrl = await clipImageToPolygon(dataUrl, renderedBounds, polygonRing);
+      } catch {
+        // fall back to unclipped rectangle
       }
-      const blob = await res.blob();
-      let dataUrl: string = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(new Error("Could not read image data"));
-        reader.readAsDataURL(blob);
-      });
+    }
 
-      // ── 3. Clip to drawn polygon if requested ──────────────────────────────
-      const [west, south, east, north] = bbox;
-      const renderedBounds: [[number, number], [number, number]] = [[south, west], [north, east]];
-
-      if (clipToShape && polygonRing) {
-        try {
-          dataUrl = await clipImageToPolygon(dataUrl, renderedBounds, polygonRing);
-        } catch {
-          // fall back to unclipped rectangle
-        }
-      }
-
-  // ── 4. Analyze image pixels + set classification ───────────────────────
+    // ── 5. Analyze + classify ──────────────────────────────────────────────
     const imageStats = await analyzeImage(dataUrl);
     if (imageStats) {
+      const p2Val  = realStats?.p2  ?? imageStats.min / 255;
+      const p98Val = realStats?.p98 ?? imageStats.max / 255;
+      const midVal = (p2Val + p98Val) / 2;
+
       setStats({
-        min:       realStats?.min  ?? imageStats.min / 255,
-        max:       realStats?.max  ?? imageStats.max / 255,
-        mean:      realStats != null ? (realStats.p2 + realStats.p98) / 2 : imageStats.mean / 255,
+        min:       realStats?.min ?? imageStats.min / 255,
+        max:       realStats?.max ?? imageStats.max / 255,
+        mean:      midVal,
         histogram: imageStats.histogram,
       });
 
-      console.log("Real Stats:", realStats);
-      console.log("Image Stats:", imageStats);
-
-      // Use real p98 value (actual max NDVI for this scene) for classification,
-      // not pixel brightness which depends on colormap.
-      // 1. حساب قيمة عليا وقيمة متوسطة بشكل آمن متوافق مع TypeScript والـ API
-      const topVal = realStats?.p98 ?? (imageStats.max / 255);
-      const minVal = realStats?.p2 ?? (imageStats.min / 255);
-      // بديل ديناميكي للمتوسط الإحصائي بين النقطتين
-      const dynamicMid = (topVal + minVal) / 2; 
-
-      // 2. التحليل الديناميكي المستقل للمصفوفة
       if (activePreset) {
-        // لو فيه بريسيت جاهز (NDVI, NDWI...) بنعرض اسمه
         setClassification(`📊 Value Range: ${activePreset} Analysis`);
       } else {
-        // لو معادلة ديناميكية تماماً من الـ Raster Calculator
-        if (dynamicMid > 0.3) {
-          setClassification("📈 High-Reflectance / Highly Positive Response");
-        } else if (dynamicMid > 0.05) {
-          setClassification("📉 Mid-Range / Moderate Response");
-        } else if (dynamicMid > -0.1) {
-          setClassification("⏳ Low / Near-Zero Response");
-        } else {
-          setClassification("📉 Negative Response / Absorbing Target");
-        }
+        if      (midVal > 0.3)  setClassification("📈 High-Reflectance / Highly Positive Response");
+        else if (midVal > 0.05) setClassification("📉 Mid-Range / Moderate Response");
+        else if (midVal > -0.1) setClassification("⏳ Low / Near-Zero Response");
+        else                    setClassification("📉 Negative Response / Absorbing Target");
       }
-
-      setPreviewImg(dataUrl);
-      setPreviewStatus("success");
-
-      onPreview?.({
-        name: `${activePreset || "Expression"} · ${selectedScene.id}`,
-        indexKey: activePreset || "CUSTOM",
-        expression,
-        date: selectedScene.date,
-        dataUrl,
-        bounds: renderedBounds,
-        opacity: opacity / 100,
-        colorRamp: colormap,
-        coords: fallbackCoords ?? { lat: (south + north) / 2, lng: (west + east) / 2 },
-      });
     }
+
+    setPreviewImg(dataUrl);
+    setPreviewStatus("success");
+
+    onPreview?.({
+      name:      `${activePreset || "Expression"} · ${selectedScene.id}`,
+      indexKey:  activePreset || "CUSTOM",
+      expression,
+      date:      selectedScene.date,
+      dataUrl,
+      bounds:    renderedBounds,
+      opacity:   opacity / 100,
+      colorRamp: colormap,
+      coords:    fallbackCoords ?? { lat: (south + north) / 2, lng: (west + east) / 2 },
+    });
 
   } catch (err) {
     setPreviewStatus("error");
     setPreviewError(err instanceof Error ? err.message : "Render request failed.");
   }
-}; // <--- القوس ده والمفتاح دول هما اللي كانوا ناقصين لتقفيل الـ view = async () => {
-
+};
   return (
     <div className="space-y-4">
       {/* Header */}
