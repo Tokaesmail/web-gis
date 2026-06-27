@@ -84,8 +84,6 @@ export function useMapDB() {
     });
   }, []);
 
-  // ⑤ Blob → URL مؤقت للعرض في <img src="">
-  // مهم: استدعي URL.revokeObjectURL(url) لما تخلصي منه
   const blobToUrl = useCallback((blob: Blob) => URL.createObjectURL(blob), []);
 
   return { saveCapture, getCapture, getAllCaptures, deleteCapture, blobToUrl };

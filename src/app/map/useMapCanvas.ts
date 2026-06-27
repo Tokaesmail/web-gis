@@ -1,8 +1,5 @@
 "use client";
 
-// ─── useMapCanvas.ts ───────────────────────────────────────────────────────────
-// نفس الـ hook بس دلوقتي الـ capture بيرسم التايلز الحقيقية
-// لأن التايلز بتيجي من /api/tile (proxy) مش من Esri مباشرة → مفيش CORS
 
 import { useCallback } from "react";
 import { useMapDB }    from "./useMapDB";

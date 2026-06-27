@@ -14,8 +14,8 @@ import { useMapCanvas }      from "./useMapCanvas";
 import { useLang }           from "../_components/translations";
 import * as turf from "@turf/turf";
 import {
-  DrawTool, SAT_LAYERS, INDEX_TILES,
-  SatKey, IdxKey, LatLngPoint, CaptureMetadata, CaptureResult, CaptureTarget,
+  DrawTool, SAT_LAYERS,
+  SatKey, LatLngPoint, CaptureMetadata, CaptureResult, CaptureTarget,
 } from "./mapTypes_proxy";
 import { AOIEditor } from "./AOIEditor";
 import { validateAOI, MAX_AOI_SIZE_HA } from "./aoiValidation";
@@ -47,7 +47,6 @@ interface Props {
   flyToRef:       React.MutableRefObject<((lat: number, lng: number) => void) | null>;
   clearRef:       React.MutableRefObject<(() => void) | null>;
   onSatChange:    (handler: (sat: SatKey) => void) => void;
-  onIdxChange:    (handler: (idx: IdxKey) => void) => void;
   onOpacityChangeRegister?: (handler: (o: number) => void) => void;
   /** register an image placement workflow (2 clicks to place image) */
   onImagePlacerRegister?: (handler: (file: File) => void) => void;
@@ -120,7 +119,7 @@ function makePolygonFeature(name: string, points: [number, number][], area: numb
 
 export default function LeafletMap({
   activeTool, captureTarget, onAreaSelected, onCoordsUpdate,
-  flyToRef, clearRef, onSatChange, onIdxChange, onOpacityChangeRegister, onCapture,
+  flyToRef, clearRef, onSatChange, onOpacityChangeRegister, onCapture,
   geoJsonData, extraGeoJsonData, latestGeoJson, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
   onImagePlacerRegister,
   onRasterOverlayRegister,
@@ -145,7 +144,6 @@ export default function LeafletMap({
   const drawPointsRef  = useRef<[number, number][]>([]);
   const baseTileRef    = useRef<any>(null);
   const labelsLayerRef = useRef<any>(null);
-  const indexTileRef   = useRef<any>(null);
   const canvasRef      = useRef<HTMLCanvasElement | null>(null);
   const extrudeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastCoordsRef  = useRef<LatLngPoint[]>([]);
@@ -952,7 +950,6 @@ L.control.scale({
 }).addTo(map);
 
       map.createPane("satellitePane"); map.getPane("satellitePane")!.style.zIndex = "201";
-      map.createPane("indexPane");     map.getPane("indexPane")!.style.zIndex     = "202";
       map.createPane("labelsPane");
       Object.assign(map.getPane("labelsPane")!.style, { zIndex: "203", pointerEvents: "none" });
       map.createPane("imagePane");
@@ -1159,8 +1156,7 @@ saved.forEach((item: any) => {
       // ── Sat / Index ───────────────────────────────────────────────────────
       onSatChange((satKey: SatKey) => {
         const def = SAT_LAYERS[satKey];
-        if (baseTileRef.current)  map.removeLayer(baseTileRef.current);
-        if (indexTileRef.current) { map.removeLayer(indexTileRef.current); indexTileRef.current = null; }
+        if (baseTileRef.current) map.removeLayer(baseTileRef.current);
         if (!def?.url) return;
         baseTileRef.current = L.tileLayer(def.url, {
           attribution:   def.attribution,
@@ -1172,20 +1168,7 @@ saved.forEach((item: any) => {
         }).addTo(map);
       });
 
-      onIdxChange((idxKey: IdxKey) => {
-        if (indexTileRef.current) { map.removeLayer(indexTileRef.current); indexTileRef.current = null; }
-        if (idxKey === "RGB") return;
-        const tile = INDEX_TILES[idxKey];
-        if (!tile?.url) return;
-        indexTileRef.current = L.tileLayer(tile.url, {
-          attribution: `${idxKey}`,
-          maxZoom: tile.maxZoom, maxNativeZoom: tile.maxNativeZoom,
-          tileSize: 256, opacity: tile.opacity, pane: "indexPane", crossOrigin: "anonymous",
-        }).addTo(map);
-      });
-
       onOpacityChangeRegister?.((o: number) => {
-        if (indexTileRef.current) indexTileRef.current.setOpacity(o);
         if (labelsLayerRef.current) labelsLayerRef.current.setOpacity(o * 0.8 + 0.1);
       });
 

@@ -7,7 +7,7 @@ import { useLang } from "../_components/translations";
 import AnalysisSidebar from "../_components/AnalysisSidebar/AnalysisSidebar";
 import AIAssistant from "../_components/AIAssistant/AIAssistant";
 
-import { DrawTool, SatKey, IdxKey, CaptureResult, CaptureTarget } from "./mapTypes_proxy";
+import { DrawTool, SatKey, CaptureResult, CaptureTarget } from "./mapTypes_proxy";
 import MapNavbar from "./MapNavbar";
 import MapToolbar from "./MapToolbar";
 import MapSearch from "./MapSearch";
@@ -30,7 +30,7 @@ const MAX_LOCAL_GEOJSON_STORAGE_CHARS = 2_000_000;
 
 type RasterPreviewConfig = {
   name: string;
-  indexKey: IdxKey;
+  indexKey: string;
   expression: string;
   date: string;
   coords: { lat: number; lng: number };
@@ -43,14 +43,14 @@ type RasterPreviewConfig = {
 type SatellitePreviewConfig = {
   source: "sentinel-2" | "landsat";
   satKey: SatKey;
-  band: IdxKey;
+  band: string;
   dateFrom: string;
   dateTo: string;
   cloudCover: number;
   opacity: number;
   scenePreview?: {
     name: string;
-    band: IdxKey;
+    band: string;
     expression: string | null;
     assets: string[];
     assetUrls: Record<string, string>;
@@ -89,6 +89,7 @@ export default function MapPage() {
   const [activeTool,       setActiveTool]        = useState<DrawTool>("pointer");
   const [captureTarget,    setCaptureTarget]     = useState<CaptureTarget>("small");
   const [selectedArea,     setSelectedArea]      = useState({ name: "Selected Area", ha: 0 });
+  const [areaUnit,         setAreaUnit]          = useState<"ha" | "m2" | "km2" | "feddan" | "acre">("ha");
   const [coords,           setCoords]            = useState<{ lat: number; lng: number } | null>(null);
   const [captureUrl,       setCaptureUrl]        = useState<string | null>(null);
   const [captures,         setCaptures]          = useState<any[]>([]);
@@ -134,7 +135,6 @@ export default function MapPage() {
   const flyToRef               = useRef<((lat: number, lng: number) => void) | null>(null);
   const clearRef               = useRef<(() => void) | null>(null);
   const changeSatRef           = useRef<((sat: SatKey) => void) | null>(null);
-  const changeIdxRef           = useRef<((idx: IdxKey) => void) | null>(null);
   const changeOpacityRef       = useRef<((o: number) => void) | null>(null);
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
   const rasterOverlayRef       = useRef<((config: RasterPreviewConfig) => void) | null>(null);
@@ -602,8 +602,6 @@ export default function MapPage() {
     setLayers((prev) => prev.map((l) => l.id === id ? { ...l, visible } : l));
     // Wire to map tile changes where applicable
     if (id === "satellite" && visible) changeSatRef.current?.("Default");
-    if (id === "legacy-viewer" && visible) changeSatRef.current?.("Legacy Viewer");
-    if (id === "ndvi-tile" && visible) changeIdxRef.current?.("NDVI" as any);
   }, []);
 
   const handleLayerOpacity = useCallback((id: string, opacity: number) => {
@@ -752,7 +750,6 @@ export default function MapPage() {
     }
 
     changeSatRef.current?.(config.satKey);
-    changeIdxRef.current?.(config.band);
     changeOpacityRef.current?.(config.opacity);
 
     const layerName = config.source === "sentinel-2" ? "Sentinel-2 Preview" : "Landsat Preview";
@@ -789,7 +786,6 @@ export default function MapPage() {
 
   const handleRasterPreview = useCallback((config: RasterPreviewConfig) => {
     rasterOverlayRef.current?.(config);
-    changeIdxRef.current?.(config.indexKey);
     changeOpacityRef.current?.(config.opacity);
 
     setLayers((prev) => {
@@ -827,7 +823,6 @@ export default function MapPage() {
     colorRamp: config.colorRamp,
     dataUrl: config.dataUrl,
   });
-  changeIdxRef.current?.(config.indexKey as any);
   changeOpacityRef.current?.(config.opacity);
  
   setLayers((prev) => {
@@ -1107,7 +1102,6 @@ export default function MapPage() {
             flyToRef={flyToRef}
             clearRef={clearRef}
             onSatChange={(h) => { changeSatRef.current = h; }}
-            onIdxChange={(h) => { changeIdxRef.current = h; }}
               onOpacityChangeRegister={(h) => { changeOpacityRef.current = h; }}
             onImagePlacerRegister={(h) => { startImagePlacementRef.current = h; }}
             onRasterOverlayRegister={(h) => { rasterOverlayRef.current = h as any; }}
@@ -1214,7 +1208,6 @@ export default function MapPage() {
             />
             <MapLayerBar
               onSatChange={(s) => changeSatRef.current?.(s)}
-              onIdxChange={(i) => changeIdxRef.current?.(i)}
               onOpacityChange={(o) => changeOpacityRef.current?.(o)}
             />
             {coords && (
@@ -1222,35 +1215,65 @@ export default function MapPage() {
             )}
 
             {/* ── Area / Feature Info Overlay ── */}
-            {selectedArea.ha > 0 && (
-              <div className={`absolute bottom-32 sm:bottom-24 z-[1000] max-w-[calc(100vw-96px)] px-3 sm:px-4 py-3 bg-[#0a1628]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl animate-fadeUp flex items-center gap-3 sm:gap-4 pointer-events-auto
-                ${isRTL ? "left-16 sm:left-20" : "right-16 sm:right-20"}`}>
-                <div className="w-10 h-10 rounded-xl bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18" />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-[0.65rem] text-slate-500 uppercase tracking-widest font-bold mb-0.5">
-                    {t.selectedArea}
-                  </p>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-xl font-bold text-slate-100 tracking-tight">{selectedArea.ha.toLocaleString()}</span>
-                    <span className="text-[0.7rem] font-medium text-cyan-400/80 uppercase">
-                      {t.hectares}
-                    </span>
+            {selectedArea.ha > 0 && (() => {
+              const UNITS = [
+                { key: "ha",     label: "ha",     factor: 1,          name: "Hectares"  },
+                { key: "m2",     label: "m²",     factor: 10000,      name: "Sq Meters" },
+                { key: "km2",    label: "km²",    factor: 0.01,       name: "Sq Km"     },
+                { key: "feddan", label: "فدان",   factor: 2.38095,    name: "Feddan"    },
+                { key: "acre",   label: "acre",   factor: 2.47105,    name: "Acres"     },
+              ] as const;
+              const unit = UNITS.find(u => u.key === areaUnit) ?? UNITS[0];
+              const converted = selectedArea.ha * unit.factor;
+              const display = converted >= 1000
+                ? converted.toLocaleString(undefined, { maximumFractionDigits: 1 })
+                : converted.toLocaleString(undefined, { maximumFractionDigits: 2 });
+              return (
+                <div className={`absolute bottom-32 sm:bottom-24 z-[1000] max-w-[calc(100vw-96px)] px-3 sm:px-4 py-2.5 bg-[#0a1628]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl animate-fadeUp pointer-events-auto
+                  ${isRTL ? "left-16 sm:left-20" : "right-16 sm:right-20"}`}>
+                  {/* header row */}
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18" />
+                      </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[0.6rem] text-slate-500 uppercase tracking-widest font-bold mb-0.5">{t.selectedArea}</p>
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-xl font-bold text-slate-100 tracking-tight">{display}</span>
+                        <span className="text-[0.7rem] font-medium text-cyan-400/80 uppercase">{unit.label}</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setSelectedArea({ name: "Selected Area", ha: 0 })}
+                      className="p-1.5 hover:bg-white/10 rounded-lg text-slate-500 hover:text-slate-300 transition-colors cursor-pointer shrink-0"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <path d="M18 6 6 18M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                  {/* unit pills */}
+                  <div className="flex gap-1 mt-2 flex-wrap">
+                    {UNITS.map(u => (
+                      <button
+                        key={u.key}
+                        onClick={() => setAreaUnit(u.key)}
+                        title={u.name}
+                        className={`text-[0.6rem] px-2 py-0.5 rounded-full border transition-all cursor-pointer font-mono
+                          ${areaUnit === u.key
+                            ? "bg-cyan-400/20 border-cyan-400/40 text-cyan-300"
+                            : "bg-white/5 border-white/10 text-slate-500 hover:text-slate-300 hover:border-white/20"
+                          }`}
+                      >
+                        {u.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <button 
-                  onClick={() => setSelectedArea({ name: "Selected Area", ha: 0 })}
-                  className="ml-2 p-1.5 hover:bg-white/10 rounded-lg text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path d="M18 6 6 18M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            )}
+              );
+            })()}
 
             {/* ── Capture Sidebar Preview ── */}
             {captures.length > 0 && (
