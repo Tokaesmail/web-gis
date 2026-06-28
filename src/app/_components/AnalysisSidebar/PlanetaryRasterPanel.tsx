@@ -1,18 +1,17 @@
 "use client";
 
 // ─── PlanetaryRasterPanel.tsx ───────────────────────────────────────────────
-// Raster Calculator مبني على Planetary Computer Data API (titiler).
+// Raster Calculator — WebGIS Backend (webgiss.duckdns.org/gis/raster-calc)
 //
 // الفكرة: مفيش حسابات في الفرونت خالص. اليوزر بيكتب expression زي:
 //   (B08 - B04) / (B08 + B04)        ← NDVI
 //   (B03 - B08) / (B03 + B08)        ← NDWI
-// إحنا بنبعتها كـ query param اسمها `expression` لـ:
-//   /api/data/v1/item/preview.png?collection=...&item=...&expression=...&rescale=...&colormap_name=...
-// السيرفر (Planetary Computer) هو اللي بيجيب الباندات، يطبق المعادلة،
-// ويرجع صورة PNG جاهزة. إحنا بس بنعرضها كـ image overlay على الخريطة.
+// إحنا بنبعتها للـ backend اللي بيجيب الباندات، يطبق المعادلة،
+// ويرجع GeoTIFF جاهز. إحنا بس بنعرضه كـ overlay على الخريطة.
 
-import { useEffect, useMemo, useState } from "react";
-import { getPolygonRing, clipImageToPolygon } from "./geoClipUtils";
+import { useMemo, useState } from "react";
+import { useSession } from "next-auth/react";
+import { getPolygonRing } from "./geoClipUtils";
 
 // ─── Sentinel-2 L2A band reference (so the user writes valid expressions) ──
 const SENTINEL2_BANDS: { id: string; label: string; gsd: string; desc: string }[] = [
@@ -70,17 +69,7 @@ const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
 ];
 
 
-const PC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search";
-const PC_DATA_URL = "https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png";
-const PC_BBOX_URL  = "https://planetarycomputer.microsoft.com/api/data/v1/item/bbox";
-
-type SceneOption = {
-  id: string;
-  collection: string;
-  date: string;
-  cloud: number;
-  bbox: [number, number, number, number];
-};
+const BACKEND_RASTER_URL = "https://webgiss.duckdns.org/gis/raster-calc";
 
 // Matches the RasterPreviewConfig type already used by onRasterPreview
 // (see AnalysisSidebar.tsx / MapClient.tsx) so this panel is a drop-in
@@ -191,6 +180,9 @@ function analyzeImage(imgSrc: string) {
 }
 
 export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Props) {
+  const { data: session } = useSession();
+  const accessToken = (session?.user as any)?.accessToken as string | undefined;
+
   const coords = getMidCoords(selectedFeature);
   const fallbackCoords = coords ? { lat: coords[0], lng: coords[1] } : undefined;
 
@@ -201,15 +193,11 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   const [rescaleMax, setRescaleMax] = useState(EXPRESSION_PRESETS[0].rescale[1]);
   const [opacity, setOpacity] = useState(85);
   const [clipToShape, setClipToShape] = useState(true);
-  const [cloudCover, setCloudCover] = useState(10);
+  const [cloudCover, setCloudCover] = useState(10); // kept for potential future use
   const [dateFrom, setDateFrom] = useState("2026-04-01");
   const [dateTo, setDateTo] = useState("2026-05-31");
   const [showBandRef, setShowBandRef] = useState(true);
 
-  const [scenes, setScenes] = useState<SceneOption[]>([]);
-  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
-  const [sceneStatus, setSceneStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
-  const [sceneError, setSceneError] = useState<string | null>(null);
 
   const [previewStatus, setPreviewStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -234,56 +222,8 @@ const renderBbox = useMemo(
 );  
 const polygonRing = useMemo(() => getPolygonRing(selectedFeature), [selectedFeature]);
   const validation = useMemo(() => validateExpression(expression), [expression]);
-  const selectedScene = scenes.find((s) => s.id === selectedSceneId) ?? null;
 
-  // search for matching scenes whenever AOI / dates / cloud filter change
-  useEffect(() => {
-    let cancelled = false;
-    const run = async () => {
-      setSceneStatus("loading");
-      setSceneError(null);
-      try {
-        const res = await fetch(PC_STAC_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            collections: ["sentinel-2-l2a"],
-            bbox,
-            datetime: `${dateFrom}T00:00:00Z/${dateTo}T23:59:59Z`,
-            query: { "eo:cloud_cover": { lt: cloudCover } },
-            limit: 20,
-          }),
-        });
-        if (!res.ok) throw new Error(`STAC search failed (${res.status})`);
-        const payload = await res.json();
-        const features = Array.isArray(payload?.features) ? payload.features : [];
-        const next: SceneOption[] = features
-          .map((f: any) => ({
-            id: String(f.id),
-            collection: "sentinel-2-l2a",
-            date: String(f.properties?.datetime ?? "").slice(0, 10),
-            cloud: Math.round(Number(f.properties?.["eo:cloud_cover"] ?? 0)),
-            bbox: f.bbox ?? bbox,
-          }))
-          .sort((a: SceneOption, b: SceneOption) => a.cloud - b.cloud);
 
-        if (cancelled) return;
-        setScenes(next);
-        setSelectedSceneId(next[0]?.id ?? null);
-        setSceneStatus("success");
-        if (!next.length) setSceneError("No Sentinel-2 scenes found for this AOI/date/cloud filter.");
-      } catch (err) {
-        if (cancelled) return;
-        setScenes([]);
-        setSelectedSceneId(null);
-        setSceneStatus("error");
-        setSceneError(err instanceof Error ? err.message : "Scene search failed.");
-      }
-    };
-    run();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bbox.join(","), dateFrom, dateTo, cloudCover]);
 
   const applyPreset = (presetKey: string) => {
     const preset = EXPRESSION_PRESETS.find((p) => p.key === presetKey);
@@ -303,85 +243,68 @@ const polygonRing = useMemo(() => getPolygonRing(selectedFeature), [selectedFeat
 
 
 const runPreview = async () => {
-  if (!selectedScene || !validation.ok) return;
+  if (!validation.ok) return;
   setPreviewStatus("loading");
   setPreviewError(null);
   setStats(null);
   setClassification("");
 
   try {
-    // ── 1. Rescale: دايما من الـ preset أو الـ manual input — مش من أي API
-    // الـ statistics API بيرجع قيم لكامل الـ Sentinel tile (100+ كم صحراء)
-    // فبيعطي p2/p98 ضيق جداً مش بيمثل الـ AOI
+    // ── 1. Build date range string ────────────────────────────────────────
+    const dateRange = `${dateFrom}/${dateTo}`;
+
+    // ── 2. Call custom backend ─────────────────────────────────────────────
+    const res = await fetch(BACKEND_RASTER_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify({
+        bbox: renderBbox,
+        date: dateRange,
+        expression,
+        collection: "sentinel-2-l2a",
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Backend render failed (${res.status}). ${text.slice(0, 160)}`);
+    }
+
+    const payload = await res.json();
+    if (!payload?.success) throw new Error(payload?.message ?? "Render failed");
+
+    const tifUrl: string = payload?.data?.url ?? "";
+    if (!tifUrl) throw new Error("Backend returned no output URL");
+
+    // ── 3. Rescale from preset or manual input ─────────────────────────────
     const currentPreset = EXPRESSION_PRESETS.find(p => p.key === activePreset);
     let finalMin = currentPreset?.rescale[0] ?? rescaleMin;
     let finalMax = currentPreset?.rescale[1] ?? rescaleMax;
     if (finalMax === finalMin) finalMax = finalMin + 0.01;
 
-    // ── 3. Helper: fetch one PNG from the bbox endpoint ──────────────────
-    const aoiWidth   = renderBbox[2] - renderBbox[0];
-    const aoiHeight  = renderBbox[3] - renderBbox[1];
-    const aspectRatio = aoiWidth / aoiHeight;
-    const BASE_PX = 1024;
-    const imgW = aspectRatio >= 1 ? BASE_PX : Math.round(BASE_PX * aspectRatio);
-    const imgH = aspectRatio >= 1 ? Math.round(BASE_PX / aspectRatio) : BASE_PX;
+    // ── 4. Convert TIF → PNG via Next.js proxy ────────────────────────────
+    // L.imageOverlay بيشتغل بس مع PNG/JPG — مش TIF
+    // الـ proxy route بيجيب الـ TIF ويحوله PNG بـ sharp
+    const proxyUrl = `/api/raster-proxy?url=${encodeURIComponent(tifUrl)}&min=${finalMin}&max=${finalMax}&colormap=${colormap}${accessToken ? `&token=${encodeURIComponent(accessToken)}` : ""}`;
+    const pngRes = await fetch(proxyUrl);
+    if (!pngRes.ok) throw new Error(`PNG conversion failed (${pngRes.status})`);
+    const pngBlob = await pngRes.blob();
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error("Could not read PNG"));
+      reader.readAsDataURL(pngBlob);
+    });
+
+    // ── 5. Geometry info for bounds ────────────────────────────────────────
     const [west, south, east, north_] = renderBbox;
     const renderedBounds: [[number, number], [number, number]] = [[south, west], [north_, east]];
 
-    const fetchRender = async (rMin: number, rMax: number): Promise<string> => {
-      const p = new URLSearchParams({
-        collection:    selectedScene.collection,
-        item:          selectedScene.id,
-        expression,
-        asset_as_band: "true",
-        rescale:       `${rMin},${rMax}`,
-        colormap_name: colormap,
-        resampling:    "nearest",
-      });
-      const bboxPath = `${west},${south},${east},${north_}`;
-      const url = `${PC_BBOX_URL}/${bboxPath}/${imgW}x${imgH}.png?${p.toString()}`;
-      console.log("Render URL:", url);
-      const res = await fetch(url);
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Planetary Computer render failed (${res.status}). ${text.slice(0, 160)}`);
-      }
-      const blob = await res.blob();
-      return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload  = () => resolve(String(reader.result));
-        reader.onerror = () => reject(new Error("Could not read image data"));
-        reader.readAsDataURL(blob);
-      });
-    };
-
-    // ── 4. First render with current best-guess rescale ────────────────────
-    let dataUrl = await fetchRender(finalMin, finalMax);
-
-    // ── 5. Clip to polygon ─────────────────────────────────────────────────
-    let clippedUrl = dataUrl;
-    if (clipToShape && polygonRing) {
-      try { clippedUrl = await clipImageToPolygon(dataUrl, renderedBounds, polygonRing); }
-      catch { /* fall back to unclipped */ }
-    }
-
-    // ── 6. Final dataUrl = clipped ─────────────────────────────────────────
-    const finalDataUrl = clippedUrl;
-
-    // ── 7. tileUrl ───────────────────────────────────────────────────────────
-    const tileParams = new URLSearchParams({
-      collection:    selectedScene.collection,
-      item:          selectedScene.id,
-      expression,
-      asset_as_band: "true",
-      rescale:       `${finalMin},${finalMax}`,
-      colormap_name: colormap,
-      resampling:    "nearest",
-    });
-    const tileUrl = `${PC_DATA_URL.replace("/preview.png", "/tile/{z}/{x}/{y}.png")}?${tileParams.toString()}`;
-
-    // ── 8. Quick pixel stats for the histogram display only ──────────────────
-    const imageStats = await analyzeImage(finalDataUrl);
+    // ── 6. Pixel stats from the converted PNG ─────────────────────────────
+    const imageStats = await analyzeImage(dataUrl);
     const midVal = (finalMin + finalMax) / 2;
     setStats({
       min:       finalMin,
@@ -396,16 +319,16 @@ const runPreview = async () => {
       : "⏳ Low response"
     );
 
-    setPreviewImg(finalDataUrl);
+    setPreviewImg(dataUrl);
     setPreviewStatus("success");
 
     onPreview?.({
-      name:      `${activePreset || "Expression"} · ${selectedScene.id}`,
+      name:      `${activePreset || "Expression"} · ${dateFrom}→${dateTo}`,
       indexKey:  activePreset || "CUSTOM",
       expression,
-      date:      selectedScene.date,
-      dataUrl:   finalDataUrl,
-      tileUrl,
+      date:      dateFrom,
+      dataUrl,          // ← PNG base64 — Leaflet imageOverlay يقدر يعرضه
+      tileUrl:   tifUrl,
       bounds:    renderedBounds,
       opacity:   opacity / 100,
       colorRamp: colormap,
@@ -419,13 +342,12 @@ const runPreview = async () => {
 };
   return (
     <div className="space-y-4">
-      {/* Header */}
       <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Raster Calculator · Planetary Computer</p>
+            <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Raster Calculator · WebGIS Backend</p>
             <p className="mt-1 text-xs leading-relaxed text-slate-300">
-              Write a band expression — the server fetches the bands, computes it, and returns a ready PNG.
+              Write a band expression — the server fetches Sentinel-2 bands, computes it, and returns a GeoTIFF.
             </p>
           </div>
           <span className="shrink-0 rounded-md border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[0.56rem] font-bold text-cyan-300">
@@ -433,6 +355,7 @@ const runPreview = async () => {
           </span>
         </div>
       </div>
+
 
       {/* AOI info */}
       <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
@@ -468,41 +391,7 @@ const runPreview = async () => {
         </label>
       </div>
 
-      <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] p-3 space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-[0.62rem] uppercase tracking-wider text-slate-500">Max cloud cover</span>
-          <span className="text-xs font-semibold text-cyan-300">{cloudCover}%</span>
-        </div>
-        <input type="range" min={0} max={80} value={cloudCover} onChange={(e) => setCloudCover(Number(e.target.value))} className="w-full accent-cyan-400" />
-      </div>
 
-      {/* Scene picker */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Scene</p>
-          <span className="text-[0.58rem] text-slate-500">
-            {sceneStatus === "loading" ? "searching…" : `${scenes.length} found`}
-          </span>
-        </div>
-        {sceneError && (
-          <div className="rounded-lg border border-amber-400/18 bg-amber-400/[0.05] px-3 py-2 text-[0.62rem] text-amber-200">
-            {sceneError}
-          </div>
-        )}
-        {scenes.length > 0 && (
-          <select
-            value={selectedSceneId ?? ""}
-            onChange={(e) => setSelectedSceneId(e.target.value)}
-            className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/80 px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40"
-          >
-            {scenes.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.date} · cloud {s.cloud}% · {s.id}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
 
       {/* Band reference */}
       <div className="rounded-lg border border-white/[0.07] bg-white/[0.025]">
@@ -664,10 +553,10 @@ const runPreview = async () => {
       <button
         type="button"
         onClick={runPreview}
-        disabled={!selectedScene || !validation.ok || previewStatus === "loading"}
+        disabled={!validation.ok || previewStatus === "loading"}
         className="w-full rounded-lg bg-cyan-400 px-3 py-3 text-xs font-bold text-[#03101d] transition-colors hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {previewStatus === "loading" ? "Rendering on Planetary Computer…" : "Render & Preview on Map"}
+        {previewStatus === "loading" ? "Processing on WebGIS Backend…" : "Render & Preview on Map"}
       </button>
       {stats && previewStatus === "success" && (() => {
         // ── Compute zone distribution from histogram ──────────────────────────

@@ -11,7 +11,8 @@ export type PanelId =
   | "analysis"
   | "layers"
   | "crops"
-  | "template-match";
+  | "template-match"
+  | "volume";
 
 interface PanelItem {
   id: PanelId;
@@ -107,18 +108,18 @@ export const panels: PanelItem[] = [
       </svg>
     ),
   },
-  {
-    id: "analysis",
-    labelEn: "Analysis",
-    labelAr: "Analyses",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-        <path d="M11 8v6M8 11h6"/>
-      </svg>
-    ),
-    badge: "7",
-  },
+  // {
+  //   id: "analysis",
+  //   labelEn: "Analysis",
+  //   labelAr: "Analyses",
+  //   icon: (
+  //     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+  //       <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+  //       <path d="M11 8v6M8 11h6"/>
+  //     </svg>
+  //   ),
+  //   badge: "7",
+  // },
   {
     id: "ndvi",
     labelEn: "Charts",
@@ -151,7 +152,7 @@ export const panels: PanelItem[] = [
       </svg>
     ),
   },
-   {                                                    // ← new block starts here
+  {
     id: "elevation",
     labelEn: "Elevation",
     labelAr: "الارتفاع",
@@ -162,5 +163,18 @@ export const panels: PanelItem[] = [
       </svg>
     ),
     badge: "DEM",
-  },   
+  },
+  {
+    id: "volume",
+    labelEn: "Volume Calc",
+    labelAr: "حساب الحجم",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M3 3h18v18H3z"/>
+        <path d="m3 9 9-6 9 6"/>
+        <path d="M9 21V9l3-2 3 2v12"/>
+      </svg>
+    ),
+    badge: "VOL",
+  },
 ];
