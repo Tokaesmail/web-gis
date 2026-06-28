@@ -52,9 +52,13 @@ interface Props {
   onImagePlacerRegister?: (handler: (file: File) => void) => void;
   onRasterOverlayRegister?: (handler: (config: {
     name: string;
+    indexKey: string;
+    expression: string;
+    date: string;
     dataUrl: string;
     bounds: [[number, number], [number, number]];
     opacity: number;
+    colorRamp: string;
     coords: { lat: number; lng: number };
   }) => void) => void;
   onCapture?:     (capture: CaptureResult) => void;
@@ -73,6 +77,8 @@ interface Props {
   geoJsonStyle?:  GeoJSONStyle;
   /** هل نزوم على الـ GeoJSON بعد التحميل؟ */
   geoJsonFitBounds?: boolean;
+  /** features محفوظة في البروجيكت — بترسمهم تاني لما نفتح البروجيكت */
+  initialFeatures?: GeoJSON.Feature[];
 }
 
 // ── ألوان كل أداة — للعرض فقط، مش بتتبعت للباك ──────────────────────────────
@@ -125,6 +131,7 @@ export default function LeafletMap({
   onRasterOverlayRegister,
   extrusionGeoJson,
   extrusionConfig,
+  initialFeatures,
 }: Props) {
   const { t, isRTL } = useLang();
 
@@ -155,12 +162,13 @@ export default function LeafletMap({
   const geoJsonLayerRef     = useRef<any>(null);
   const searchMarkerRef = useRef<any>(null);
   const extraGeoJsonLayerRef = useRef<any>(null);
+  const initialFeaturesLayerRef = useRef<any[]>([]);
   const rafRef              = useRef<number | null>(null);
   const lastMoveRef         = useRef<any>(null);
   const [mapReady, setMapReady] = useState(false);
   const imagePaneReadyRef = useRef(false);
   const imageOverlaysRef = useRef<{ id: string; name: string; src: string; bounds: [[number, number], [number, number]]; layer: any }[]>([]);
-  const rasterOverlayRef = useRef<any>(null);
+  const rasterOverlayRef = useRef<Map<string, any>>(new Map());
   const placingImageRef = useRef<{
     file: File;
     src: string; // data URL (persistent across refresh)
@@ -355,17 +363,24 @@ export default function LeafletMap({
       const map = mapInstanceRef.current;
       const L = LRef.current;
       if (!map || !L || !config.dataUrl) return;
-      if (rasterOverlayRef.current) {
-        try { map.removeLayer(rasterOverlayRef.current); } catch (_) {}
-        rasterOverlayRef.current = null;
+
+      // كل analysis ليه key فريد — name + date عشان نعرض نفس الـ analysis مع update
+      const overlayKey = `${config.indexKey}_${config.date}`;
+
+      // لو نفس الـ key موجود قبل كده امسحه (update مش duplicate)
+      const existing = rasterOverlayRef.current.get(overlayKey);
+      if (existing) {
+        try { map.removeLayer(existing); } catch (_) {}
+        rasterOverlayRef.current.delete(overlayKey);
       }
+
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
-      console.log("Raster bounds:", config.bounds);
-console.log("Raster image:", config.dataUrl.substring(0, 80));
-      rasterOverlayRef.current = L.imageOverlay(config.dataUrl, bounds, {
+      const layer = L.imageOverlay(config.dataUrl, bounds, {
         opacity: config.opacity,
         pane: "imagePane",
       }).addTo(map);
+      rasterOverlayRef.current.set(overlayKey, layer);
+
       map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 14, duration: 0.8 });
       L.circleMarker([config.coords.lat, config.coords.lng], {
         radius: 7,
@@ -727,6 +742,98 @@ console.log("Raster image:", config.dataUrl.substring(0, 80));
     }
   }, [latestGeoJson]);
 
+  // ── Restore drawn features from project snapshot ─────────────────────────
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const L   = LRef.current;
+    if (!map || !L || !initialFeatures?.length) return;
+
+    // امسح أي layers قديمة من load سابق
+    initialFeaturesLayerRef.current.forEach((layer) => {
+      try { map.removeLayer(layer); } catch (_) {}
+    });
+    initialFeaturesLayerRef.current = [];
+
+    const c = TOOL_COLORS.polygon;
+    const bounds: any[] = [];
+
+    initialFeatures.forEach((feature) => {
+      try {
+        const geom = feature.geometry;
+        const props = feature.properties ?? {};
+        const name  = String(props.name ?? "Restored Shape");
+        const area  = Number(props.areaHa ?? 0);
+
+        // ── Polygon / Rectangle ───────────────────────────────────────────────
+        if (geom.type === "Polygon") {
+          // GeoJSON coords: [[[lng, lat], ...]]  → Leaflet: [[lat, lng], ...]
+          const ring = geom.coordinates[0].map(([lng, lat]: number[]) => [lat, lng]);
+          const poly = L.polygon(ring, {
+            color: c.stroke, weight: 2,
+            fillColor: c.fill, fillOpacity: 0,
+          }).addTo(map);
+
+          poly.bindPopup(() => {
+            const div = document.createElement("div");
+            div.innerHTML = `🔵 ${name}${area ? ` · ≈ ${area} ha` : ""}`;
+            const editBtn = document.createElement("button");
+            editBtn.textContent = "✏️ Edit AOI";
+            editBtn.style.cssText = "margin-top:6px;display:block;background:#00d4ff22;border:1px solid #00d4ff55;color:#00d4ff;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
+            editBtn.onclick = () => startAOIEdit(poly, "polygon");
+            div.appendChild(editBtn);
+            return div;
+          });
+
+          poly.on("click", () => startAOIEdit(poly, "polygon"));
+
+          drawLayersRef.current.push(poly);
+          initialFeaturesLayerRef.current.push(poly);
+
+          try { bounds.push(poly.getBounds()); } catch (_) {}
+        }
+
+        // ── Circle (bounds approximation) ─────────────────────────────────────
+        if (geom.type === "Point") {
+          const [lng, lat] = geom.coordinates as number[];
+          const marker = L.circleMarker([lat, lng], {
+            radius: 8,
+            color: TOOL_COLORS.marker.stroke,
+            fillColor: TOOL_COLORS.marker.fill,
+            fillOpacity: 0.85,
+            weight: 2,
+          }).addTo(map);
+          marker.bindPopup(`📍 ${name}`);
+          drawLayersRef.current.push(marker);
+          initialFeaturesLayerRef.current.push(marker);
+        }
+
+        // ── LineString (measure) ──────────────────────────────────────────────
+        if (geom.type === "LineString") {
+          const latlngs = geom.coordinates.map(([lng, lat]: number[]) => [lat, lng]);
+          const line = L.polyline(latlngs, {
+            color: TOOL_COLORS.measure.stroke, weight: 2.5,
+          }).addTo(map);
+          line.bindPopup(`📏 ${name}`);
+          drawLayersRef.current.push(line);
+          initialFeaturesLayerRef.current.push(line);
+          try { bounds.push(line.getBounds()); } catch (_) {}
+        }
+      } catch (err) {
+        console.warn("Failed to restore feature:", err);
+      }
+    });
+
+    // Fly to الـ bounds بتاعت كل الـ features المرسومة
+    if (bounds.length) {
+      try {
+        const combined = bounds.reduce((acc, b) => acc.extend(b), L.latLngBounds(bounds[0]));
+        if (combined.isValid()) {
+          map.flyToBounds(combined, { padding: [60, 60], maxZoom: 15, duration: 1.2 });
+        }
+      } catch (_) {}
+    }
+  }, [initialFeatures, mapReady]);
+
   // ── Extrusion canvas redraw on map moves ──────────────────────────────────
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -806,7 +913,6 @@ console.log("Raster image:", config.dataUrl.substring(0, 80));
       const captureResult = await capture(canvas, map, L, coordinates, metadata, captureTarget);
       const { smallBlob, largeBlob, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
       onCapture?.(captureResult);
-      // بنبعت coordinates و metadata للباك — مفيش ألوان
       const res = await sendToBackend(smallBlob, largeBlob, coordinates, metadata, {
         viewportCoordinates,
         selectedBounds,
@@ -824,7 +930,11 @@ console.log("Raster image:", config.dataUrl.substring(0, 80));
     if (!map || !aoiEditorRef.current) return;
 
     map.closePopup();
+    // Remove from drawLayers while editing (editor hides the layer)
     drawLayersRef.current = drawLayersRef.current.filter((l) => l !== layer);
+
+    // Temporarily disable click on the layer while editing
+    layer.off("click");
 
     aoiEditorRef.current.startEditing(layer, kind);
   };
@@ -850,7 +960,6 @@ const polygon = turf.polygon([coords]);
 const area = parseFloat(
   (turf.area(polygon) / 10000).toFixed(1)
 );
-    // ── Popup with "Edit AOI" button ───────────────────────────────────────
     poly.bindPopup(() => {
       const div = document.createElement("div");
       const label = document.createElement("div");
@@ -860,11 +969,14 @@ const area = parseFloat(
       const editBtn = document.createElement("button");
       editBtn.textContent = isRTL ? "✏️ تعديل المنطقة" : "✏️ Edit AOI";
       editBtn.style.cssText = "margin-top:6px;background:#00d4ff22;border:1px solid #00d4ff55;color:#00d4ff;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
-      editBtn.onclick = () => startAOIEdit(poly, "polygon");
+      editBtn.onclick = () => { map.closePopup(); startAOIEdit(poly, "polygon"); };
       div.appendChild(editBtn);
 
       return div;
     }).openPopup();
+
+    // Allow re-editing by clicking the polygon
+    poly.on("click", () => startAOIEdit(poly, "polygon"));
 
     const feature = makePolygonFeature("Drawn Polygon", pts, area);
     onAreaSelected("Drawn Polygon", area, feature);
@@ -1000,10 +1112,13 @@ if (!restoredRef.current) {
             const editBtn = document.createElement("button");
             editBtn.textContent = isRTL ? "✏️ تعديل المنطقة" : "✏️ Edit AOI";
             editBtn.style.cssText = "margin-top:6px;background:#00d4ff22;border:1px solid #00d4ff55;color:#00d4ff;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
-            editBtn.onclick = () => startAOIEdit(poly, "polygon");
+            editBtn.onclick = () => { map.closePopup(); startAOIEdit(poly, "polygon"); };
             div.appendChild(editBtn);
             return div;
           }).openPopup();
+
+          // ← Critical: allow re-editing by clicking the polygon again
+          poly.on("click", () => startAOIEdit(poly, "polygon"));
 
           const feature = makePolygonFeature("Edited AOI", points, roundedArea);
           onAreaSelected("Edited AOI", roundedArea, feature);
@@ -1019,8 +1134,8 @@ if (!restoredRef.current) {
           );
         },
         onCancel: () => {
-          // nothing to restore: original drawn layer is simply gone if it was
-          // mid-edit; user can redraw if needed
+          // The original layer was removed by AOIEditor.startEditing; nothing to restore
+          // since we don't keep a reference here. User can re-draw if needed.
         },
       });
 
@@ -1224,10 +1339,11 @@ saved.forEach((item: any) => {
           try { map.removeLayer(ov.layer); } catch (_) {}
         });
         imageOverlaysRef.current = [];
-        if (rasterOverlayRef.current) {
-          try { map.removeLayer(rasterOverlayRef.current); } catch (_) {}
-          rasterOverlayRef.current = null;
-        }
+        // امسح كل الـ raster analysis overlays
+        rasterOverlayRef.current.forEach((layer) => {
+          try { map.removeLayer(layer); } catch (_) {}
+        });
+        rasterOverlayRef.current.clear();
         try { localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY); } catch (_) {}
         refreshOverlaysUi();
         stopImagePlacement();

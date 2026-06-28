@@ -89,7 +89,7 @@ export default function MapPage() {
   const [activeTool,       setActiveTool]        = useState<DrawTool>("pointer");
   const [captureTarget,    setCaptureTarget]     = useState<CaptureTarget>("small");
   const [selectedArea,     setSelectedArea]      = useState({ name: "Selected Area", ha: 0 });
-  const [areaUnit,         setAreaUnit]          = useState<"ha" | "m2" | "km2" | "feddan" | "acre">("ha");
+  const [areaUnit,         setAreaUnit]          = useState<"ha" | "m2" | "km2" | "feddan" | "acre" | "ft2">("ha");
   const [coords,           setCoords]            = useState<{ lat: number; lng: number } | null>(null);
   const [captureUrl,       setCaptureUrl]        = useState<string | null>(null);
   const [captures,         setCaptures]          = useState<any[]>([]);
@@ -100,6 +100,9 @@ export default function MapPage() {
   const [activeProject,    setActiveProject]     = useState<UserProject | null>(null);
   const [projectSaving,    setProjectSaving]     = useState(false);
   const [elevationFloatOpen, setElevationFloatOpen] = useState(false);
+  const [drawnFeatures, setDrawnFeatures] = useState<GeoJSON.Feature[]>([]);
+  const [initialFeaturesToRestore, setInitialFeaturesToRestore] = useState<GeoJSON.Feature[] | null>(null);
+  const [savedAnalyses, setSavedAnalyses] = useState<import("./projects/projectTypes").SavedAnalysisConfig[]>([]);
 
   const [geoJsonData,     setGeoJsonData]     = useState<any>(null);
   const [geoJsonLoading,  setGeoJsonLoading]  = useState(false);
@@ -149,6 +152,7 @@ export default function MapPage() {
   const isLayerSettingsHydrating = useRef(false);
   const layerSettingsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const remoteLayerSettingsUnsupported = useRef(false);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const storageWarningShownRef = useRef(false);
 
   const layerSettingsStorageKey = useMemo(() => {
@@ -732,7 +736,7 @@ export default function MapPage() {
       };
       setLatestGeoJson({ type: "FeatureCollection", features: [feature] });
       if (scene.previewUrl) {
-        rasterOverlayRef.current?.({
+        const overlayConfig = {
           name: scene.name,
           indexKey: scene.band,
           expression: scene.expression ?? scene.assets.join(","),
@@ -742,7 +746,15 @@ export default function MapPage() {
           opacity: Math.min(0.72, Math.max(0.35, config.opacity)),
           colorRamp: "Scene preview",
           dataUrl: scene.previewUrl,
-        });
+        };
+        rasterOverlayRef.current?.(overlayConfig);
+        // حفظ الـ satellite preview في الـ project — بنضيف للقائمة مش بنستبدل
+        setSavedAnalyses((prev) => [...prev, {
+          id: crypto.randomUUID(),
+          type: "satellite" as const,
+          ...overlayConfig,
+          savedAt: new Date().toISOString(),
+        }]);
       } else {
         flyToRef.current?.(scene.coords.lat, scene.coords.lng);
       }
@@ -788,6 +800,22 @@ export default function MapPage() {
     rasterOverlayRef.current?.(config);
     changeOpacityRef.current?.(config.opacity);
 
+    // حفظ الـ analysis في الـ project — بنضيف للقائمة مش بنستبدل
+    setSavedAnalyses((prev) => [...prev, {
+      id: crypto.randomUUID(),
+      type: "raster" as const,
+      name: config.name,
+      indexKey: config.indexKey,
+      expression: config.expression,
+      date: config.date,
+      coords: config.coords,
+      bounds: config.bounds,
+      opacity: config.opacity,
+      colorRamp: config.colorRamp,
+      dataUrl: config.dataUrl,
+      savedAt: new Date().toISOString(),
+    }]);
+
     setLayers((prev) => {
       const resultLayer: MapLayer = {
         id: "raster-result",
@@ -809,9 +837,6 @@ export default function MapPage() {
   }, []);
 
   const handleChangeDetectionPreview = useCallback((config: ChangeDetectionPreviewConfig) => {
-  // Change Detection reuses the same raster-overlay pipeline as the Raster
-  // Calculator: it pushes a colorized PNG data URL onto the map via
-  // rasterOverlayRef, and registers/updates a "change-detection" map layer.
   rasterOverlayRef.current?.({
     name: config.name,
     indexKey: config.indexKey as any,
@@ -824,7 +849,23 @@ export default function MapPage() {
     dataUrl: config.dataUrl,
   });
   changeOpacityRef.current?.(config.opacity);
- 
+
+  // حفظ الـ change detection في الـ project — بنضيف للقائمة مش بنستبدل
+  setSavedAnalyses((prev) => [...prev, {
+    id: crypto.randomUUID(),
+    type: "change-detection" as const,
+    name: config.name,
+    indexKey: config.indexKey,
+    expression: config.expression,
+    date: config.date,
+    coords: config.coords,
+    bounds: config.bounds,
+    opacity: config.opacity,
+    colorRamp: config.colorRamp,
+    dataUrl: config.dataUrl,
+    savedAt: new Date().toISOString(),
+  }]);
+
   setLayers((prev) => {
     const resultLayer: MapLayer = {
       id: "change-detection-result",
@@ -899,8 +940,10 @@ export default function MapPage() {
         selectedArea,
         coords,
       },
+      drawnFeatures: drawnFeatures,
+      savedAnalyses: savedAnalyses,
     };
-  }, [activePanel, captureTarget, coords, layers, selectedArea, selectedFeature, uploadedGeoJsonMap]);
+  }, [activePanel, captureTarget, coords, drawnFeatures, savedAnalyses, layers, selectedArea, selectedFeature, uploadedGeoJsonMap]);
 
   const handleLoadProject = useCallback((project: UserProject) => {
     const snapshot = project.snapshot;
@@ -922,6 +965,33 @@ export default function MapPage() {
     );
     setSelectedArea(snapshot.analysisSettings?.selectedArea ?? { name: "Selected Area", ha: 0 });
     setCoords(snapshot.analysisSettings?.coords ?? null);
+    const restoredFeatures = snapshot.drawnFeatures ?? [];
+    setDrawnFeatures(restoredFeatures);
+    if (restoredFeatures.length > 0) {
+      setInitialFeaturesToRestore(restoredFeatures);
+    }
+    // restore كل الـ analysis overlays على الخريطة
+    const analyses = snapshot.savedAnalyses ?? [];
+    setSavedAnalyses(analyses);
+    if (analyses.length > 0) {
+      // نرسم كل analysis بـ delay متراكم عشان الخريطة تكون جاهزة
+      analyses.forEach((analysis, index) => {
+        if (!analysis?.dataUrl) return;
+        setTimeout(() => {
+          rasterOverlayRef.current?.({
+            name: analysis.name,
+            indexKey: analysis.indexKey,
+            expression: analysis.expression,
+            date: analysis.date,
+            coords: analysis.coords,
+            bounds: analysis.bounds,
+            opacity: analysis.opacity,
+            colorRamp: analysis.colorRamp,
+            dataUrl: analysis.dataUrl,
+          });
+        }, 800 + index * 300); // 800ms أول واحد، كل واحد بعده + 300ms
+      });
+    }
     const restoredPanel = (snapshot.analysisSettings?.activePanel as any) ?? "overview";
     setActivePanel(restoredPanel);
     if (restoredPanel) lastActivePanelRef.current = restoredPanel;
@@ -964,6 +1034,29 @@ export default function MapPage() {
       setProjectSaving(false);
     }
   }, [activeProject, currentProjectSnapshot, projectOwnerKey, projectSaving, sessionStatus]);
+
+  // ── Auto-save project on snapshot change ─────────────────────────────────
+  useEffect(() => {
+    if (!activeProject) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+
+    autoSaveTimerRef.current = setTimeout(async () => {
+      try {
+        const result = await updateProject(
+          projectOwnerKey,
+          { ...activeProject, snapshot: currentProjectSnapshot },
+          sessionStatus === "authenticated",
+        );
+        setActiveProject(result.data);
+      } catch {
+        // silent — مش بنزعج المستخدم بـ auto-save errors
+      }
+    }, 2000);
+
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [currentProjectSnapshot, activeProject, projectOwnerKey, sessionStatus]);
 
   // ── Shared sidebar ────────────────────────────────────────────────────────
   const sharedSidebar = useMemo(() => (
@@ -1088,12 +1181,15 @@ export default function MapPage() {
             activeTool={activeTool}
             captureTarget={captureTarget}
             onAreaSelected={(name, area, feature) => {
-            setSelectedArea({ name, ha: area });
-
-            if (feature) {
-              handleFeatureClick(feature);
-            }
-          }}
+              setSelectedArea({ name, ha: area });
+              if (feature) {
+                handleFeatureClick(feature);
+                setDrawnFeatures((prev) => {
+                  const filtered = prev.filter((f) => f.properties?.name !== feature.properties?.name);
+                  return [...filtered, feature];
+                });
+              }
+            }}
             onCoordsUpdate={(lat, lng) => {
               lastCoordsRef.current = { lat, lng };
               setCoords({ lat, lng });
@@ -1112,6 +1208,7 @@ export default function MapPage() {
             geoJsonFitBounds={false}
             extrusionConfig={extrusionCfg || { enabled: false }}
             onFeatureClick={handleFeatureClick}
+            initialFeatures={initialFeaturesToRestore ?? undefined}
           />
         </div>
 
@@ -1217,20 +1314,24 @@ export default function MapPage() {
             {/* ── Area / Feature Info Overlay ── */}
             {selectedArea.ha > 0 && (() => {
               const UNITS = [
-                { key: "ha",     label: "ha",     factor: 1,          name: "Hectares"  },
-                { key: "m2",     label: "m²",     factor: 10000,      name: "Sq Meters" },
-                { key: "km2",    label: "km²",    factor: 0.01,       name: "Sq Km"     },
-                { key: "feddan", label: "فدان",   factor: 2.38095,    name: "Feddan"    },
-                { key: "acre",   label: "acre",   factor: 2.47105,    name: "Acres"     },
+                { key: "ha",     label: "ha",    factor: 1,           name: "Hectares"      },
+                { key: "m2",     label: "m²",    factor: 10_000,      name: "Sq Meters"     },
+                { key: "km2",    label: "km²",   factor: 0.01,        name: "Sq Km"         },
+                { key: "feddan", label: "فدان",  factor: 2.38095,     name: "Feddan"        },
+                { key: "acre",   label: "acre",  factor: 2.47105,     name: "Acres"         },
+                { key: "ft2",    label: "ft²",   factor: 107_639.104, name: "Sq Feet"       },
               ] as const;
               const unit = UNITS.find(u => u.key === areaUnit) ?? UNITS[0];
               const converted = selectedArea.ha * unit.factor;
-              const display = converted >= 1000
-                ? converted.toLocaleString(undefined, { maximumFractionDigits: 1 })
-                : converted.toLocaleString(undefined, { maximumFractionDigits: 2 });
+              const display = converted >= 1_000_000
+                ? (converted / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 }) + "M"
+                : converted >= 1000
+                  ? converted.toLocaleString(undefined, { maximumFractionDigits: 1 })
+                  : converted.toLocaleString(undefined, { maximumFractionDigits: 2 });
+              const unitIdx = UNITS.findIndex(u => u.key === areaUnit);
+              const nextUnit = UNITS[(unitIdx + 1) % UNITS.length];
               return (
-                <div className={`absolute bottom-32 sm:bottom-24 z-[1000] max-w-[calc(100vw-96px)] px-3 sm:px-4 py-2.5 bg-[#0a1628]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl animate-fadeUp pointer-events-auto
-                  ${isRTL ? "left-16 sm:left-20" : "right-16 sm:right-20"}`}>
+                <div className="absolute bottom-20 sm:bottom-24 left-1/2 -translate-x-1/2 z-[1000] w-[min(22rem,calc(100vw-96px))] px-3 sm:px-4 py-2.5 bg-[#0a1628]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl animate-fadeUp pointer-events-auto">
                   {/* header row */}
                   <div className="flex items-center gap-3">
                     <div className="w-9 h-9 rounded-xl bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
@@ -1242,7 +1343,15 @@ export default function MapPage() {
                       <p className="text-[0.6rem] text-slate-500 uppercase tracking-widest font-bold mb-0.5">{t.selectedArea}</p>
                       <div className="flex items-baseline gap-1.5">
                         <span className="text-xl font-bold text-slate-100 tracking-tight">{display}</span>
-                        <span className="text-[0.7rem] font-medium text-cyan-400/80 uppercase">{unit.label}</span>
+                        {/* Unit label — clickable to cycle to next unit */}
+                        <button
+                          onClick={() => setAreaUnit(nextUnit.key as any)}
+                          title={`Switch to ${nextUnit.name}`}
+                          className="text-[0.7rem] font-bold text-cyan-400 hover:text-cyan-200 uppercase bg-cyan-400/10 hover:bg-cyan-400/20 border border-cyan-400/25 px-1.5 py-0.5 rounded-md transition-all cursor-pointer"
+                        >
+                          {unit.label}
+                          <span className="ml-0.5 text-[0.55rem] opacity-60">▾</span>
+                        </button>
                       </div>
                     </div>
                     <button
@@ -1259,7 +1368,7 @@ export default function MapPage() {
                     {UNITS.map(u => (
                       <button
                         key={u.key}
-                        onClick={() => setAreaUnit(u.key)}
+                        onClick={() => setAreaUnit(u.key as any)}
                         title={u.name}
                         className={`text-[0.6rem] px-2 py-0.5 rounded-full border transition-all cursor-pointer font-mono
                           ${areaUnit === u.key
@@ -1275,7 +1384,7 @@ export default function MapPage() {
               );
             })()}
 
-            {/* ── Capture Sidebar Preview ── */}
+            {/* ── Capture Sidebar Preview ──
             {captures.length > 0 && (
               <div className={`absolute top-[4.5rem] sm:top-20 z-[1000] w-[min(12rem,calc(100vw-5rem))] space-y-3 animate-fadeUp max-h-[46vh] sm:max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto
                 ${isRTL ? "left-14 sm:left-16" : "right-14 sm:right-16"}`}>
@@ -1332,7 +1441,7 @@ export default function MapPage() {
                   </div>
                 ))}
               </div>
-            )}
+            )} */}
 
             <AITriggerButton onClick={() => setAiOpen(!aiOpen)} active={aiOpen} />
             <AIAssistant open={aiOpen} onClose={() => setAiOpen(false)} />

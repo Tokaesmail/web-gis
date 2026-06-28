@@ -8,7 +8,8 @@ import * as turf from "@turf/turf";
 // ── Configurable max AOI size (hectares) ────────────────────────────────────
 // Hardcoded constant per project decision — adjust this single value to change
 // the limit app-wide. 1 ha = 10,000 m².
-export const MAX_AOI_SIZE_HA = 5000;
+// 50,000 km² = 5,000,000 ha
+export const MAX_AOI_SIZE_HA = 5_000_000;
 
 export interface AOIValidationResult {
   valid: boolean;
@@ -27,23 +28,51 @@ export interface AOIValidationResult {
 //   < 100 ha     → show in hectares (e.g. "12.4 ha")
 //   >= 100 ha    → show in km²      (e.g. "3.2 km²")
 // areaHa is still tracked internally for the MAX_AOI_SIZE_HA comparison.
-export function formatArea(areaHa: number, locale: "ar" | "en" = "en"): string {
+export type AreaUnit = "ha" | "m2" | "km2" | "feddan" | "acre" | "ft2";
+
+export const AREA_UNITS: { key: AreaUnit; label: string; labelAr: string; factor: number; name: string; nameAr: string }[] = [
+  { key: "ha",     label: "ha",    labelAr: "هكتار", factor: 1,           name: "Hectares",    nameAr: "هكتار"     },
+  { key: "m2",     label: "m²",    labelAr: "م²",    factor: 10_000,      name: "Sq Meters",   nameAr: "متر مربع"  },
+  { key: "km2",    label: "km²",   labelAr: "كم²",   factor: 0.01,        name: "Sq Km",       nameAr: "كيلومتر مربع" },
+  { key: "feddan", label: "فدان",  labelAr: "فدان",  factor: 2.38095,     name: "Feddan",      nameAr: "فدان"      },
+  { key: "acre",   label: "acre",  labelAr: "فدان أمريكي", factor: 2.47105, name: "Acres",    nameAr: "فدان أمريكي" },
+  { key: "ft2",    label: "ft²",   labelAr: "قدم²",  factor: 107_639.104, name: "Sq Feet",     nameAr: "قدم مربع"  },
+];
+
+export function convertAreaFromHa(areaHa: number, unit: AreaUnit): number {
+  const u = AREA_UNITS.find((u) => u.key === unit);
+  return areaHa * (u?.factor ?? 1);
+}
+
+export function formatArea(areaHa: number, locale: "ar" | "en" = "en", unit?: AreaUnit): string {
   const areaM2 = areaHa * 10_000;
   const areaKm2 = areaHa / 100;
 
   const fmt = (n: number, maxDigits: number) =>
     n.toLocaleString(locale === "ar" ? "ar-EG" : "en-US", { maximumFractionDigits: maxDigits });
 
+  // If a specific unit is requested, always use it
+  if (unit) {
+    const u = AREA_UNITS.find((u) => u.key === unit);
+    if (u) {
+      const val = areaHa * u.factor;
+      const label = locale === "ar" ? u.labelAr : u.label;
+      const digits = val >= 10_000 ? 0 : val >= 100 ? 1 : 2;
+      return `${fmt(val, digits)} ${label}`;
+    }
+  }
+
+  // Auto-pick best unit
   if (areaM2 < 10_000) {
-    const unit = locale === "ar" ? "م²" : "m²";
-    return `${fmt(areaM2, 0)} ${unit}`;
+    const unitLabel = locale === "ar" ? "م²" : "m²";
+    return `${fmt(areaM2, 0)} ${unitLabel}`;
   }
   if (areaHa < 100) {
-    const unit = locale === "ar" ? "هكتار" : "ha";
-    return `${fmt(areaHa, 2)} ${unit}`;
+    const unitLabel = locale === "ar" ? "هكتار" : "ha";
+    return `${fmt(areaHa, 2)} ${unitLabel}`;
   }
-  const unit = locale === "ar" ? "كم²" : "km²";
-  return `${fmt(areaKm2, 2)} ${unit}`;
+  const unitLabel = locale === "ar" ? "كم²" : "km²";
+  return `${fmt(areaKm2, 2)} ${unitLabel}`;
 }
 
 /**

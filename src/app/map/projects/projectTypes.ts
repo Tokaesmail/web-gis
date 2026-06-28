@@ -12,6 +12,22 @@ export type ProjectAnalysisSettings = {
   coords?: { lat: number; lng: number } | null;
 };
 
+/** كل analysis بيتعمل على الخريطة — raster calc، satellite preview، change detection */
+export type SavedAnalysisConfig = {
+  id: string;             // UUID فريد لكل analysis
+  type: "raster" | "satellite" | "change-detection";
+  name: string;
+  indexKey: string;
+  expression: string;
+  date: string;
+  coords: { lat: number; lng: number };
+  bounds: [[number, number], [number, number]];
+  opacity: number;
+  colorRamp: string;
+  dataUrl: string;          // الـ PNG data URL المحفوظ
+  savedAt: string;
+};
+
 export type ProjectSnapshot = {
   aoiGeometry: GeoJSON.Geometry | null;
   selectedLayers: MapLayer[];
@@ -19,6 +35,8 @@ export type ProjectSnapshot = {
   selectedDatasets: string[];
   timeRange: ProjectTimeRange;
   analysisSettings: ProjectAnalysisSettings;
+  drawnFeatures?: GeoJSON.Feature[];
+  savedAnalyses?: SavedAnalysisConfig[];  // ← الـ analyses المحفوظة
 };
 
 export type UserProject = {

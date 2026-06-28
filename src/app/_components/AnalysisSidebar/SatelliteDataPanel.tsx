@@ -805,13 +805,18 @@ useEffect(() => {
   const getIndexPreviewStyle = (analysis: AnalysisType) => {
     switch (analysis) {
       case "NDVI":
-        return { rescale: "-1,1", colormap: "rdylgn" };
+        // -0.2 (صحراء/رمل) → 0.9 (نخل/غابة كثيفة)
+        return { rescale: "-0.2,0.9", colormap: "rdylgn" };
       case "NDWI":
-        return { rescale: "-1,1", colormap: "blues" };
+        // -0.3 (جاف) → 0.8 (مياه مفتوحة)
+        return { rescale: "-0.3,0.8", colormap: "rdbu" };
       case "NDMI":
-        return { rescale: "-1,1", colormap: "viridis" };
+        // -0.6 (إجهاد مائي شديد) → 0.6 (رطوبة عالية)
+        return { rescale: "-0.6,0.6", colormap: "rdbu_r" };
+      case "SWIR":
+        return { rescale: "0,3000", colormap: "" };
       default:
-        return { rescale: "0,4000", colormap: "" };
+        return { rescale: "0,3000", colormap: "" };
     }
   };
 
@@ -825,25 +830,37 @@ useEffect(() => {
     }
 
     const visualization = getVisualization(analysis, scene.collection);
-    const url = new URL("https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png");
+
+    // حساب dimensions نسبية للـ AOI عشان الصورة متتمددش
+    const aoiW = east - west;
+    const aoiH = north - south;
+    const ratio = aoiW / (aoiH || 0.001);
+    const BASE = 1024;
+    const imgW = ratio >= 1 ? BASE : Math.round(BASE * ratio);
+    const imgH = ratio >= 1 ? Math.round(BASE / ratio) : BASE;
+
+    // /bbox/ endpoint: bbox في الـ PATH مش query param — هذا هو الإصلاح الأساسي
+    // /preview.png بيتجاهل bbox كـ query param تماماً
+    const bboxPath = `${west},${south},${east},${north}`;
+    const BASE_URL = `https://planetarycomputer.microsoft.com/api/data/v1/item/bbox/${bboxPath}/${imgW}x${imgH}.png`;
+    const url = new URL(BASE_URL);
     url.searchParams.set("collection", scene.collection);
     url.searchParams.set("item", scene.id);
-    url.searchParams.set("max_size", "1024");
-
-    visualization.assets.forEach((asset) => {
-      url.searchParams.append("assets", asset);
-      url.searchParams.append("asset_bidx", `${asset}|1`);
-    });
+    url.searchParams.set("asset_as_band", "true");
+    url.searchParams.set("resampling", "nearest");
 
     if (visualization.expression) {
       const style = getIndexPreviewStyle(analysis);
-      url.searchParams.set("asset_as_band", "true");
       url.searchParams.set("expression", visualization.expression);
       url.searchParams.set("rescale", style.rescale);
       url.searchParams.set("colormap_name", style.colormap);
     } else {
-      url.searchParams.set("asset_as_band", "true");
-      url.searchParams.set("rescale", "0,4000");
+      // Sentinel-2 L2A: surface reflectance 0-10000, مش 0-4000
+      // 0,3000 أفضل للـ RGB عشان الألوان ما تبقاش باهتة
+      url.searchParams.set("rescale", "0,3000");
+      visualization.assets.forEach((asset) => {
+        url.searchParams.append("assets", asset);
+      });
       if (analysis === "SWIR") {
         url.searchParams.set("color_formula", "Gamma RGB 1.2 Saturation 1.15");
       }

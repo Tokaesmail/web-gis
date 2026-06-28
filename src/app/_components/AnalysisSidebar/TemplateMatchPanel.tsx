@@ -21,6 +21,41 @@ interface TemplateMatchPanelProps {
 
 type EnvironmentMode = "CITY" | "FARM";
 
+// ── Fixed capture resolution — same on every device ───────────────────────────
+// بنعمل resize لـ 1280×720 قبل الإرسال عشان الـ model يشوف نفس الحجم دايماً
+const FIXED_W = 1280;
+const FIXED_H = 720;
+
+function normalizeBlob(blob: Blob): Promise<Blob> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const out = document.createElement("canvas");
+      out.width  = FIXED_W;
+      out.height = FIXED_H;
+      const ctx  = out.getContext("2d")!;
+      const srcRatio = img.width / img.height;
+      const dstRatio = FIXED_W / FIXED_H;
+      let drawW = FIXED_W, drawH = FIXED_H, offsetX = 0, offsetY = 0;
+      if (srcRatio > dstRatio) {
+        drawH   = FIXED_W / srcRatio;
+        offsetY = (FIXED_H - drawH) / 2;
+      } else {
+        drawW   = FIXED_H * srcRatio;
+        offsetX = (FIXED_W - drawW) / 2;
+      }
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, FIXED_W, FIXED_H);
+      ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
+      URL.revokeObjectURL(url);
+      out.toBlob((b) => resolve(b ?? blob), "image/png", 0.92);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(blob); };
+    img.src = url;
+  });
+}
+
 export default function TemplateMatchPanel({
   onResult,
   onRequestTemplateCapture,
@@ -51,8 +86,13 @@ export default function TemplateMatchPanel({
       if (!token) throw new Error("Not authenticated. Please log in again.");
 
       const formData = new FormData();
-      formData.append("template_image", pendingTemplateCapture.blob, "template.png");
-      formData.append("map_image", pendingMapCapture.blob, "map.png");
+      // ── Normalize كل صورة لـ 1280×720 قبل الإرسال ─────────────────────────
+      const [normalizedTemplate, normalizedMap] = await Promise.all([
+        normalizeBlob(pendingTemplateCapture.blob),
+        normalizeBlob(pendingMapCapture.blob),
+      ]);
+      formData.append("template_image", normalizedTemplate, "template.png");
+      formData.append("map_image", normalizedMap, "map.png");
       formData.append("environment_mode", envMode);
       formData.append("template_n", String(pendingTemplateCapture.bounds.north));
       formData.append("template_s", String(pendingTemplateCapture.bounds.south));

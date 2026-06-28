@@ -8,6 +8,33 @@ import { LatLngPoint, CaptureMetadata, CaptureResult, CaptureBounds, CaptureTarg
 export function useMapCanvas() {
   const blobToUrl = (blob: Blob) => URL.createObjectURL(blob);
 
+  // ── Fixed output resolution — same on every device ────────────────────────
+  // الهدف: كل device يبعت نفس الـ resolution للـ model بغض النظر عن الـ viewport
+  const FIXED_W = 1280;
+  const FIXED_H = 720;
+
+  /** بياخد أي canvas ويعمله resize لـ FIXED_W×FIXED_H مع letterbox أسود */
+  const resizeToFixed = (src: HTMLCanvasElement): HTMLCanvasElement => {
+    const out = document.createElement("canvas");
+    out.width  = FIXED_W;
+    out.height = FIXED_H;
+    const ctx  = out.getContext("2d")!;
+    const srcRatio = src.width / src.height;
+    const dstRatio = FIXED_W / FIXED_H;
+    let drawW = FIXED_W, drawH = FIXED_H, offsetX = 0, offsetY = 0;
+    if (srcRatio > dstRatio) {
+      drawH   = FIXED_W / srcRatio;
+      offsetY = (FIXED_H - drawH) / 2;
+    } else {
+      drawW   = FIXED_H * srcRatio;
+      offsetX = (FIXED_W - drawW) / 2;
+    }
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, FIXED_W, FIXED_H);
+    ctx.drawImage(src, offsetX, offsetY, drawW, drawH);
+    return out;
+  };
+
   // ── Draw functions ────────────────────────────────────────────────────────
 
   const drawPolygon = useCallback((canvas: HTMLCanvasElement, px: { x: number; y: number }[]) => {
@@ -140,8 +167,10 @@ export function useMapCanvas() {
     const viewportCoordinates = getViewportCoordinates(mapInstance);
 
     if (captureTarget === "large") {
+      // ── Resize الـ full viewport لـ FIXED_W×FIXED_H ──────────────────────
+      const fixedLarge  = resizeToFixed(combined);
       const largeBlob: Blob = await new Promise((res, rej) =>
-        combined.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/png")
+        fixedLarge.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/png")
       );
 
       return {
@@ -156,7 +185,7 @@ export function useMapCanvas() {
       };
     }
 
-    // ③ Crop
+    // ③ Crop to selected shape
     const px   = coordinates.map((p) => mapInstance.latLngToContainerPoint(L.latLng(p.lat, p.lng)));
     const xs   = px.map((p: any) => p.x);
     const ys   = px.map((p: any) => p.y);
@@ -179,13 +208,12 @@ export function useMapCanvas() {
     );
     cCtx.closePath();
     cCtx.clip();
-    
-    // Use 9-arg drawImage for precision
-    // drawImage(image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight)
     cCtx.drawImage(combined, minX, minY, w, h, 0, 0, w, h);
 
+    // ── Resize الـ cropped shape لـ FIXED_W×FIXED_H ───────────────────────
+    const fixedSmall  = resizeToFixed(cropped);
     const smallBlob: Blob = await new Promise((res, rej) =>
-      cropped.toBlob((b) => b ? res(b) : rej(new Error("Small toBlob failed")), "image/png")
+      fixedSmall.toBlob((b) => b ? res(b) : rej(new Error("Small toBlob failed")), "image/png")
     );
 
     const smallUrl = blobToUrl(smallBlob);

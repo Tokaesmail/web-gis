@@ -343,7 +343,11 @@ export class AOIEditor {
 
     if (commit && this.isValid) {
       this.callbacks.onSave?.(this.points, this.isValid, this.currentAreaHa);
-    } else if (!commit) {
+    } else {
+      // Restore the original layer so the user sees their shape again
+      if (this.originalLayer && !map.hasLayer(this.originalLayer)) {
+        this.originalLayer.addTo(map);
+      }
       this.callbacks.onCancel?.();
     }
 
