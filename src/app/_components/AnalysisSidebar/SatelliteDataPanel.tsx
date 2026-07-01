@@ -601,6 +601,16 @@ const polygonRing = useMemo(
   () => getPolygonRing(selectedFeature),
   [selectedFeature]
 );
+const displayVertices = useMemo(() => {
+  if (!polygonRing || polygonRing.length === 0) return [];
+  const ring = polygonRing as unknown as [number, number][];
+  if (ring.length > 1) {
+    const [firstLng, firstLat] = ring[0];
+    const [lastLng, lastLat] = ring[ring.length - 1];
+    if (firstLng === lastLng && firstLat === lastLat) return ring.slice(0, -1);
+  }
+  return ring;
+}, [polygonRing]);
   const [clipToShape, setClipToShape] = useState(true);
   const [clippedThumbs, setClippedThumbs] = useState<Record<string, string>>({});  
   const coords = getMidCoords(selectedFeature);
@@ -1008,7 +1018,12 @@ if (previewUrl && scenePreviewUrls[scene.id] !== previewUrl) {
       coords: sceneCoords,
       previewUrl,
       overviewUrl,
-      geometry: scene.geometry ?? null,
+      geometry: bboxGeometry([
+        sceneBounds[0][1],
+        sceneBounds[0][0],
+        sceneBounds[1][1],
+        sceneBounds[1][0],
+      ]),
     },
   });
   setPreviewReady(true);
@@ -1257,6 +1272,35 @@ if (previewUrl && scenePreviewUrls[scene.id] !== previewUrl) {
           {coords ? "AOI" : "MAP"}
         </span>
       </div>
+
+      {selectedFeature && displayVertices.length > 0 && (
+        <div className="mt-2 border-t border-white/[0.06] pt-2">
+          <div className="flex items-center justify-between">
+            <p className="text-[0.55rem] text-slate-500 uppercase tracking-wider">
+              Polygon vertices
+            </p>
+            <span className="text-[0.55rem] text-slate-600">
+              {displayVertices.length} pts
+            </span>
+          </div>
+          <div className="mt-1 max-h-32 overflow-y-auto rounded-md border border-white/[0.05] bg-[#020817]/50">
+            {displayVertices.map((point, index) => {
+              const [lng, lat] = point;
+              return (
+                <div
+                  key={`${index}-${lng}-${lat}`}
+                  className="flex items-center justify-between gap-2 px-2 py-1 text-[0.55rem] font-mono text-slate-400 border-b border-white/[0.03] last:border-b-0"
+                >
+                  <span className="text-slate-600">#{index + 1}</span>
+                  <span>
+                    {lat.toFixed(6)}, {lng.toFixed(6)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
 
     {/* Opacity Control & Load Button */}

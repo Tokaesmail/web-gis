@@ -5,6 +5,15 @@ import { useCallback } from "react";
 import { useMapDB }    from "./useMapDB";
 import { LatLngPoint, CaptureMetadata, CaptureResult, CaptureBounds, CaptureTarget } from "./mapTypes_proxy";
 
+type ContainerPoint = { x: number; y: number };
+type MapCaptureLike = {
+  getSize: () => { x: number; y: number };
+  latLngToContainerPoint: (latLng: unknown) => ContainerPoint;
+};
+type LeafletCaptureLike = {
+  latLng: (lat: number, lng: number) => unknown;
+};
+
 export function useMapCanvas() {
   const blobToUrl = (blob: Blob) => URL.createObjectURL(blob);
 
@@ -112,6 +121,38 @@ export function useMapCanvas() {
     ];
   };
 
+  const cropToCoordinates = (
+    source: HTMLCanvasElement,
+    mapInstance: MapCaptureLike,
+    L: LeafletCaptureLike,
+    coordinates: LatLngPoint[],
+  ) => {
+    const size = mapInstance.getSize();
+    const px = coordinates.map((p) => mapInstance.latLngToContainerPoint(L.latLng(p.lat, p.lng)));
+    const xs = px.map((p) => p.x);
+    const ys = px.map((p) => p.y);
+    const minX = Math.max(0, Math.floor(Math.min(...xs)));
+    const minY = Math.max(0, Math.floor(Math.min(...ys)));
+    const maxX = Math.min(size.x, Math.ceil(Math.max(...xs)));
+    const maxY = Math.min(size.y, Math.ceil(Math.max(...ys)));
+    const w = Math.max(1, maxX - minX);
+    const h = Math.max(1, maxY - minY);
+
+    const cropped = document.createElement("canvas");
+    cropped.width = w;
+    cropped.height = h;
+    const cCtx = cropped.getContext("2d")!;
+
+    cCtx.beginPath();
+    px.forEach(({ x, y }, i) =>
+      i === 0 ? cCtx.moveTo(x - minX, y - minY) : cCtx.lineTo(x - minX, y - minY)
+    );
+    cCtx.closePath();
+    cCtx.clip();
+    cCtx.drawImage(source, minX, minY, w, h, 0, 0, w, h);
+    return cropped;
+  };
+
   // ── Capture مع التايلز الحقيقية ───────────────────────────────────────────
   // دلوقتي التايلز بتيجي من /api/tile (proxy) → مفيش CORS → toBlob شغال ✅
   const capture = useCallback(async (
@@ -124,9 +165,9 @@ export function useMapCanvas() {
   ): Promise<CaptureResult> => {
 
     const size     = mapInstance.getSize();
-    const combined = document.createElement("canvas");
-    combined.width = size.x; combined.height = size.y;
-    const ctx = combined.getContext("2d")!;
+    const base = document.createElement("canvas");
+    base.width = size.x; base.height = size.y;
+    const baseCtx = base.getContext("2d")!;
 
     // ① ارسم التايلز
     const mapRect = mapInstance.getContainer().getBoundingClientRect();
@@ -154,7 +195,7 @@ export function useMapCanvas() {
         const x = rect.left - mapRect.left;
         const y = rect.top - mapRect.top;
         try {
-          ctx.drawImage(tile as CanvasImageSource, x, y, rect.width, rect.height);
+          baseCtx.drawImage(tile as CanvasImageSource, x, y, rect.width, rect.height);
         } catch (e) {
           console.warn("Tile draw skipped:", e);
         }
@@ -162,6 +203,10 @@ export function useMapCanvas() {
     });
 
     // ② ارسم الـ overlay
+    const combined = document.createElement("canvas");
+    combined.width = size.x; combined.height = size.y;
+    const ctx = combined.getContext("2d")!;
+    ctx.drawImage(base, 0, 0);
     ctx.drawImage(overlayCanvas, 0, 0);
 
     const viewportCoordinates = getViewportCoordinates(mapInstance);
@@ -186,29 +231,12 @@ export function useMapCanvas() {
     }
 
     // ③ Crop to selected shape
-    const px   = coordinates.map((p) => mapInstance.latLngToContainerPoint(L.latLng(p.lat, p.lng)));
-    const xs   = px.map((p: any) => p.x);
-    const ys   = px.map((p: any) => p.y);
-    const minX = Math.max(0, Math.floor(Math.min(...xs)));
-    const minY = Math.max(0, Math.floor(Math.min(...ys)));
-    const maxX = Math.min(size.x, Math.ceil(Math.max(...xs)));
-    const maxY = Math.min(size.y, Math.ceil(Math.max(...ys)));
-    
-    const w = Math.max(1, maxX - minX);
-    const h = Math.max(1, maxY - minY);
-
-    const cropped = document.createElement("canvas");
-    cropped.width = w; cropped.height = h;
-    const cCtx = cropped.getContext("2d")!;
-
-    // Clip to shape
-    cCtx.beginPath();
-    px.forEach(({ x, y }: any, i: number) =>
-      i === 0 ? cCtx.moveTo(x - minX, y - minY) : cCtx.lineTo(x - minX, y - minY)
+    const rawCropped = cropToCoordinates(base, mapInstance, L, coordinates);
+    const rawSelectedBlob: Blob = await new Promise((res, rej) =>
+      rawCropped.toBlob((b) => b ? res(b) : rej(new Error("Raw crop toBlob failed")), "image/png")
     );
-    cCtx.closePath();
-    cCtx.clip();
-    cCtx.drawImage(combined, minX, minY, w, h, 0, 0, w, h);
+
+    const cropped = cropToCoordinates(combined, mapInstance, L, coordinates);
 
     // ── Resize الـ cropped shape لـ FIXED_W×FIXED_H ───────────────────────
     const fixedSmall  = resizeToFixed(cropped);
@@ -221,6 +249,8 @@ export function useMapCanvas() {
       captureTarget,
       smallUrl,
       smallBlob,
+      rawSelectedUrl: blobToUrl(rawSelectedBlob),
+      rawSelectedBlob,
       selectedCoordinates: coordinates,
       viewportCoordinates,
       selectedBounds: getBoundsFromCoordinates(coordinates),

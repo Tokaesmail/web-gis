@@ -34,7 +34,20 @@
 }
 
 
-export function getFeatureBounds(feature?: GeoJSON.Feature | null, fallback?: { lat: number; lng: number }) {
+type FeatureBoundsOptions = {
+  /**
+   * Extra visual padding around a feature's true bbox. Keep this at 0 for
+   * analysis/API requests so returned rasters match the drawn AOI exactly.
+   */
+  paddingRatio?: number;
+  minPadding?: number;
+};
+
+export function getFeatureBounds(
+  feature?: GeoJSON.Feature | null,
+  fallback?: { lat: number; lng: number },
+  options: FeatureBoundsOptions = {}
+) {
   const coords: number[][] = [];
   const walk = (value: any) => {
     if (!Array.isArray(value)) return;
@@ -53,7 +66,10 @@ export function getFeatureBounds(feature?: GeoJSON.Feature | null, fallback?: { 
     const north = Math.max(...lats);
     const west = Math.min(...lngs);
     const east = Math.max(...lngs);
-    const pad = Math.max(0.001, Math.max(north - south, east - west) * 0.18);
+    const paddingRatio = options.paddingRatio ?? 0;
+    const minPadding = options.minPadding ?? 0;
+    const rawPad = Math.max(north - south, east - west) * paddingRatio;
+    const pad = paddingRatio > 0 ? Math.max(minPadding, rawPad) : 0;
     return [[south - pad, west - pad], [north + pad, east + pad]] as [[number, number], [number, number]];
   }
 

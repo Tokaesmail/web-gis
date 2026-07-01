@@ -66,6 +66,8 @@ const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
   { key: "greens",    label: "Greens",     gradient: "linear-gradient(90deg,#ffffe5 0%,#f7fcb9 16%,#d9f0a3 30%,#addd8e 44%,#78c679 58%,#41ab5d 70%,#238443 82%,#005a32 100%)" },
   // NDWI Blues — Climate Engine: white → pale-sky → steel-blue → deep-navy
   { key: "rdylbu_r",  label: "Heat",       gradient: "linear-gradient(90deg,#f7fbff 0%,#deebf7 16%,#c6dbef 28%,#9ecae1 40%,#6baed6 52%,#4292c6 64%,#2171b5 76%,#08519c 88%,#08306b 100%)" },
+  // Inferno — كثافة/heatmap: غامق-بنفسجي → بنفسجي → وردي-أحمر → برتقالي → أصفر فاقع
+  { key: "inferno",   label: "Inferno",    gradient: "linear-gradient(90deg,#000004 0%,#1b0c41 11%,#4a0c6b 22%,#781c6d 33%,#a52c60 44%,#cf4446 56%,#ed6925 67%,#fb9b06 78%,#f7d13d 89%,#fcffa4 100%)" },
 ];
 
 
@@ -155,29 +157,34 @@ function validateExpression(expr: string): { ok: boolean; usedBands: string[]; u
   return { ok: usedBands.length > 0 && unknownTokens.length === 0 && bracketsOk, usedBands, unknownTokens };
 }
 
-function analyzeImage(imgSrc: string) {
-  return new Promise<{ min: number; max: number; mean: number; histogram: number[] }>((resolve) => {
-    const img = new Image();
-    img.src = imgSrc;
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d")!;
-      canvas.width = img.width; canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
-      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      let min = 255, max = 0, sum = 0;
-      const histogram = new Array(10).fill(0);
-      for (let i = 0; i < data.length; i += 4) {
-        const v = data[i];
-        if (data[i + 3] < 10) continue;
-        min = Math.min(min, v); max = Math.max(max, v); sum += v;
-        histogram[Math.min(9, Math.floor((v / 255) * 10))]++;
-      }
-      resolve({ min, max, mean: sum / (data.length / 4), histogram });
-    };
-    img.onerror = () => resolve({ min: 0, max: 255, mean: 128, histogram: new Array(10).fill(0) });
-  });
+function readRasterStatsFromHeaders(res: Response, fallbackMin: number, fallbackMax: number) {
+  const histogramHeader = res.headers.get("X-Raster-Histogram");
+  const statsHeader = res.headers.get("X-Raster-Stats");
+  const histogram = histogramHeader
+    ? histogramHeader.split(",").map((v) => Number(v)).filter((v) => Number.isFinite(v))
+    : [];
+
+  let parsedStats: { min?: number; max?: number; mean?: number; validPixels?: number } = {};
+  if (statsHeader) {
+    try {
+      parsedStats = JSON.parse(statsHeader);
+    } catch {
+      parsedStats = {};
+    }
+  }
+
+  return {
+    min: Number.isFinite(parsedStats.min) ? Number(parsedStats.min) : fallbackMin,
+    max: Number.isFinite(parsedStats.max) ? Number(parsedStats.max) : fallbackMax,
+    mean: Number.isFinite(parsedStats.mean) ? Number(parsedStats.mean) : (fallbackMin + fallbackMax) / 2,
+    validPixels: Number.isFinite(parsedStats.validPixels) ? Number(parsedStats.validPixels) : histogram.reduce((a, b) => a + b, 0),
+    histogram: histogram.length === 10 ? histogram : new Array(10).fill(0),
+  };
 }
+
+// ── الـ extent الحقيقي بقى جاي من الـ proxy نفسه (header: X-Real-Bbox) ──
+// شوف /app/api/raster-proxy/route.ts — بيقرا الـ TIFF server-side، فمفيش
+// مشكلة CORS، ومفيش fetch إضافي للملف من المتصفح.
 
 export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Props) {
   const { data: session } = useSession();
@@ -206,6 +213,7 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   min: number;
   max: number;
   mean: number;
+  validPixels?: number;
   histogram: number[];
 } | null>(null);
 const [classification, setClassification] = useState<string>("");
@@ -274,6 +282,10 @@ const runPreview = async () => {
     }
 
     const payload = await res.json();
+    // ── DEBUG: شوف الـ response كامل من الباكند — هل فيه bbox/bounds/transform حقيقي؟ ──
+    console.log("🛰️ raster-calc response:", JSON.stringify(payload, null, 2));
+    console.log("🛰️ bbox sent (renderBbox):", renderBbox);
+
     if (!payload?.success) throw new Error(payload?.message ?? "Render failed");
 
     const tifUrl: string = payload?.data?.url ?? "";
@@ -287,10 +299,21 @@ const runPreview = async () => {
 
     // ── 4. Convert TIF → PNG via Next.js proxy ────────────────────────────
     // L.imageOverlay بيشتغل بس مع PNG/JPG — مش TIF
-    // الـ proxy route بيجيب الـ TIF ويحوله PNG بـ sharp
-    const proxyUrl = `/api/raster-proxy?url=${encodeURIComponent(tifUrl)}&min=${finalMin}&max=${finalMax}&colormap=${colormap}${accessToken ? `&token=${encodeURIComponent(accessToken)}` : ""}`;
+    // الـ proxy route بيجيب الـ TIF ويحوله PNG بـ sharp، وبيرجّع كمان
+    // الـ extent الحقيقي (X-Real-Bbox header) اللي قراه من جوه الملف نفسه
+    const zeroMode = finalMin >= 0 ? "at-or-below" : "around";
+    const proxyUrl = `/api/raster-proxy?url=${encodeURIComponent(tifUrl)}&min=${finalMin}&max=${finalMax}&colormap=${colormap}&zero=0&alphaLow=0&alphaHigh=0.18&zeroMode=${zeroMode}${accessToken ? `&token=${encodeURIComponent(accessToken)}` : ""}`;
     const pngRes = await fetch(proxyUrl);
     if (!pngRes.ok) throw new Error(`PNG conversion failed (${pngRes.status})`);
+
+    // ← extent حقيقي للـ TIFF، جاي من الـ proxy نفسه (مفيش CORS، مفيش fetch إضافي)
+    const realBboxHeader = pngRes.headers.get("X-Real-Bbox");
+    const realBbox = realBboxHeader
+      ? (realBboxHeader.split(",").map(Number) as [number, number, number, number])
+      : null;
+    const actualBounds = realBbox && realBbox.every(Number.isFinite) ? realBbox : null;
+    console.log("🛰️ actual TIFF bounds (from proxy):", actualBounds, "| requested:", renderBbox);
+
     const pngBlob = await pngRes.blob();
     const dataUrl = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -300,22 +323,24 @@ const runPreview = async () => {
     });
 
     // ── 5. Geometry info for bounds ────────────────────────────────────────
-    const [west, south, east, north_] = renderBbox;
+    // لو الباكند عمل snapping للـ bbox (شبكة بكسلات المصدر)، الصورة
+    // الحقيقية بتكون أكبر من اللي طلبناه — وده اللي ArcGIS Pro بيوضحه.
+    const [west, south, east, north_] = actualBounds ?? renderBbox;
     const renderedBounds: [[number, number], [number, number]] = [[south, west], [north_, east]];
 
     // ── 6. Pixel stats from the converted PNG ─────────────────────────────
-    const imageStats = await analyzeImage(dataUrl);
-    const midVal = (finalMin + finalMax) / 2;
+    const rasterStats = readRasterStatsFromHeaders(pngRes, finalMin, finalMax);
     setStats({
       min:       finalMin,
       max:       finalMax,
-      mean:      midVal,
-      histogram: imageStats.histogram,
+      mean:      rasterStats.mean,
+      validPixels: rasterStats.validPixels,
+      histogram: rasterStats.histogram,
     });
     setClassification(activePreset
       ? `📊 ${activePreset} · ${finalMin.toFixed(3)} → ${finalMax.toFixed(3)}`
-      : midVal > 0.3  ? "📈 High response"
-      : midVal > 0.05 ? "📉 Moderate response"
+      : rasterStats.mean > 0.3  ? "📈 High response"
+      : rasterStats.mean > 0.05 ? "📉 Moderate response"
       : "⏳ Low response"
     );
 
@@ -568,7 +593,11 @@ const runPreview = async () => {
           const start = zi * 2, end = start + 2;
           return stats.histogram.slice(start, end).reduce((a, b) => a + b, 0);
         });
-        const zoneColors = ["#1a6b2f", "#4caf50", "#f9e04b", "#e05c1a", "#c0392b"];
+        // الألوان دلوقتي بتتولد من نفس الـ colormap المختار (مش لون ثابت
+        // أخضر→أحمر) عشان الـ Legend تطابق فعليًا اللي ظاهر على الخريطة
+        const zoneColors = Array.from({ length: numZones }, (_, i) =>
+          sampleColormapColor(colormap, (i + 0.5) / numZones)
+        );
         const zoneLabels = Array.from({ length: numZones }, (_, i) => {
           const lo = stats.min + (range * i) / numZones;
           const hi = stats.min + (range * (i + 1)) / numZones;
@@ -722,4 +751,37 @@ const runPreview = async () => {
 // looks up the same gradient used in the color-ramp picker, for the result legend bar
 function colormapPreviewGradient(name: string): string {
   return COLOR_RAMPS.find((r) => r.key === name)?.gradient ?? COLOR_RAMPS[COLOR_RAMPS.length - 2].gradient;
+}
+
+// ── يقرا stops الـ CSS gradient بتاعت الـ ramp المختار ويرجع لون فعلي عند أي
+// نقطة t (0-1)، عشان نقدر نولّد ألوان الـ Zones من نفس الـ colormap اللي
+// ظاهر على الخريطة، بدل لون أخضر-أصفر-أحمر ثابت مش له علاقة بالاختيار ────────
+function parseGradientStops(gradient: string): { pos: number; hex: string }[] {
+  const matches = [...gradient.matchAll(/(#[0-9a-fA-F]{6})\s+([\d.]+)%/g)];
+  return matches.map((m) => ({ hex: m[1], pos: parseFloat(m[2]) / 100 }));
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const v = parseInt(hex.slice(1), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return "#" + [r, g, b].map((x) => Math.round(Math.max(0, Math.min(255, x))).toString(16).padStart(2, "0")).join("");
+}
+
+function sampleColormapColor(name: string, t: number): string {
+  const stops = parseGradientStops(colormapPreviewGradient(name));
+  if (stops.length === 0) return "#888888";
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < stops.length; i++) {
+    if (t <= stops[i].pos) {
+      const prev = stops[i - 1], next = stops[i];
+      const f = (t - prev.pos) / (next.pos - prev.pos || 1);
+      const [r1, g1, b1] = hexToRgb(prev.hex);
+      const [r2, g2, b2] = hexToRgb(next.hex);
+      return rgbToHex(r1 + f * (r2 - r1), g1 + f * (g2 - g1), b1 + f * (b2 - b1));
+    }
+  }
+  return stops[stops.length - 1].hex;
 }

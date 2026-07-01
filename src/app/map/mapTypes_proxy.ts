@@ -32,8 +32,10 @@ export interface CaptureResult {
   captureTarget: CaptureTarget;
   smallUrl?: string;
   largeUrl?: string;
+  rawSelectedUrl?: string;
   smallBlob?: Blob;
   largeBlob?: Blob;
+  rawSelectedBlob?: Blob;
   selectedCoordinates: LatLngPoint[];
   viewportCoordinates: LatLngPoint[];
   selectedBounds: CaptureBounds;

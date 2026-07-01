@@ -539,8 +539,8 @@ export default function MapPage() {
     const captureMode = templateMatchCaptureRef.current;
     if (captureMode) {
       templateMatchCaptureRef.current = null;
-      const blob = capture.smallBlob ?? capture.largeBlob;
-      const previewUrl = capture.smallUrl ?? capture.largeUrl;
+      const blob = capture.rawSelectedBlob ?? capture.smallBlob ?? capture.largeBlob;
+      const previewUrl = capture.rawSelectedUrl ?? capture.smallUrl ?? capture.largeUrl;
       if (!blob || !previewUrl) {
         setActiveTool("pointer");
         return;

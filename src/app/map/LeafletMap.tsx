@@ -381,7 +381,7 @@ export default function LeafletMap({
       }).addTo(map);
       rasterOverlayRef.current.set(overlayKey, layer);
 
-      map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 14, duration: 0.8 });
+      // map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 14, duration: 0.8 });
       L.circleMarker([config.coords.lat, config.coords.lng], {
         radius: 7,
         color: "#22d3ee",
