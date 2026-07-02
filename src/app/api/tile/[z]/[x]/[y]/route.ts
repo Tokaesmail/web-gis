@@ -7,17 +7,30 @@ const TILE_SOURCES: Record<string, string | string[]> = {
   sentinel:  "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
   terrain:   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}",
   topo:      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+
+  // ── Google Satellite (بديل لـ Esri — دقة أعلى في مناطق كتير) ──
+  google_sat: [
+    "https://mt0.google.com/vt/lyr=s&x={x}&y={y}&z={z}",
+    "https://mt1.google.com/vt/lyr=s&x={x}&y={y}&z={z}",
+    "https://mt2.google.com/vt/lyr=s&x={x}&y={y}&z={z}",
+    "https://mt3.google.com/vt/lyr=s&x={x}&y={y}&z={z}",
+  ],
+  // Google Hybrid (ساتلايت + أسماء الشوارع فوقيه)
+  google_hybrid: [
+    "https://mt0.google.com/vt/lyr=y&x={x}&y={y}&z={z}",
+    "https://mt1.google.com/vt/lyr=y&x={x}&y={y}&z={z}",
+    "https://mt2.google.com/vt/lyr=y&x={x}&y={y}&z={z}",
+    "https://mt3.google.com/vt/lyr=y&x={x}&y={y}&z={z}",
+  ],
+
+  // ── Index visual layers (Sentinel-2 cloudless as the base — CSS filter تتطبق على الـ pane) ──
+  // كلهم بيجيبوا Sentinel-2 tiles لكن الـ LeafletMap بيطبق CSS filter مختلف على كل واحد
   "idx-ndvi": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
   "idx-ndwi": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
   "idx-ndmi": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
   "idx-ndsi": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
   "idx-swir": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
 };
-
-// ─── No-data placeholder detection (خفيف الوزن) ────────────────────────────
-// بنشيك بس لو الـ Content-Length صغير بشكل مشبوه — من غير ما نقرا/نبفّر
-// جسم أي تايل عادي وكبير. كده مفيش أي تأخير مضاف على التايلز السليمة.
-const SUSPICIOUSLY_SMALL_BYTES = 8000;
 
 type Props = {
   params: Promise<{
@@ -35,7 +48,11 @@ export async function GET(req: NextRequest, { params }: Props) {
     const source = searchParams.get("source") || "satellite";
 
     const templates = TILE_SOURCES[source] || TILE_SOURCES.satellite;
-    const templateList = Array.isArray(templates) ? templates : [templates];
+    // لو المصدر عنده أكتر من subdomain (زي google_sat) بنختار واحد عشوائي
+    // بدل ما نجرب بالترتيب دايمًا — كده بنوزع الحمل على mt0/mt1/mt2/mt3
+    const templateList = Array.isArray(templates)
+      ? [...templates].sort(() => Math.random() - 0.5)
+      : [templates];
 
     let res: Response | null = null;
     let lastUrl = "";
@@ -62,15 +79,7 @@ export async function GET(req: NextRequest, { params }: Props) {
     if (!res?.ok) return new NextResponse("Not Found", { status: 404 });
 
     const contentType = res.headers.get("content-type") || "image/png";
-    const contentLength = parseInt(res.headers.get("content-length") || "0", 10);
-
-    // ── فحص خفيف بس للتايلز الصغيرة بشكل مشبوه (غالبًا placeholder) ──
-    // التايلز العادية (أكبر من الحد ده) بتتمرر مباشرة كـ stream من غير
-    // أي buffering إضافي — بالظبط زي السلوك الأصلي السريع.
-    if (contentLength > 0 && contentLength < SUSPICIOUSLY_SMALL_BYTES) {
-      return new NextResponse("No imagery at this zoom", { status: 404 });
-    }
-
+    console.log("Tile URL:", lastUrl, "z=", z, "x=", x, "y=", y);
     return new NextResponse(res.body, {
       headers: {
         "Content-Type": contentType,
