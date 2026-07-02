@@ -36,6 +36,65 @@ const getImageSize = (blob: Blob) =>
     img.src = url;
   });
 
+// ── حساب الأبعاد الحقيقية بالمتر لأي bounds جغرافية (تقريب مسطّح كافي للمساحات الصغيرة) ──
+const METERS_PER_DEGREE_LAT = 111320;
+
+const boundsSizeMeters = (bounds: MapCapture["bounds"]) => {
+  const latMid = (bounds.north + bounds.south) / 2;
+  const heightMeters = Math.abs(bounds.north - bounds.south) * METERS_PER_DEGREE_LAT;
+  const widthMeters =
+    Math.abs(bounds.east - bounds.west) *
+    METERS_PER_DEGREE_LAT *
+    Math.cos((latMid * Math.PI) / 180);
+  return { widthMeters, heightMeters };
+};
+
+// أكبر بُعد مسموح به لصورة الـ search area (map) بالبكسل، عشان نحدد منه GSD (متر/بكسل) ثابت
+const MAP_MAX_DIM_PX = 1280;
+
+/**
+ * بياخد Blob صورة ويعمله resize لأبعاد بكسل محددة (width × height) بدون أي letterbox
+ * أو حواف سودا — الصورة بتتمطّط عشان تملأ الأبعاد المطلوبة بالظبط.
+ */
+const resizeBlobToDims = (blob: Blob, width: number, height: number): Promise<Blob> =>
+  new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          URL.revokeObjectURL(url);
+          reject(new Error("resizeBlobToDims: canvas context unavailable"));
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+
+        canvas.toBlob(
+          (out) => {
+            URL.revokeObjectURL(url);
+            if (out) resolve(out);
+            else reject(new Error("resizeBlobToDims: toBlob failed"));
+          },
+          "image/png"
+        );
+      } catch (e) {
+        URL.revokeObjectURL(url);
+        reject(e);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("resizeBlobToDims: could not load image"));
+    };
+    img.src = url;
+  });
+
 export default function TemplateMatchPanel({
   onResult,
   onRequestTemplateCapture,
@@ -64,18 +123,40 @@ export default function TemplateMatchPanel({
       const token = (session?.user as any)?.accessToken as string | undefined;
       if (!token) throw new Error("Not authenticated. Please log in again.");
 
-      const [templateSize, mapSize] = await Promise.all([
+      // نتأكد إن الصور أصلاً اتحملت صح (sanity check)
+      await Promise.all([
         getImageSize(pendingTemplateCapture.blob),
         getImageSize(pendingMapCapture.blob),
       ]);
 
-      if (templateSize.width >= mapSize.width || templateSize.height >= mapSize.height) {
+      // ── تثبيت الـ scale (متر/بكسل) بين الصورتين بدل تثبيت مقاس بكسل واحد للاتنين ──
+      // ده اللي بيمنع الـ backend من الفشل، لأن التمبلت لازم يفضل أصغر فعليًا من
+      // صورة البحث في الأبعاد بالبكسل عشان خوارزمية template matching تشتغل.
+      const templateMeters = boundsSizeMeters(pendingTemplateCapture.bounds);
+      const mapMeters = boundsSizeMeters(pendingMapCapture.bounds);
+
+      const gsd = Math.max(mapMeters.widthMeters, mapMeters.heightMeters) / MAP_MAX_DIM_PX;
+      if (!isFinite(gsd) || gsd <= 0) {
+        throw new Error("Could not compute a valid scale from the selected areas.");
+      }
+
+      const mapPxW = Math.max(2, Math.round(mapMeters.widthMeters / gsd));
+      const mapPxH = Math.max(2, Math.round(mapMeters.heightMeters / gsd));
+      const templatePxW = Math.max(1, Math.round(templateMeters.widthMeters / gsd));
+      const templatePxH = Math.max(1, Math.round(templateMeters.heightMeters / gsd));
+
+      if (templatePxW >= mapPxW || templatePxH >= mapPxH) {
         throw new Error("Template area must be smaller than the search area. Draw a tighter template or a larger search area.");
       }
 
+      const [normalizedTemplateBlob, normalizedMapBlob] = await Promise.all([
+        resizeBlobToDims(pendingTemplateCapture.blob, templatePxW, templatePxH),
+        resizeBlobToDims(pendingMapCapture.blob, mapPxW, mapPxH),
+      ]);
+
       const formData = new FormData();
-      formData.append("template_image", pendingTemplateCapture.blob, "template.png");
-      formData.append("map_image", pendingMapCapture.blob, "map.png");
+      formData.append("template_image", normalizedTemplateBlob, "template.png");
+      formData.append("map_image", normalizedMapBlob, "map.png");
       formData.append("environment_mode", envMode);
       formData.append("template_n", String(pendingTemplateCapture.bounds.north));
       formData.append("template_s", String(pendingTemplateCapture.bounds.south));

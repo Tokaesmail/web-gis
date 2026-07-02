@@ -230,25 +230,77 @@ export function useMapCanvas() {
       };
     }
 
-    // ③ Crop to selected shape
-    const rawCropped = cropToCoordinates(base, mapInstance, L, coordinates);
+    // ③ الـ fix: resize الـ full image الأول، وبعدين نقطع منه
+    // ده بيضمن إن الـ template والـ search area على نفس الـ scale دايماً
+    const fixedFull = resizeToFixed(combined);
+    const fixedBase = resizeToFixed(base);
+
+    // احسب نسبة الـ resize اللي حصلت
+    const scaleX = fixedFull.width  / combined.width;
+    const scaleY = fixedFull.height / combined.height;
+
+    // حوّل الـ coordinates للـ pixel space بعد الـ resize
+    const px = coordinates.map((p) =>
+      mapInstance.latLngToContainerPoint(L.latLng(p.lat, p.lng))
+    );
+    const scaledPx = px.map((p) => ({
+      x: p.x * scaleX,
+      y: p.y * scaleY,
+    }));
+
+    const xs = scaledPx.map((p) => p.x);
+    const ys = scaledPx.map((p) => p.y);
+    const minX = Math.max(0, Math.floor(Math.min(...xs)));
+    const minY = Math.max(0, Math.floor(Math.min(...ys)));
+    const maxX = Math.min(fixedFull.width,  Math.ceil(Math.max(...xs)));
+    const maxY = Math.min(fixedFull.height, Math.ceil(Math.max(...ys)));
+    const cropW = Math.max(1, maxX - minX);
+    const cropH = Math.max(1, maxY - minY);
+
+    // قطع الـ template من الـ fixedFull (مع overlay)
+    const smallCanvas = document.createElement("canvas");
+    smallCanvas.width  = cropW;
+    smallCanvas.height = cropH;
+    const smallCtx = smallCanvas.getContext("2d")!;
+    // clip بشكل الـ polygon الأصلي
+    smallCtx.beginPath();
+    scaledPx.forEach(({ x, y }, i) =>
+      i === 0 ? smallCtx.moveTo(x - minX, y - minY) : smallCtx.lineTo(x - minX, y - minY)
+    );
+    smallCtx.closePath();
+    smallCtx.clip();
+    smallCtx.drawImage(fixedFull, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
+
+    // قطع الـ rawSelected من الـ fixedBase (بدون overlay)
+    const rawCanvas = document.createElement("canvas");
+    rawCanvas.width  = cropW;
+    rawCanvas.height = cropH;
+    const rawCtx = rawCanvas.getContext("2d")!;
+    rawCtx.beginPath();
+    scaledPx.forEach(({ x, y }, i) =>
+      i === 0 ? rawCtx.moveTo(x - minX, y - minY) : rawCtx.lineTo(x - minX, y - minY)
+    );
+    rawCtx.closePath();
+    rawCtx.clip();
+    rawCtx.drawImage(fixedBase, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
+
     const rawSelectedBlob: Blob = await new Promise((res, rej) =>
-      rawCropped.toBlob((b) => b ? res(b) : rej(new Error("Raw crop toBlob failed")), "image/png")
+      rawCanvas.toBlob((b) => b ? res(b) : rej(new Error("Raw crop toBlob failed")), "image/png")
     );
 
-    const cropped = cropToCoordinates(combined, mapInstance, L, coordinates);
-
-    // ── Resize الـ cropped shape لـ FIXED_W×FIXED_H ───────────────────────
-    const fixedSmall  = resizeToFixed(cropped);
     const smallBlob: Blob = await new Promise((res, rej) =>
-      fixedSmall.toBlob((b) => b ? res(b) : rej(new Error("Small toBlob failed")), "image/png")
+      smallCanvas.toBlob((b) => b ? res(b) : rej(new Error("Small toBlob failed")), "image/png")
     );
 
-    const smallUrl = blobToUrl(smallBlob);
+    // الـ large image هو الـ fixedFull (full viewport بعد الـ resize)
+    const largeFinalBlob: Blob = await new Promise((res, rej) =>
+      fixedFull.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/png")
+    );
     return {
       captureTarget,
-      smallUrl,
       smallBlob,
+      largeBlob:      largeFinalBlob,
+      largeUrl:       blobToUrl(largeFinalBlob),
       rawSelectedUrl: blobToUrl(rawSelectedBlob),
       rawSelectedBlob,
       selectedCoordinates: coordinates,

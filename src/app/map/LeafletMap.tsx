@@ -151,6 +151,10 @@ export default function LeafletMap({
   const drawPointsRef  = useRef<[number, number][]>([]);
   const baseTileRef    = useRef<any>(null);
   const labelsLayerRef = useRef<any>(null);
+  // ── Zoom guard: يرجع زوم واحد أوتوماتيك لو التايلز مش متوفرة في المكان ده ──
+  const tileErrorAtCurrentZoomRef = useRef(false);
+  const zoomRevertTimeoutRef      = useRef<any>(null);
+  const lastStableZoomRef         = useRef<number>(11);
   const canvasRef      = useRef<HTMLCanvasElement | null>(null);
   const extrudeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastCoordsRef  = useRef<LatLngPoint[]>([]);
@@ -1046,12 +1050,52 @@ const area = parseFloat(
 
       const map = L.map(mapRef.current!, {
         center: [21.54, 39.19], zoom: 11, zoomControl: false,
-        minZoom: 2, maxZoom: 18, worldCopyJump: false,
+        minZoom: 2, maxZoom: 22, worldCopyJump: false,
         maxBounds: [[-90, -180], [90, 180]], maxBoundsViscosity: 1.0,
         doubleClickZoom: false,   // ← وقف dblclick zoom
       });
       mapInstanceRef.current = map;
       mapObjRef.current      = map;
+
+      // ── Zoom guard: لو التايلز فشلت تحمّل (404 / no data) عند زوم معين،
+      // رجّع زوم واحد لورا أوتوماتيك بدل ما تفضل الصورة "not available" ──
+      lastStableZoomRef.current = map.getZoom();
+
+      const attachTileErrorGuard = (layer: any) => {
+        layer.on("tileerror", () => {
+          tileErrorAtCurrentZoomRef.current = true;
+        });
+        layer.on("tileload", () => {
+          // على الأقل تايل واحد نجح في التحميل عند الزوم ده
+        });
+      };
+
+      map.on("zoomstart", () => {
+        tileErrorAtCurrentZoomRef.current = false;
+        if (zoomRevertTimeoutRef.current) clearTimeout(zoomRevertTimeoutRef.current);
+      });
+
+      map.on("zoomend", () => {
+        if (zoomRevertTimeoutRef.current) clearTimeout(zoomRevertTimeoutRef.current);
+        // استنى شوية عشان التايلز تاخد فرصتها تحاول تحمل
+        zoomRevertTimeoutRef.current = setTimeout(() => {
+          const cz = map.getZoom();
+          if (tileErrorAtCurrentZoomRef.current) {
+            // فيه تايلز فشلت — ارجع لآخر زوم كان شغال بيه
+            const target = Math.min(lastStableZoomRef.current, cz - 1);
+            if (target >= map.getMinZoom() && target < cz) {
+              map.setZoom(target);
+              toast.error(
+                isRTL
+                  ? "وصلت لأقصى دقة متاحة في المكان ده"
+                  : "Max available resolution reached for this area"
+              );
+            }
+          } else {
+            lastStableZoomRef.current = cz;
+          }
+        }, 450);
+      });
 // ── Scale Bar ─────────────────────────────────────────────────
 L.control.scale({
   position: "bottomleft",
@@ -1147,6 +1191,7 @@ if (!restoredRef.current) {
         maxNativeZoom: 23,
         pane: "satellitePane", crossOrigin: "anonymous",
       }).addTo(map);
+      attachTileErrorGuard(baseTileRef.current);
 
       labelsLayerRef.current = L.tileLayer(
         "/api/tile/{z}/{x}/{y}?source=labels",
@@ -1281,6 +1326,10 @@ saved.forEach((item: any) => {
           pane:          "satellitePane",
           crossOrigin:   "anonymous",
         }).addTo(map);
+        attachTileErrorGuard(baseTileRef.current);
+        // إعادة ضبط حالة الزوم عند تبديل المصدر (كل مصدر له تغطية مختلفة)
+        tileErrorAtCurrentZoomRef.current = false;
+        lastStableZoomRef.current = map.getZoom();
       });
 
       onOpacityChangeRegister?.((o: number) => {
