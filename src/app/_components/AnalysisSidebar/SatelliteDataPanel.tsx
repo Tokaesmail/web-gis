@@ -545,8 +545,10 @@ export async function makeRasterPdf(config: RasterPreviewConfig) {
 async function getSignedPlanetaryComputerUrl(url: string) {
   try {
     const response = await fetch(`https://planetarycomputer.microsoft.com/api/sas/v1/sign?href=${encodeURIComponent(url)}`);
+        console.log("Response Status:", response.status);
     if (!response.ok) return url;
     const data = await response.json();
+    console.log("Returned Data:", data);
     return typeof data?.href === "string" ? data.href : url;
   } catch {
     return url;
@@ -1225,15 +1227,6 @@ if (previewUrl && scenePreviewUrls[scene.id] !== previewUrl) {
             <span className="text-[0.58rem] text-slate-500">
               {activeVisualization.expression ?? "RGB composite"}
             </span>
-          </div>
-          <div className="mt-3">
-            <div className="mb-1 flex items-center justify-between text-[0.55rem] text-slate-500">
-              <span>{legendConfig.min}</span>
-              <span>{legendConfig.label}</span>
-              <span>{legendConfig.max}</span>
-            </div>
-            <div className="h-2 rounded-full border border-white/[0.08]" style={{ background: legendConfig.gradient }} />
-            <div className="mt-1 text-center text-[0.52rem] text-slate-600">{legendConfig.mid}</div>
           </div>
         </div>
       </div>

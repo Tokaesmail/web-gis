@@ -11,7 +11,6 @@
 
 import { useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
-import { getPolygonRing } from "./geoClipUtils";
 
 // ─── Sentinel-2 L2A band reference (so the user writes valid expressions) ──
 const SENTINEL2_BANDS: { id: string; label: string; gsd: string; desc: string }[] = [
@@ -50,25 +49,26 @@ const EXPRESSION_PRESETS: { key: string; label: string; expression: string; colo
 // ─── Color ramps shown as visual swatches (matching the app's existing
 // "Water / Vegetation / Spectral" style) instead of a plain colormap name list ──
 const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
-  // NDVI — GEE classic rdylgn: dark-red → orange → yellow → yellow-green → green → dark-green
-  { key: "rdylgn",    label: "Vegetation", gradient: "linear-gradient(90deg,#d73027 0%,#f46d43 13%,#fdae61 26%,#fee08b 39%,#d9ef8b 52%,#a6d96a 65%,#66bd63 78%,#1a9850 100%)" },
-  // NDWI Water — RdBu: crimson(dry) → salmon → white → steel-blue → deep-navy(water)
-  { key: "rdbu",      label: "Water",      gradient: "linear-gradient(90deg,#67001f 0%,#b2182b 14%,#d6604d 26%,#f4a582 38%,#fddbc7 50%,#d1e5f0 62%,#4393c3 76%,#2166ac 88%,#053061 100%)" },
-  // NDMI Moisture — PuOr: burnt-orange(dry) → beige → purple(moist) matches Landsat NDMI
-  { key: "rdbu_r",    label: "Moisture",   gradient: "linear-gradient(90deg,#b35806 0%,#e08214 14%,#fdb863 26%,#fee0b6 38%,#f7f7f7 50%,#d8daeb 62%,#998ec3 76%,#7b3294 88%,#40004b 100%)" },
-  // Spectral — full spectral ramp matching USGS/EE style
-  { key: "spectral",  label: "Spectral",   gradient: "linear-gradient(90deg,#9e0142 0%,#d53e4f 14%,#f46d43 25%,#fdae61 37%,#fee08b 50%,#e6f598 62%,#abdda4 72%,#66c2a5 82%,#3288bd 91%,#5e4fa2 100%)" },
-  // NDBI Spectral_R — red(built-up high) → yellow → blue(vegetation/low) matches NDBI maps
-  { key: "spectral_r",label: "Spectral R", gradient: "linear-gradient(90deg,#d73027 0%,#f46d43 12%,#fdae61 24%,#ffffbf 38%,#d9ef8b 50%,#a6d96a 62%,#74add1 74%,#4575b4 86%,#313695 100%)" },
-  // Thermal / Magma — exact matplotlib magma: black → purple → pink → orange → yellow
-  { key: "magma",     label: "Thermal",    gradient: "linear-gradient(90deg,#000004 0%,#1b0c41 16%,#4a0c4e 26%,#781c6d 36%,#a52c60 46%,#cf4446 56%,#ed6925 66%,#fb9b06 76%,#f7d13d 88%,#fcfdbf 100%)" },
-  // SAVI Greens — YlGn: white(bare=0) → pale-yellow-green → lime → medium → dark-green
-  { key: "greens",    label: "Greens",     gradient: "linear-gradient(90deg,#ffffe5 0%,#f7fcb9 16%,#d9f0a3 30%,#addd8e 44%,#78c679 58%,#41ab5d 70%,#238443 82%,#005a32 100%)" },
-  // NDWI Blues — Climate Engine: white → pale-sky → steel-blue → deep-navy
-  { key: "rdylbu_r",  label: "Heat",       gradient: "linear-gradient(90deg,#f7fbff 0%,#deebf7 16%,#c6dbef 28%,#9ecae1 40%,#6baed6 52%,#4292c6 64%,#2171b5 76%,#08519c 88%,#08306b 100%)" },
-  // Inferno — كثافة/heatmap: غامق-بنفسجي → بنفسجي → وردي-أحمر → برتقالي → أصفر فاقع
+  // NDVI — نفس صورة NDVI اللي بعتيها: أحمر/بني bare → أصفر → أخضر غامق
+  { key: "rdylgn",    label: "Vegetation", gradient: "linear-gradient(90deg,#a50026 0%,#d73027 10%,#f46d43 20%,#fdae61 30%,#fee08b 40%,#ffffbf 50%,#d9ef8b 60%,#a6d96a 70%,#66bd63 80%,#1a9850 90%,#006837 100%)" },
+  // NDWI Water — نفس صورة NDWI: أخضر-أصفر أرض → تركواز → أزرق غامق مياه
+  { key: "rdbu",      label: "Water",      gradient: "linear-gradient(90deg,#d9ef8b 0%,#a6d96a 17%,#66c2a5 33%,#3288bd 50%,#2166ac 67%,#08306b 83%,#062254 100%)" },
+  // NDMI Moisture — درجات مسحوبة فعليًا من colorbar صورة NDMI
+  { key: "rdbu_r",    label: "Moisture",   gradient: "linear-gradient(90deg,#f3f1f4 0%,#f0cac1 13%,#eeb780 25%,#ebb25b 38%,#e8c32d 50%,#e7e600 63%,#9fd601 75%,#2ab900 88%,#02a402 100%)" },
+  // Spectral — Viridis زي صورة الـ bands
+  { key: "spectral",  label: "Spectral",   gradient: "linear-gradient(90deg,#440154 0%,#482878 11%,#3e4989 22%,#31688e 33%,#26828e 44%,#1f9e89 56%,#35b779 67%,#6ece58 78%,#b5de2b 89%,#fde725 100%)" },
+  // Spectral_R — False-color زي صورة Landsat
+  { key: "spectral_r",label: "Spectral R", gradient: "linear-gradient(90deg,#08306b 0%,#2166ac 14%,#4393c3 28%,#92c5de 43%,#f4a582 57%,#d6604d 71%,#b2182b 86%,#67001f 100%)" },
+  // Thermal — درجات مسحوبة فعليًا من colorbar صورة الحرارة (Surface Temp)
+  { key: "magma",     label: "Thermal",    gradient: "linear-gradient(90deg,#f6f6fd 0%,#a0abed 11%,#358dc5 22%,#278da6 33%,#78b49c 44%,#e3dc85 56%,#f4b46b 67%,#da5b52 78%,#a21643 89%,#61031f 100%)" },
+  // Greens — زي خريطة GRASS الغطاء النباتي
+  { key: "greens",    label: "Greens",     gradient: "linear-gradient(90deg,#f7fcf5 0%,#e5f5e0 13%,#c7e9c0 25%,#a1d99b 38%,#74c476 50%,#41ab5d 63%,#238b45 75%,#006d2c 88%,#00441b 100%)" },
+  // Heat — بنفسجي/أزرق → سماوي → أخضر → أصفر → برتقالي → أحمر زي صورة الكثافة
+  { key: "rdylbu_r",  label: "Heat",       gradient: "linear-gradient(90deg,#4b0082 0%,#6a00a8 13%,#0000ff 25%,#00bfff 38%,#00ffea 50%,#00ff40 63%,#ffff00 75%,#ff8000 88%,#ff0000 100%)" },
+  // Inferno — matplotlib inferno الرسمي زي آخر صورة
   { key: "inferno",   label: "Inferno",    gradient: "linear-gradient(90deg,#000004 0%,#1b0c41 11%,#4a0c6b 22%,#781c6d 33%,#a52c60 44%,#cf4446 56%,#ed6925 67%,#fb9b06 78%,#f7d13d 89%,#fcffa4 100%)" },
 ];
+
 
 
 const BACKEND_RASTER_URL = "https://webgiss.duckdns.org/gis/raster-calc";
@@ -147,6 +147,68 @@ function getFeatureBBox(
   return [lng - pad, lat - pad, lng + pad, lat + pad];
 }
 
+// ── الـ endpoint الجديد /gis/raster-calc بقى بياخد "geometry" (Polygon
+// GeoJSON حقيقي) مش بس bbox — يعني الباكند دلوقتي يقدر يعمل clip على
+// الشكل الفعلي اللي رسمه اليوزر، مش بس مستطيل الـ bbox بتاعه.
+// الدالة دي بتحول أي feature (Polygon / MultiPolygon / Circle) لصيغة
+// GeoJSON صالحة نبعتها في الـ request — وده اللي بيحل مشكلة إن الـ clip
+// كان شغال بس مع المستطيلات ومش شغال مع الدوائر أو الـ polygons.
+function getRequestGeometry(
+  feature?: GeoJSON.Feature | null
+): GeoJSON.Polygon | GeoJSON.MultiPolygon | null {
+  const g = feature?.geometry as any;
+  if (!g) return null;
+
+  // Polygon / MultiPolygon مرسومة عادي — تتبعت زي ما هي
+  if (g.type === "Polygon" || g.type === "MultiPolygon") {
+    return g as GeoJSON.Polygon | GeoJSON.MultiPolygon;
+  }
+
+  // Circle: عادة بتتخزن كـ Point + radius (بالمتر) — إما جوه properties
+  // (شائع مع leaflet-draw / geoman) أو جنب الإحداثيات نفسها
+  const radius: number | undefined =
+    (feature as any)?.properties?.radius ??
+    (feature as any)?.properties?.circleRadius ??
+    (g as any)?.radius;
+
+  if (g.type === "Point" && typeof radius === "number" && radius > 0) {
+    const [lng, lat] = g.coordinates as [number, number];
+    return circleToPolygon(lat, lng, radius);
+  }
+
+  return null;
+}
+
+function getPolygonVertices(feature?: GeoJSON.Feature | null) {
+  const geometry = getRequestGeometry(feature);
+
+  if (!geometry || geometry.type !== "Polygon") return [];
+
+  return geometry.coordinates[0]
+    .slice(0, -1) // إزالة آخر نقطة لأنها مكررة
+    .map(([lng, lat]) => ({
+      lat,
+      lng,
+    }));
+}
+
+// بيحول دايرة (مركز lat/lng بالدرجات + نصف قطر بالمتر) لـ polygon مقفول
+// بـ 64 نقطة، باستخدام geodesic offset دقيق (نفس فكرة turf's circle)
+function circleToPolygon(lat: number, lng: number, radiusMeters: number, points = 64): GeoJSON.Polygon {
+  const EARTH_RADIUS = 6371008.8; // متوسط نصف قطر الأرض بالمتر
+  const latRad = (lat * Math.PI) / 180;
+  const ring: [number, number][] = [];
+  for (let i = 0; i <= points; i++) {
+    const bearing = (i / points) * 2 * Math.PI;
+    const dLat = (radiusMeters * Math.cos(bearing)) / EARTH_RADIUS;
+    const dLng = (radiusMeters * Math.sin(bearing)) / (EARTH_RADIUS * Math.cos(latRad));
+    const ptLat = lat + (dLat * 180) / Math.PI;
+    const ptLng = lng + (dLng * 180) / Math.PI;
+    ring.push([ptLng, ptLat]);
+  }
+  return { type: "Polygon", coordinates: [ring] };
+}
+
 // quick syntax check: only known band tokens + numbers/operators allowed
 function validateExpression(expr: string): { ok: boolean; usedBands: string[]; unknownTokens: string[] } {
   const tokens = expr.match(/[A-Za-z][A-Za-z0-9]*/g) ?? [];
@@ -202,7 +264,7 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   const [clipToShape, setClipToShape] = useState(true);
   const [cloudCover, setCloudCover] = useState(10); // kept for potential future use
   const [dateFrom, setDateFrom] = useState("2026-04-01");
-  const [dateTo, setDateTo] = useState("2026-05-31");
+  const [dateTo, setDateTo] = useState("2026-04-28");
   const [showBandRef, setShowBandRef] = useState(true);
 
 
@@ -228,7 +290,9 @@ const renderBbox = useMemo(
   () => getFeatureBBox(selectedFeature, fallbackCoords, false),
   [selectedFeature, fallbackCoords?.lat, fallbackCoords?.lng]
 );  
-const polygonRing = useMemo(() => getPolygonRing(selectedFeature), [selectedFeature]);
+// جيوميتري حقيقية (Polygon/MultiPolygon/Circle-as-polygon) نبعتها للباكند
+// الجديد عشان الـ clip يبقى مطابق للشكل الفعلي مش مجرد الـ bbox المستطيل
+const requestGeometry = useMemo(() => getRequestGeometry(selectedFeature), [selectedFeature]);
   const validation = useMemo(() => validateExpression(expression), [expression]);
 
 
@@ -262,6 +326,12 @@ const runPreview = async () => {
     const dateRange = `${dateFrom}/${dateTo}`;
 
     // ── 2. Call custom backend ─────────────────────────────────────────────
+    const polygonVertices = getPolygonVertices(selectedFeature);
+
+console.log("Polygon vertices:", polygonVertices);
+if (!requestGeometry) {
+  throw new Error("No polygon selected");
+}
     const res = await fetch(BACKEND_RASTER_URL, {
       method: "POST",
       headers: {
@@ -269,11 +339,11 @@ const runPreview = async () => {
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       body: JSON.stringify({
-        bbox: renderBbox,
-        date: dateRange,
-        expression,
-        collection: "sentinel-2-l2a",
-      }),
+  geometry: requestGeometry,
+  date: dateRange,
+  expression,
+  collection: "sentinel-2-l2a",
+})
     });
 
     if (!res.ok) {
@@ -406,12 +476,12 @@ const runPreview = async () => {
       <div className="grid grid-cols-2 gap-2">
         <label className="space-y-1">
           <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">From</span>
-          <input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)}
+          <input type="date" lang="en-GB" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)}
             className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
         </label>
         <label className="space-y-1">
           <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">To</span>
-          <input type="date" value={dateTo} min={dateFrom} onChange={(e) => setDateTo(e.target.value)}
+          <input type="date" lang="en-GB" value={dateTo} min={dateFrom} onChange={(e) => setDateTo(e.target.value)}
             className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
         </label>
       </div>
@@ -545,22 +615,22 @@ const runPreview = async () => {
         <div className="min-w-0">
           <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Clip to drawn shape</p>
           <p className="mt-1 text-[0.58rem] text-slate-500 leading-relaxed">
-            {polygonRing
-              ? "Mask everything outside your polygon — only the selected area shows."
-              : "No polygon selected — server returns a rectangle covering the AOI."}
+            {requestGeometry
+              ? "Mask everything outside your shape — polygons and circles are both clipped exactly."
+              : "No polygon/circle selected — server returns a rectangle covering the AOI."}
           </p>
         </div>
         <button
           type="button"
           onClick={() => setClipToShape((p) => !p)}
-          disabled={!polygonRing}
+          disabled={!requestGeometry}
           className={`w-11 h-6 shrink-0 rounded-full border transition-all cursor-pointer relative disabled:cursor-not-allowed disabled:opacity-40 ${
-            clipToShape && polygonRing ? "bg-cyan-400/20 border-cyan-400/30" : "bg-white/[0.03] border-white/[0.08]"
+            clipToShape && requestGeometry ? "bg-cyan-400/20 border-cyan-400/30" : "bg-white/[0.03] border-white/[0.08]"
           }`}
-          aria-pressed={clipToShape && !!polygonRing}
+          aria-pressed={clipToShape && !!requestGeometry}
         >
           <span className={`absolute top-0.5 w-5 h-5 rounded-full transition-all ${
-            clipToShape && polygonRing ? "left-5 bg-cyan-400" : "left-0.5 bg-slate-600"
+            clipToShape && requestGeometry ? "left-5 bg-cyan-400" : "left-0.5 bg-slate-600"
           }`} />
         </button>
       </div>

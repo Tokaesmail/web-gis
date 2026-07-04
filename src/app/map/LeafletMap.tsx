@@ -123,6 +123,23 @@ function makePolygonFeature(name: string, points: [number, number][], area: numb
   };
 }
 
+// دالة تحويل الدائرة لـ Polygon حقيقي
+function circleToPolygonLatLng(centerLat: number, centerLng: number, radiusMeters: number, points = 64): [number, number][] {
+  const EARTH_RADIUS = 6371008.8;
+  const latRad = (centerLat * Math.PI) / 180;
+  const ring: [number, number][] = [];
+  for (let i = 0; i <= points; i++) {
+    const bearing = (i / points) * 2 * Math.PI;
+    const dLat = (radiusMeters * Math.cos(bearing)) / EARTH_RADIUS;
+    const dLng = (radiusMeters * Math.sin(bearing)) / (EARTH_RADIUS * Math.cos(latRad));
+    ring.push([
+      centerLat + (dLat * 180) / Math.PI,   // lat
+      centerLng + (dLng * 180) / Math.PI,   // lng
+    ]);
+  }
+  return ring;
+}
+
 export default function LeafletMap({
   activeTool, captureTarget, onAreaSelected, onCoordsUpdate,
   flyToRef, clearRef, onSatChange, onOpacityChangeRegister, onCapture,
@@ -1626,16 +1643,14 @@ console.log("Area m²:", turf.area(polygon));
             const area   = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
             circ.bindPopup(`🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`).openPopup();
             drawLayersRef.current.push(circ);
-            const bounds = circ.getBounds();
-            const circleBox: [number, number][] = [
-              [bounds.getNorth(), bounds.getWest()],
-              [bounds.getNorth(), bounds.getEast()],
-              [bounds.getSouth(), bounds.getEast()],
-              [bounds.getSouth(), bounds.getWest()],
-            ];
-            const feature = makePolygonFeature("Drawn Circle Bounds", circleBox, area);
+            
+            // التعديل الجديد باستخدام الدالة الحقيقية بدل المربع
+            const circleRing = circleToPolygonLatLng(center[0], center[1], radius, 64);
+            const feature = makePolygonFeature("Drawn Circle", circleRing, area);
+            
             onAreaSelected("Drawn Circle", area, feature);
             onFeatureClick?.(feature);
+            
             if (canvasRef.current) {
               const cPx = map.latLngToContainerPoint(L.latLng(center[0], center[1]));
               const ePx = map.latLngToContainerPoint(L.latLng(lat, lng));

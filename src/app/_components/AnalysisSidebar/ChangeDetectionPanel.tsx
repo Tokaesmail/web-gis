@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
+import { clipImageToPolygon, getPolygonRing } from "./geoClipUtils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type ChangeIndexKey = "NDVI" | "NDWI" | "NDBI";
@@ -15,6 +16,15 @@ export interface ChangeDetectionPreviewConfig {
   opacity: number;
   colorRamp: string;
   dataUrl: string;
+}
+
+/** Real, georeferenced on-map Before/After swipe config — Change Detection only */
+export interface ChangeDetectionSwipeConfig {
+  beforeUrl: string;
+  afterUrl: string;
+  bounds: [[number, number], [number, number]];
+  beforeLabel?: string;
+  afterLabel?: string;
 }
 
 interface StacFeature {
@@ -44,30 +54,34 @@ const CHANGE_INDEX_DEFS: Record<ChangeIndexKey, {
   desc: string;
   assets: [string, string]; // [a, b] -> (a-b)/(a+b)
   color: string;
+  // tighter rescale than the raw [-1,1] index range = much more vivid, less washed-out preview colors
+  rescale: string;
 }> = {
-  NDVI: { label: "NDVI", desc: "Vegetation change (NIR, Red)", assets: ["B08", "B04"], color: "#22c55e" },
-  NDWI: { label: "NDWI", desc: "Water extent change (Green, NIR)", assets: ["B03", "B08"], color: "#38bdf8" },
-  NDBI: { label: "NDBI", desc: "Built-up / urban change (SWIR, NIR)", assets: ["B11", "B08"], color: "#f97316" },
+  NDVI: { label: "NDVI", desc: "Vegetation change (NIR, Red)", assets: ["B08", "B04"], color: "#22c55e", rescale: "-0.2,0.75" },
+  NDWI: { label: "NDWI", desc: "Water extent change (Green, NIR)", assets: ["B03", "B08"], color: "#38bdf8", rescale: "-0.3,0.5" },
+  NDBI: { label: "NDBI", desc: "Built-up / urban change (SWIR, NIR)", assets: ["B11", "B08"], color: "#f97316", rescale: "-0.35,0.35" },
 };
 
-// Diverging ramp: red = decrease, gray = no change, green = increase
+// Diverging ramp: red = decrease, green = increase.
+// Gamma-boosted (k^0.55) so moderate changes near the sensitivity threshold read as clearly
+// colored instead of washing out toward gray — the previous linear ramp made everything but
+// the most extreme pixels look faint.
 function diffColor(delta: number): [number, number, number] {
-  // delta expected roughly in [-1, 1] (difference of two normalized indices)
   const t = Math.max(-1, Math.min(1, delta));
+  const k = Math.pow(Math.abs(t), 0.55);
   if (t >= 0) {
-    // 0 -> gray, 1 -> green
-    const k = t;
+    // pale green (k=0) -> vivid emerald (k=1)
     return [
-      Math.round(226 - k * 190),
-      Math.round(232 - k * 30),
-      Math.round(240 - k * 200),
+      Math.round(214 - k * 198), // 214 -> 16
+      Math.round(245 - k * 60),  // 245 -> 185
+      Math.round(214 - k * 85),  // 214 -> 129
     ];
   }
-  const k = -t;
+  // pale red (k=0) -> vivid red (k=1)
   return [
-    Math.round(226 + k * 25),
-    Math.round(232 - k * 170),
-    Math.round(240 - k * 200),
+    Math.round(254 - k * 15),  // 254 -> 239
+    Math.round(228 - k * 160), // 228 -> 68
+    Math.round(228 - k * 160), // 228 -> 68
   ];
 }
 
@@ -114,23 +128,45 @@ function getSceneAssetUrl(scene: SatelliteScene, assetKey: string) {
   return getAssetLookupKeys(assetKey).map((key) => scene.assets[key]).find(Boolean);
 }
 
-function makePreviewUrl(scene: SatelliteScene, assets: [string, string]) {
+function makePreviewUrl(
+  scene: SatelliteScene,
+  indexKey: ChangeIndexKey,
+  bbox: [number, number, number, number], // [west, south, east, north] — the AOI, not the scene tile
+) {
+  const { assets, rescale } = CHANGE_INDEX_DEFS[indexKey];
   if (!scene.id || !scene.collection) return scene.thumbnail;
   const aHref = getSceneAssetUrl(scene, assets[0]);
   const bHref = getSceneAssetUrl(scene, assets[1]);
   if (!aHref || !bHref) return scene.thumbnail;
 
-  const url = new URL("https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png");
+  const [west, south, east, north] = bbox;
+  // Keep the rendered image's pixel aspect ratio matched to the AOI's geographic
+  // aspect ratio, so it doesn't stretch — and so downstream bbox-based clipping
+  // (clipImageToPolygon) can assume the image covers exactly this bbox.
+  const aoiW = east - west;
+  const aoiH = north - south;
+  const ratio = aoiW / (aoiH || 0.001);
+  const BASE = 640;
+  const imgW = ratio >= 1 ? BASE : Math.round(BASE * ratio);
+  const imgH = ratio >= 1 ? Math.round(BASE / ratio) : BASE;
+
+  // IMPORTANT: use the /bbox/ path endpoint, not /preview.png — /preview.png ignores
+  // bbox entirely and always returns the full scene tile (~110x110km), which is why
+  // the swipe used to render a huge stretched image and why AOI-shaped clipping was
+  // misaligned (the image didn't actually cover the AOI bounds it was told to cover).
+  const bboxPath = `${west},${south},${east},${north}`;
+  const url = new URL(`https://planetarycomputer.microsoft.com/api/data/v1/item/bbox/${bboxPath}/${imgW}x${imgH}.png`);
   url.searchParams.set("collection", scene.collection);
   url.searchParams.set("item", scene.id);
-  url.searchParams.set("max_size", "512");
   assets.forEach((asset) => {
     url.searchParams.append("assets", asset);
     url.searchParams.append("asset_bidx", `${asset}|1`);
   });
   url.searchParams.set("asset_as_band", "true");
   url.searchParams.set("expression", `(${assets[0]}-${assets[1]})/(${assets[0]}+${assets[1]})`);
-  url.searchParams.set("rescale", "-1,1");
+  // tighter rescale per index = the colormap uses its full range where pixel values actually
+  // cluster, instead of stretching across the theoretical [-1,1] and looking pale/washed out
+  url.searchParams.set("rescale", rescale);
   url.searchParams.set("colormap_name", "rdylgn");
   return url.toString();
 }
@@ -200,7 +236,7 @@ function computeDiff(beforeData: ImageData, afterData: ImageData, threshold: num
       outData.data[o] = r;
       outData.data[o + 1] = g;
       outData.data[o + 2] = b;
-      outData.data[o + 3] = 235;
+      outData.data[o + 3] = 248;
     }
   }
 
@@ -282,13 +318,21 @@ function ImageSwipeCompare({
         onPointerUp={() => { draggingRef.current = false; }}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={beforeUrl} alt={beforeLabel} draggable={false} className="absolute inset-0 w-full h-full object-cover pointer-events-none" />
+        <img
+          src={beforeUrl} alt={beforeLabel} draggable={false}
+          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          style={{ filter: "saturate(1.35) contrast(1.12)" }}
+        />
         <div
           className="absolute inset-0 overflow-hidden pointer-events-none"
           style={{ clipPath: `inset(0 ${100 - position}% 0 0)` }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={afterUrl} alt={afterLabel} draggable={false} className="absolute inset-0 w-full h-full object-cover" />
+          <img
+            src={afterUrl} alt={afterLabel} draggable={false}
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ filter: "saturate(1.35) contrast(1.12)" }}
+          />
         </div>
 
         <div
@@ -335,7 +379,7 @@ function ComparePanel({
     <figure className="flex flex-col gap-2 min-w-0">
       <div className="relative aspect-[4/3] overflow-hidden rounded-lg border border-white/[0.08] bg-slate-950">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt={label} className="absolute inset-0 h-full w-full object-cover" />
+        <img src={url} alt={label} className="absolute inset-0 h-full w-full object-cover" style={{ filter: "saturate(1.35) contrast(1.12)" }} />
       </div>
       <figcaption
         className="text-center text-xs font-medium text-slate-300"
@@ -568,9 +612,11 @@ function SceneSlot({
 interface ChangeDetectionPanelProps {
   selectedFeature?: GeoJSON.Feature | null;
   onPreview?: (config: ChangeDetectionPreviewConfig) => void;
+  /** Real, georeferenced Before/After swipe on the actual map. Pass null to hide it. */
+  onSwipeCompare?: (config: ChangeDetectionSwipeConfig | null) => void;
 }
 
-export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetectionPanelProps) {
+export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompare }: ChangeDetectionPanelProps) {
   const coords = getMidCoords(selectedFeature);
   const bounds = getFeatureBounds(selectedFeature, coords ? { lat: coords[0], lng: coords[1] } : undefined);
   const [[south, west], [north, east]] = bounds;
@@ -599,6 +645,11 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
 
   const [beforePreviewUrl, setBeforePreviewUrl] = useState<string | null>(null);
   const [afterPreviewUrl, setAfterPreviewUrl] = useState<string | null>(null);
+  const [beforeClippedUrl, setBeforeClippedUrl] = useState<string | null>(null);
+  const [afterClippedUrl, setAfterClippedUrl] = useState<string | null>(null);
+  const [clipToShape, setClipToShape] = useState(true);
+  const polygonRing = useMemo(() => getPolygonRing(selectedFeature), [selectedFeature]);
+  const bboxTuple = useMemo(() => [west, south, east, north] as [number, number, number, number], [west, south, east, north]);
 
   const [computing, setComputing] = useState(false);
   const [computeError, setComputeError] = useState<string | null>(null);
@@ -719,13 +770,75 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
     pickSceneAfterSearch(results, afterScene, handleSelectAfter);
   }, [searchScenes, afterFrom, afterTo, cloudCoverAfter, afterScene, pickSceneAfterSearch, handleSelectAfter]);
 
-  // refresh preview URLs whenever scene or index changes
+  // refresh preview URLs whenever scene, index, or AOI changes — cropped server-side
+  // to the AOI bbox (see makePreviewUrl), not the whole scene tile.
   useEffect(() => {
-    setBeforePreviewUrl(beforeScene ? makePreviewUrl(beforeScene, indexDef.assets) ?? null : null);
-  }, [beforeScene, indexDef]);
+    setBeforePreviewUrl(beforeScene ? makePreviewUrl(beforeScene, indexKey, bboxTuple) ?? null : null);
+  }, [beforeScene, indexKey, bboxTuple]);
   useEffect(() => {
-    setAfterPreviewUrl(afterScene ? makePreviewUrl(afterScene, indexDef.assets) ?? null : null);
-  }, [afterScene, indexDef]);
+    setAfterPreviewUrl(afterScene ? makePreviewUrl(afterScene, indexKey, bboxTuple) ?? null : null);
+  }, [afterScene, indexKey, bboxTuple]);
+
+  // Once the bbox-cropped previews are in, clip them down to the exact drawn shape
+  // (polygon/rectangle/circle-as-polygon) instead of leaving them as a rectangle.
+  // Safe now because the image genuinely covers `bounds` (see makePreviewUrl fix),
+  // so the lng/lat -> pixel mapping in clipImageToPolygon lines up correctly.
+  useEffect(() => {
+    let cancelled = false;
+    if (!clipToShape || !polygonRing || !beforePreviewUrl) {
+      setBeforeClippedUrl(null);
+      return;
+    }
+    clipImageToPolygon(beforePreviewUrl, bounds, polygonRing)
+      .then((clipped) => { if (!cancelled) setBeforeClippedUrl(clipped); })
+      .catch(() => { if (!cancelled) setBeforeClippedUrl(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [beforePreviewUrl, clipToShape, polygonRing]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!clipToShape || !polygonRing || !afterPreviewUrl) {
+      setAfterClippedUrl(null);
+      return;
+    }
+    clipImageToPolygon(afterPreviewUrl, bounds, polygonRing)
+      .then((clipped) => { if (!cancelled) setAfterClippedUrl(clipped); })
+      .catch(() => { if (!cancelled) setAfterClippedUrl(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [afterPreviewUrl, clipToShape, polygonRing]);
+
+  // Final URLs actually shown/pushed to the map — clipped-to-shape when available.
+  const beforeDisplayUrl = beforeClippedUrl ?? beforePreviewUrl;
+  const afterDisplayUrl = afterClippedUrl ?? afterPreviewUrl;
+
+  // Push a real, georeferenced Before/After swipe onto the actual map as soon as both
+  // scenes are selected — updates live as the user changes scenes/index, clears when not ready.
+  useEffect(() => {
+    if (!onSwipeCompare) return;
+    if (beforeDisplayUrl && afterDisplayUrl && beforeScene && afterScene) {
+      // The previews are now rendered cropped to `bounds` itself (see makePreviewUrl),
+      // so that's the correct overlay extent — not the scene's full tile bbox, which
+      // used to make the swipe render as a huge stretched rectangle over the map.
+      onSwipeCompare({
+        beforeUrl: beforeDisplayUrl,
+        afterUrl: afterDisplayUrl,
+        bounds,
+        beforeLabel: `Before · ${formatDateDMY(beforeScene.date)}`,
+        afterLabel: `After · ${formatDateDMY(afterScene.date)}`,
+      });
+    } else {
+      onSwipeCompare(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onSwipeCompare, beforeDisplayUrl, afterDisplayUrl, beforeScene, afterScene, bounds]);
+
+  // Make sure the swipe never lingers on the map after leaving Change Detection.
+  useEffect(() => {
+    return () => { onSwipeCompare?.(null); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const canRun = !!beforeScene && !!afterScene;
 
@@ -876,7 +989,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
       />
 
       {/* Before / After swipe comparison — visible as soon as both scenes are selected */}
-      {beforePreviewUrl && afterPreviewUrl && (
+      {beforeDisplayUrl && afterDisplayUrl && (
         <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/[0.04] p-3 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <p className="text-[0.62rem] uppercase tracking-wider text-slate-400">Before / After comparison</p>
@@ -891,9 +1004,27 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
           <span className="block text-[0.52rem] text-slate-500 font-mono -mt-1">
             {beforeScene?.date && afterScene?.date ? `${formatDateDMY(beforeScene.date)} → ${formatDateDMY(afterScene.date)}` : ""}
           </span>
+          {polygonRing && (
+            <div className="flex items-center justify-between -mt-1">
+              <span className="text-[0.55rem] text-slate-500">Clip to drawn shape</span>
+              <button
+                type="button"
+                onClick={() => setClipToShape((p) => !p)}
+                className={`relative w-9 h-5 rounded-full border transition-colors ${clipToShape ? "bg-cyan-400/20 border-cyan-400/30" : "bg-white/[0.03] border-white/[0.08]"}`}
+                aria-pressed={clipToShape}
+              >
+                <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all ${clipToShape ? "left-[18px] bg-cyan-400" : "left-0.5 bg-slate-600"}`} />
+              </button>
+            </div>
+          )}
+          {onSwipeCompare && (
+            <p className="text-[0.52rem] text-cyan-300/70 -mt-1">
+              ↔ نفس المقارنة شغالة كمان فوق الخريطة الحقيقية — زوّمي/حركي وهي شغالة
+            </p>
+          )}
           <ImageSwipeCompare
-            beforeUrl={beforePreviewUrl}
-            afterUrl={afterPreviewUrl}
+            beforeUrl={beforeDisplayUrl}
+            afterUrl={afterDisplayUrl}
             beforeLabel="Before"
             afterLabel="After"
           />
@@ -903,8 +1034,8 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview }: ChangeDetec
       <ChangeCompareModal
         open={compareModalOpen}
         onClose={() => setCompareModalOpen(false)}
-        beforeUrl={beforePreviewUrl ?? ""}
-        afterUrl={afterPreviewUrl ?? ""}
+        beforeUrl={beforeDisplayUrl ?? ""}
+        afterUrl={afterDisplayUrl ?? ""}
         changeUrl={diffDataUrl}
         beforeDate={beforeScene?.date}
         afterDate={afterScene?.date}

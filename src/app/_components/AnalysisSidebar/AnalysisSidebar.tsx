@@ -8,8 +8,9 @@ import { MapLayer } from "../../map/LayerPanel";
 import { PanelContent } from "./PanelContent";
 import { panels, type PanelId } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
-import { type ChangeDetectionPreviewConfig } from "./ChangeDetectionPanel";
+import { type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
+import SavedAnalysesPanel from "./SavedAnalysesPanel";
 import VolumeCalculationPanel from "./VolumeCalculationPanel";
 
 export default function AnalysisSidebar(
@@ -46,6 +47,7 @@ export default function AnalysisSidebar(
   onSatellitePreview,
   onRasterPreview,
   onChangeDetectionPreview,
+  onChangeDetectionSwipe,
   onOpenElevationFloat,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
@@ -80,6 +82,8 @@ export default function AnalysisSidebar(
   onSatellitePreview?: (config: SatellitePreviewConfig) => void;
   onRasterPreview?: (config: RasterPreviewConfig) => void;
   onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
+  /** Real, georeferenced Before/After swipe on the actual map (Change Detection only). Pass null to hide it. */
+  onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
   onOpenElevationFloat?: () => void;
 }) {
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
@@ -206,6 +210,7 @@ export default function AnalysisSidebar(
                   onSatellitePreview={onSatellitePreview}
                   onRasterPreview={onRasterPreview}
                   onChangeDetectionPreview={onChangeDetectionPreview}
+                  onChangeDetectionSwipe={onChangeDetectionSwipe}
                   onOpenElevationFloat={onOpenElevationFloat}
                 />
               )}

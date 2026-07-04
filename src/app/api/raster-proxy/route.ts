@@ -71,44 +71,59 @@ function vivid(h: string, satBoost = 1.4, contrastPush = 0.12): [number, number,
 }
 
 const RAMPS: Record<string, Stop[]> = {
-  // NDVI-style — أخضر/أصفر/برتقالي حاد وواضح (زي Aurora)
+  // 1) Vegetation — NDVI classic RdYlGn (زي أول صورة: أحمر/بني bare → أصفر → أخضر غامق)
   rdylgn: [
-    "#8b0000","#e31a1c","#fd8d3c","#ffe600","#a6d96a","#31a354","#006837"
-  ].map((c, i, a) => { const [r,g,b] = vivid(c, 1.5, 0.16); return { pos: i/(a.length-1), r, g, b }; }),
+    "#a50026","#d73027","#f46d43","#fdae61","#fee08b",
+    "#ffffbf","#d9ef8b","#a6d96a","#66bd63","#1a9850","#006837"
+  ].map((c, i, a) => { const [r,g,b] = hex(c); return { pos: i/(a.length-1), r, g, b }; }),
 
+  // 2) Water — NDWI (زي تاني صورة: أخضر-أصفر أرض → تركواز → أزرق غامق مياه)
   rdbu: [
-    "#67001f","#b2182b","#d6604d","#f4a582","#fddbc7","#d1e5f0","#4393c3","#2166ac","#053061"
-  ].map((c, i, a) => { const [r,g,b] = vivid(c); return { pos: i/(a.length-1), r, g, b }; }),
+    "#d9ef8b","#a6d96a","#66c2a5","#3288bd","#2166ac","#08306b","#062254"
+  ].map((c, i, a) => { const [r,g,b] = hex(c); return { pos: i/(a.length-1), r, g, b }; }),
 
+  // 3) Moisture — NDMI (درجات مسحوبة فعليًا من الـ colorbar بتاع صورة 3:
+  // أبيض/وردي جفاف → بيج/برتقالي → أصفر → أخضر فاتح → أخضر غامق رطوبة)
   rdbu_r: [
-    "#b35806","#e08214","#fdb863","#fee0b6","#f7f7f7","#d8daeb","#998ec3","#7b3294","#40004b"
-  ].map((c, i, a) => { const [r,g,b] = vivid(c); return { pos: i/(a.length-1), r, g, b }; }),
+    "#f3f1f4","#f0cac1","#eeb780","#ebb25b","#e8c32d",
+    "#e7e600","#9fd601","#2ab900","#02a402"
+  ].map((c, i, a) => { const [r,g,b] = hex(c); return { pos: i/(a.length-1), r, g, b }; }),
 
+  // 4) Spectral — Viridis (زي صورة الـ bands: بنفسجي غامق → أزرق → أخضر → أصفر)
   spectral: [
-    "#9e0142","#d53e4f","#f46d43","#fdae61","#fee08b","#e6f598","#abdda4","#66c2a5","#3288bd","#5e4fa2"
-  ].map((c, i, a) => { const [r,g,b] = vivid(c); return { pos: i/(a.length-1), r, g, b }; }),
+    "#440154","#482878","#3e4989","#31688e","#26828e",
+    "#1f9e89","#35b779","#6ece58","#b5de2b","#fde725"
+  ].map((c, i, a) => { const [r,g,b] = hex(c); return { pos: i/(a.length-1), r, g, b }; }),
 
+  // 5) Spectral R — False-color احمر/بني (زي صورة Landsat false color)
   spectral_r: [
-    "#d73027","#f46d43","#fdae61","#ffffbf","#d9ef8b","#a6d96a","#74add1","#4575b4","#313695"
-  ].map((c, i, a) => { const [r,g,b] = vivid(c); return { pos: i/(a.length-1), r, g, b }; }),
+    "#08306b","#2166ac","#4393c3","#92c5de","#f4a582","#d6604d","#b2182b","#67001f"
+  ].map((c, i, a) => { const [r,g,b] = hex(c); return { pos: i/(a.length-1), r, g, b }; }),
 
-  // OSI / Oil-Spill style — بنفسجي/وردي/برتقالي/أصفر حاد (زي Aurora)
+  // 6) Thermal — درجات مسحوبة فعليًا من colorbar صورة الحرارة (Surface Temp):
+  // أبيض/بنفسجي فاتح بارد → أزرق → تركواز → أخضر → أصفر → برتقالي → أحمر → عنابي حار
   magma: [
-    "#2c0735","#6a0dad","#c71585","#ff1493","#ff6347","#ffa500","#ffd700","#ffff66"
-  ].map((c, i, a) => { const [r,g,b] = vivid(c, 1.5, 0.16); return { pos: i/(a.length-1), r, g, b }; }),
+    "#f6f6fd","#a0abed","#358dc5","#278da6","#78b49c",
+    "#e3dc85","#f4b46b","#da5b52","#a21643","#61031f"
+  ].map((c, i, a) => { const [r,g,b] = hex(c); return { pos: i/(a.length-1), r, g, b }; }),
 
+  // 7) Greens — ColorBrewer Greens sequential (زي خريطة GRASS الغطاء النباتي)
   greens: [
-    "#ffffe5","#f7fcb9","#d9f0a3","#addd8e","#78c679","#41ab5d","#238443","#005a32"
-  ].map((c, i, a) => { const [r,g,b] = vivid(c); return { pos: i/(a.length-1), r, g, b }; }),
+    "#f7fcf5","#e5f5e0","#c7e9c0","#a1d99b","#74c476",
+    "#41ab5d","#238b45","#006d2c","#00441b"
+  ].map((c, i, a) => { const [r,g,b] = hex(c); return { pos: i/(a.length-1), r, g, b }; }),
 
+  // 8) Heat — بنفسجي/أزرق → سماوي → أخضر → أصفر → برتقالي → أحمر (زي صورة الكثافة)
   rdylbu_r: [
-    "#f7fbff","#deebf7","#c6dbef","#9ecae1","#6baed6","#4292c6","#2171b5","#08519c","#08306b"
-  ].map((c, i, a) => { const [r,g,b] = vivid(c); return { pos: i/(a.length-1), r, g, b }; }),
+    "#4b0082","#6a00a8","#0000ff","#00bfff","#00ffea",
+    "#00ff40","#ffff00","#ff8000","#ff0000"
+  ].map((c, i, a) => { const [r,g,b] = hex(c); return { pos: i/(a.length-1), r, g, b }; }),
 
-  // Inferno — كثافة/heatmap: غامق-بنفسجي → بنفسجي → وردي-أحمر → برتقالي → أصفر فاقع
+  // 9) Inferno — matplotlib inferno الرسمي (زي آخر صورة)
   inferno: [
-    "#000004","#1b0c41","#4a0c6b","#781c6d","#a52c60","#cf4446","#ed6925","#fb9b06","#f7d13d","#fcffa4"
-  ].map((c, i, a) => { const [r,g,b] = vivid(c, 1.45, 0.14); return { pos: i/(a.length-1), r, g, b }; }),
+    "#000004","#1b0c41","#4a0c6b","#781c6d","#a52c60",
+    "#cf4446","#ed6925","#fb9b06","#f7d13d","#fcffa4"
+  ].map((c, i, a) => { const [r,g,b] = hex(c); return { pos: i/(a.length-1), r, g, b }; }),
 };
 
 // interpolate بين أقرب stopين
@@ -181,6 +196,7 @@ export async function GET(req: NextRequest) {
   // ده بيمسك الحالة اللي الباكند بيـ"snap" فيها الـ bbox لشبكة بكسلات المصدر
   // فيرجّع صورة بتغطي مساحة أكبر شوية من اللي اتطلبت (مشكلة ArcGIS Pro).
   let realBbox: [number, number, number, number] | null = null;
+  let nodataMask: Uint8Array | null = null; // 1 = pixel is masked/outside the polygon, 0 = valid
   try {
     const arrayBuffer = tifBuffer.buffer.slice(
       tifBuffer.byteOffset,
@@ -189,6 +205,28 @@ export async function GET(req: NextRequest) {
     const tiff = await fromArrayBuffer(arrayBuffer as ArrayBuffer);
     const image = await tiff.getImage();
     let bbox = image.getBoundingBox(); // [west, south, east, north] في الـ CRS الأصلي بتاع الملف
+
+    // ── نقرا الـ nodata الحقيقي (اللي كتبه raster_calc.py، الافتراضي -9999)
+    // من الـ GDAL_NODATA tag جوه الملف نفسه — عشان نعرف بالظبط أنهي بكسلات
+    // اتحطت NaN بسبب إنها برّه الـ polygon اللي رسمه اليوزر.
+    const gdalNoData = image.getGDALNoData?.();
+    if (gdalNoData !== null && gdalNoData !== undefined && Number.isFinite(gdalNoData)) {
+      try {
+        const rasters = await image.readRasters({ interleave: false });
+        const band = rasters[0] as unknown as Float32Array | Float64Array;
+        const mask = new Uint8Array(band.length);
+        for (let i = 0; i < band.length; i++) {
+          const v = band[i];
+          if (Number.isNaN(v) || Math.abs(v - gdalNoData) < 1e-3) {
+            mask[i] = 1;
+          }
+        }
+        nodataMask = mask;
+        console.log("🎭 raster-proxy: nodata mask built, masked pixels:", mask.reduce((a, b) => a + b, 0), "/", mask.length);
+      } catch (maskErr) {
+        console.warn("⚠️ raster-proxy: could not build nodata mask, falling back to unmasked render:", maskErr);
+      }
+    }
 
     // ── الـ CRS مش بالضرورة WGS84! لو Sentinel-2 محفوظ بـ UTM مثلًا، الأرقام
     // دي بتكون متر (آلاف) مش درجات — وده اللي بيعمل الزوم-أوت الجامد.
@@ -284,9 +322,17 @@ export async function GET(req: NextRequest) {
   let graySum = 0;
 
   const rgbaData = Buffer.alloc(width * height * 4);
+  // نتأكد إن الـ mask بنفس حجم الصورة قبل ما نستخدمه (احتياطًا لو فيه
+  // اختلاف نادر بين قراءة sharp وقراءة geotiff.js لأي سبب)
+  const maskUsable = nodataMask !== null && nodataMask.length === width * height;
+  if (nodataMask !== null && !maskUsable) {
+    console.warn("⚠️ raster-proxy: nodata mask size mismatch, ignoring mask:", nodataMask.length, "vs", width * height);
+  }
+
   for (let i = 0; i < width * height; i++) {
     const v = grayData[i];                // 0-255
-    const alpha = alphaLUT[v];
+    const isMasked = maskUsable && nodataMask![i] === 1;
+    const alpha = isMasked ? 0 : alphaLUT[v];
     if (alpha > 0) {
       validPixels += 1;
       grayMin = Math.min(grayMin, v);

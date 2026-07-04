@@ -1100,6 +1100,7 @@ export default function MapPage() {
       onLayer3D={handleOpen3D}
       onSatellitePreview={handleSatellitePreview}
       onRasterPreview={handleRasterPreview}
+      onChangeDetectionPreview={handleChangeDetectionPreview}
       onOpenElevationFloat={() => setElevationFloatOpen(true)}
     />
   ), [

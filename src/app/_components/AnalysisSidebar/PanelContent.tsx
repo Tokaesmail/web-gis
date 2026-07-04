@@ -7,12 +7,13 @@ import { CapturesPanel } from "./CapturesPanel";
 import { NDVILivePanel, OverviewLivePanel, WeatherLivePanel } from "./LivePanels";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
 import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
-import { ChangeDetectionPanel, type ChangeDetectionPreviewConfig } from "./ChangeDetectionPanel";
+import { ChangeDetectionPanel, type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
 import { getMidCoords } from "./geoFeatureUtils";
 import { PanelId } from "./panels";
 import { CropsPanel } from "./CropsPanel";
 import VolumeCalculationPanel from "./VolumeCalculationPanel";
 import ElevationContourPanel from "./ElevationContourPanel";
+import SavedAnalysesPanel from "./SavedAnalysesPanel";
 
 export function PanelContent({
   id,
@@ -43,6 +44,7 @@ export function PanelContent({
   onSatellitePreview,
   onRasterPreview,
   onChangeDetectionPreview,
+  onChangeDetectionSwipe,
   onOpenElevationFloat,
 }: {
   id: PanelId;
@@ -74,6 +76,8 @@ export function PanelContent({
   onSatellitePreview?: (config: SatellitePreviewConfig) => void;
   onRasterPreview?: (config: RasterPreviewConfig) => void;
   onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
+  /** Real, georeferenced Before/After swipe on the actual map (Change Detection only). Pass null to hide it. */
+  onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
 }) {
   const [ndviExportData, setNdviExportData] = useState<any>(null);
   const ndviPanelRef = useRef<HTMLDivElement>(null);
@@ -91,7 +95,13 @@ export function PanelContent({
   }
 
   if (id === "change-detection") {
-    return <ChangeDetectionPanel selectedFeature={selectedFeature} onPreview={onChangeDetectionPreview} />;
+    return (
+      <ChangeDetectionPanel
+        selectedFeature={selectedFeature}
+        onPreview={onChangeDetectionPreview}
+        onSwipeCompare={onChangeDetectionSwipe}
+      />
+    );
   }
 
   if (id === "ndvi") {
@@ -211,6 +221,9 @@ export function PanelContent({
       />
     );
   }
+  if (id === "saved-analyses") {
+  return <SavedAnalysesPanel />;
+}
 
   if (id === "layers") {
     return (

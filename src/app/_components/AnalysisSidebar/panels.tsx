@@ -12,7 +12,8 @@ export type PanelId =
   | "layers"
   | "crops"
   | "template-match"
-  | "volume";
+  | "volume"
+  | "saved-analyses";
 
 interface PanelItem {
   id: PanelId;
@@ -177,4 +178,15 @@ export const panels: PanelItem[] = [
     ),
     badge: "VOL",
   },
+  {
+  id: "saved-analyses",
+  labelEn: "Saved Analyses",
+  labelAr: "التحليلات المحفوظة",
+  icon: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v5M14 11v5" />
+    </svg>
+  ),
+  badge: "DB",
+},
 ];

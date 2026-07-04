@@ -215,7 +215,7 @@ export function useMapCanvas() {
       // ── Resize الـ full viewport لـ FIXED_W×FIXED_H ──────────────────────
       const fixedLarge  = resizeToFixed(combined);
       const largeBlob: Blob = await new Promise((res, rej) =>
-        fixedLarge.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/png")
+        fixedLarge.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/jpeg", 0.92)
       );
 
       return {
@@ -230,72 +230,73 @@ export function useMapCanvas() {
       };
     }
 
-    // ③ الـ fix: resize الـ full image الأول، وبعدين نقطع منه
-    // ده بيضمن إن الـ template والـ search area على نفس الـ scale دايماً
-    const fixedFull = resizeToFixed(combined);
-    const fixedBase = resizeToFixed(base);
+    // ③ الـ fix: نقطع أول حاجة على الـ resolution الأصلي (أصغر بكتير من الـ full viewport)،
+    // وبعدين نعمل resize للقطعة الصغيرة بس — بدل ما كنا بنعمل resize للـ viewport
+    // الكامل مرتين (combined + base) وده اللي كان بياخد وقت طويل جداً.
+    // الـ scale factor بين الـ native viewport والـ FIXED_W×FIXED_H بيفضل ثابت
+    // فمفيش أي فرق في الدقة أو في اتساق الـ GSD بين الصورتين.
+    const scaleX = FIXED_W / combined.width;
+    const scaleY = FIXED_H / combined.height;
 
-    // احسب نسبة الـ resize اللي حصلت
-    const scaleX = fixedFull.width  / combined.width;
-    const scaleY = fixedFull.height / combined.height;
-
-    // حوّل الـ coordinates للـ pixel space بعد الـ resize
     const px = coordinates.map((p) =>
       mapInstance.latLngToContainerPoint(L.latLng(p.lat, p.lng))
     );
-    const scaledPx = px.map((p) => ({
-      x: p.x * scaleX,
-      y: p.y * scaleY,
-    }));
-
-    const xs = scaledPx.map((p) => p.x);
-    const ys = scaledPx.map((p) => p.y);
+    const xs = px.map((p) => p.x);
+    const ys = px.map((p) => p.y);
     const minX = Math.max(0, Math.floor(Math.min(...xs)));
     const minY = Math.max(0, Math.floor(Math.min(...ys)));
-    const maxX = Math.min(fixedFull.width,  Math.ceil(Math.max(...xs)));
-    const maxY = Math.min(fixedFull.height, Math.ceil(Math.max(...ys)));
-    const cropW = Math.max(1, maxX - minX);
-    const cropH = Math.max(1, maxY - minY);
+    const maxX = Math.min(combined.width,  Math.ceil(Math.max(...xs)));
+    const maxY = Math.min(combined.height, Math.ceil(Math.max(...ys)));
+    const nativeCropW = Math.max(1, maxX - minX);
+    const nativeCropH = Math.max(1, maxY - minY);
 
-    // قطع الـ template من الـ fixedFull (مع overlay)
+    const cropW = Math.max(1, Math.round(nativeCropW * scaleX));
+    const cropH = Math.max(1, Math.round(nativeCropH * scaleY));
+
+    const clipToPolygon = (ctx: CanvasRenderingContext2D) => {
+      ctx.beginPath();
+      px.forEach(({ x, y }, i) => {
+        const sx = (x - minX) * scaleX;
+        const sy = (y - minY) * scaleY;
+        i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+      });
+      ctx.closePath();
+      ctx.clip();
+    };
+
+    // قطع الـ template من الـ combined (مع overlay) — قطعة واحدة بحجمها الصغير بس
     const smallCanvas = document.createElement("canvas");
     smallCanvas.width  = cropW;
     smallCanvas.height = cropH;
     const smallCtx = smallCanvas.getContext("2d")!;
-    // clip بشكل الـ polygon الأصلي
-    smallCtx.beginPath();
-    scaledPx.forEach(({ x, y }, i) =>
-      i === 0 ? smallCtx.moveTo(x - minX, y - minY) : smallCtx.lineTo(x - minX, y - minY)
-    );
-    smallCtx.closePath();
-    smallCtx.clip();
-    smallCtx.drawImage(fixedFull, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
+    clipToPolygon(smallCtx);
+    smallCtx.drawImage(combined, minX, minY, nativeCropW, nativeCropH, 0, 0, cropW, cropH);
 
-    // قطع الـ rawSelected من الـ fixedBase (بدون overlay)
+    // قطع الـ rawSelected من الـ base (بدون overlay)
     const rawCanvas = document.createElement("canvas");
     rawCanvas.width  = cropW;
     rawCanvas.height = cropH;
     const rawCtx = rawCanvas.getContext("2d")!;
-    rawCtx.beginPath();
-    scaledPx.forEach(({ x, y }, i) =>
-      i === 0 ? rawCtx.moveTo(x - minX, y - minY) : rawCtx.lineTo(x - minX, y - minY)
-    );
-    rawCtx.closePath();
-    rawCtx.clip();
-    rawCtx.drawImage(fixedBase, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
+    clipToPolygon(rawCtx);
+    rawCtx.drawImage(base, minX, minY, nativeCropW, nativeCropH, 0, 0, cropW, cropH);
 
-    const rawSelectedBlob: Blob = await new Promise((res, rej) =>
-      rawCanvas.toBlob((b) => b ? res(b) : rej(new Error("Raw crop toBlob failed")), "image/png")
-    );
+    // الـ large لسه محتاج resize للـ viewport الكامل، بس مرة واحدة بس دلوقتي
+    const fixedFull = resizeToFixed(combined);
 
-    const smallBlob: Blob = await new Promise((res, rej) =>
-      smallCanvas.toBlob((b) => b ? res(b) : rej(new Error("Small toBlob failed")), "image/png")
-    );
+    // PNG للصور اللي بتتغذّى لخوارزمية الـ matching (لازم دقة بكسل بالظبط، من غير
+    // ضغط بيفقد تفاصيل). JPEG للـ large لأنها للعرض/context بس، وده أسرع أوي في الـ encode.
+    const [rawSelectedBlob, smallBlob, largeFinalBlob] = await Promise.all([
+      new Promise<Blob>((res, rej) =>
+        rawCanvas.toBlob((b) => b ? res(b) : rej(new Error("Raw crop toBlob failed")), "image/png")
+      ),
+      new Promise<Blob>((res, rej) =>
+        smallCanvas.toBlob((b) => b ? res(b) : rej(new Error("Small toBlob failed")), "image/png")
+      ),
+      new Promise<Blob>((res, rej) =>
+        fixedFull.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/jpeg", 0.92)
+      ),
+    ]);
 
-    // الـ large image هو الـ fixedFull (full viewport بعد الـ resize)
-    const largeFinalBlob: Blob = await new Promise((res, rej) =>
-      fixedFull.toBlob((b) => b ? res(b) : rej(new Error("Large toBlob failed")), "image/png")
-    );
     return {
       captureTarget,
       smallBlob,

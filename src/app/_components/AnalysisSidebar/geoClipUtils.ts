@@ -6,6 +6,25 @@
 // SatelliteDataPanel (plain scene previews) so a selected AOI always shows
 // as its real shape instead of a rectangle.
 
+/** Converts a circle (center lat/lng in degrees + radius in meters) into a
+ * closed ring of [lng,lat] points, using the same geodesic-offset approach
+ * PlanetaryRasterPanel uses when it builds the geometry sent to the backend —
+ * kept in sync so the client-side clip matches the server-side mask exactly. */
+function circleToRing(lat: number, lng: number, radiusMeters: number, points = 64): [number, number][] {
+  const EARTH_RADIUS = 6371008.8; // متوسط نصف قطر الأرض بالمتر
+  const latRad = (lat * Math.PI) / 180;
+  const ring: [number, number][] = [];
+  for (let i = 0; i <= points; i++) {
+    const bearing = (i / points) * 2 * Math.PI;
+    const dLat = (radiusMeters * Math.cos(bearing)) / EARTH_RADIUS;
+    const dLng = (radiusMeters * Math.sin(bearing)) / (EARTH_RADIUS * Math.cos(latRad));
+    const ptLat = lat + (dLat * 180) / Math.PI;
+    const ptLng = lng + (dLng * 180) / Math.PI;
+    ring.push([ptLng, ptLat]);
+  }
+  return ring;
+}
+
 /** Returns the outer ring of a Polygon/MultiPolygon as [lng,lat] pairs, or
  * null if the feature isn't a polygon (e.g. a point or a plain map-view
  * fallback) — clipping only makes sense for an actual drawn shape. */
@@ -18,6 +37,21 @@ export function getPolygonRing(feature?: GeoJSON.Feature | null): [number, numbe
   if (g.type === "MultiPolygon" && Array.isArray(g.coordinates?.[0]?.[0])) {
     return g.coordinates[0][0] as [number, number][];
   }
+
+  // Circle: usually stored as a Point + a radius (meters) — either inside
+  // `properties` (common with leaflet-draw / geoman) or next to the
+  // coordinates themselves. Without this, circles never got a ring and
+  // clipImageToPolygon() silently left them as an unclipped rectangle.
+  const radius: number | undefined =
+    (feature as any)?.properties?.radius ??
+    (feature as any)?.properties?.circleRadius ??
+    (g as any)?.radius;
+
+  if (g.type === "Point" && Array.isArray(g.coordinates) && typeof radius === "number" && radius > 0) {
+    const [lng, lat] = g.coordinates as [number, number];
+    return circleToRing(lat, lng, radius);
+  }
+
   return null;
 }
 

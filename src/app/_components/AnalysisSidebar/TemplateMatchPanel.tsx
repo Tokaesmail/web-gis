@@ -21,20 +21,14 @@ interface TemplateMatchPanelProps {
 
 type EnvironmentMode = "CITY" | "FARM";
 
-const getImageSize = (blob: Blob) =>
-  new Promise<{ width: number; height: number }>((resolve, reject) => {
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve({ width: img.naturalWidth, height: img.naturalHeight });
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("Could not read capture image size"));
-    };
-    img.src = url;
-  });
+const getImageSize = async (blob: Blob) => {
+  // createImageBitmap بيفك تشفير الصورة بشكل أسرع وأخف من new Image() + object URL،
+  // ومش محتاج revoke ولا انتظار حدث onload على الـ DOM
+  const bitmap = await createImageBitmap(blob);
+  const size = { width: bitmap.width, height: bitmap.height };
+  bitmap.close();
+  return size;
+};
 
 // ── حساب الأبعاد الحقيقية بالمتر لأي bounds جغرافية (تقريب مسطّح كافي للمساحات الصغيرة) ──
 const METERS_PER_DEGREE_LAT = 111320;
@@ -56,44 +50,30 @@ const MAP_MAX_DIM_PX = 1280;
  * بياخد Blob صورة ويعمله resize لأبعاد بكسل محددة (width × height) بدون أي letterbox
  * أو حواف سودا — الصورة بتتمطّط عشان تملأ الأبعاد المطلوبة بالظبط.
  */
-const resizeBlobToDims = (blob: Blob, width: number, height: number): Promise<Blob> =>
-  new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
+const resizeBlobToDims = async (blob: Blob, width: number, height: number): Promise<Blob> => {
+  // createImageBitmap أسرع في الفك من new Image()+object URL، ومفيش object URL
+  // نسيبه معلق لو حصل خطأ في النص
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("resizeBlobToDims: canvas context unavailable");
 
-    img.onload = () => {
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          URL.revokeObjectURL(url);
-          reject(new Error("resizeBlobToDims: canvas context unavailable"));
-          return;
-        }
+    ctx.drawImage(bitmap, 0, 0, width, height);
 
-        ctx.drawImage(img, 0, 0, width, height);
-
-        canvas.toBlob(
-          (out) => {
-            URL.revokeObjectURL(url);
-            if (out) resolve(out);
-            else reject(new Error("resizeBlobToDims: toBlob failed"));
-          },
-          "image/png"
-        );
-      } catch (e) {
-        URL.revokeObjectURL(url);
-        reject(e);
-      }
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("resizeBlobToDims: could not load image"));
-    };
-    img.src = url;
-  });
+    const out = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error("resizeBlobToDims: toBlob failed"))),
+        "image/png"
+      )
+    );
+    return out;
+  } finally {
+    bitmap.close();
+  }
+};
 
 export default function TemplateMatchPanel({
   onResult,
