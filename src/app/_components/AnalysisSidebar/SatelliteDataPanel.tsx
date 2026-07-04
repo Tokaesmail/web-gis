@@ -3,6 +3,7 @@ import { IdxKey, SatKey } from "../../map/mapTypes_proxy";
 import { SATELLITE_LEGENDS, SATELLITE_PIPELINES, type SatelliteAnalysisType, type SatelliteViewerMode } from "./SatellitePipelines";
 import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
 import { clipImageToPolygon, getPolygonRing } from "./geoClipUtils";
+import { setSelectedScene, openRasterCalculatorPanel } from "./sharedSceneSelection";
 
 export type SatellitePreviewConfig = {
   source: "sentinel-2" | "landsat";
@@ -832,7 +833,24 @@ useEffect(() => {
     }
   };
 
-  const makePlanetaryComputerPreviewUrl = (scene: SatelliteScene, analysis: AnalysisType) => {
+  // Analysis type (Panel) → "type" param اللي الـ /api/raster-proxy/analyze route عايزه
+  const RASTER_PROXY_TYPE: Record<AnalysisType, "rgb" | "swir" | "ndvi" | "ndwi" | "ndmi"> = {
+    RGB: "rgb",
+    SWIR: "swir",
+    NDVI: "ndvi",
+    NDWI: "ndwi",
+    NDMI: "ndmi",
+  };
+
+  // بديل makePlanetaryComputerPreviewUrl — بيبني رابط الـ backend الجديد
+  // /api/raster-proxy/analyze بدل ما يودّي على titiler بتاع Planetary Computer.
+  // التوقيع (SAS signing) بقى بيحصل جوه الـ route نفسه (مع caching) بدل ما
+  // الفرونت تعمل 2-3 requests منفصلة لـ Planetary Computer قبل ما تكلم
+  // الباك بتاعنا أصلًا — ده كان بيضيف latency واضح قبل ما أي حاجة تتبعت.
+  const makeRasterProxyAnalyzeUrl = (
+    scene: SatelliteScene,
+    analysis: AnalysisType
+  ): string | undefined => {
     if (
       !scene.id ||
       !scene.collection ||
@@ -842,44 +860,43 @@ useEffect(() => {
     }
 
     const visualization = getVisualization(analysis, scene.collection);
+    const assetUrlMap = getSceneAssetUrls(scene, analysis);
 
-    // حساب dimensions نسبية للـ AOI عشان الصورة متتمددش
-    const aoiW = east - west;
-    const aoiH = north - south;
-    const ratio = aoiW / (aoiH || 0.001);
-    const BASE = 1024;
-    const imgW = ratio >= 1 ? BASE : Math.round(BASE * ratio);
-    const imgH = ratio >= 1 ? Math.round(BASE / ratio) : BASE;
-
-    // /bbox/ endpoint: bbox في الـ PATH مش query param — هذا هو الإصلاح الأساسي
-    // /preview.png بيتجاهل bbox كـ query param تماماً
-    const bboxPath = `${west},${south},${east},${north}`;
-    const BASE_URL = `https://planetarycomputer.microsoft.com/api/data/v1/item/bbox/${bboxPath}/${imgW}x${imgH}.png`;
-    const url = new URL(BASE_URL);
-    url.searchParams.set("collection", scene.collection);
-    url.searchParams.set("item", scene.id);
-    url.searchParams.set("asset_as_band", "true");
-    url.searchParams.set("resampling", "nearest");
-
-    if (visualization.expression) {
-      const style = getIndexPreviewStyle(analysis);
-      url.searchParams.set("expression", visualization.expression);
-      url.searchParams.set("rescale", style.rescale);
-      url.searchParams.set("colormap_name", style.colormap);
-    } else {
-      // Sentinel-2 L2A: surface reflectance 0-10000, مش 0-4000
-      // 0,3000 أفضل للـ RGB عشان الألوان ما تبقاش باهتة
-      url.searchParams.set("rescale", "0,3000");
-      visualization.assets.forEach((asset) => {
-        url.searchParams.append("assets", asset);
-      });
-      if (analysis === "SWIR") {
-        url.searchParams.set("color_formula", "Gamma RGB 1.2 Saturation 1.15");
-      }
+    // لازم نحافظ على ترتيب الـ bands زي ما route.ts متوقعه
+    // (rgb/swir → 3 بواندات، ndvi/ndwi/ndmi → 2 بواندات بترتيب معين)
+    const rawUrls = visualization.assets.map((assetKey) => assetUrlMap[assetKey]).filter(Boolean);
+    if (rawUrls.length !== visualization.assets.length) {
+      return scene.previewUrl ?? scene.thumbnail ?? scene.itemUrl;
     }
 
-    return url.toString();
+    // بنبعت الروابط الخام (Unsigned) زي ما هي — الـ route هو اللي هيوقّعها
+    // ويعمل cache للتوقيع، فمفيش أي request منفصل هنا قبل الوصول للباك.
+    const type = RASTER_PROXY_TYPE[analysis];
+    const params = new URLSearchParams();
+    params.set("type", type);
+    params.set("urls", rawUrls.join(","));
+    // bbox إلزامي في الـ route — من غيره هيحاول يقرا الـ scene كاملة ويعلّق
+    params.set("bbox", `${west},${south},${east},${north}`);
+
+    if (visualization.expression) {
+      // index (ndvi/ndwi/ndmi): نبعت الـ rescale المخصص للـ analysis
+      // الـ colormap بنسيبه على default الـ route نفسه (rdylgn/rdbu/greens)
+      const style = getIndexPreviewStyle(analysis);
+      const [minVal, maxVal] = style.rescale.split(",");
+      params.set("min", minVal);
+      params.set("max", maxVal);
+    } else {
+      // composite (rgb/swir)
+      params.set("gamma", analysis === "SWIR" ? "1.2" : "1.35");
+      params.set("sharpen", "1");
+    }
+
+    return `/api/raster-proxy/analyze?${params.toString()}`;
   };
+
+  const hasPreviewSource = (scene: SatelliteScene, analysis: AnalysisType) =>
+    Boolean(scene.previewUrl ?? scene.thumbnail ?? scene.itemUrl) ||
+    sceneHasVisualizationAssets(scene, analysis);
 
   
 
@@ -975,14 +992,14 @@ useEffect(() => {
 
   const handlePreviewScene = async (scene: SatelliteScene) => {
   const analysis = activeAnalysis;
-  const rawPreviewUrl = makePlanetaryComputerPreviewUrl(scene, analysis);
+  const rawPreviewUrl = makeRasterProxyAnalyzeUrl(scene, analysis);
   
   // تعديل أساسي: اجعلي الخريطة تركز وتتعامل مع الـ AOI bounds الخاص بكِ مباشرة لمنع الـ Zoom Out العنيف
   const sceneBounds = bounds; 
   
   const sceneCoords = boundsCenter(sceneBounds);
   const visualization = getVisualization(analysis, scene.collection);
-  const overviewUrl = scene.previewUrl ?? scene.thumbnail ?? makePlanetaryComputerPreviewUrl(scene, "RGB");
+  const overviewUrl = scene.previewUrl ?? scene.thumbnail ?? makeRasterProxyAnalyzeUrl(scene, "RGB");
 
   setPreviewingSceneId(scene.id);
   setSceneError(null);
@@ -1039,10 +1056,46 @@ if (previewUrl && scenePreviewUrls[scene.id] !== previewUrl) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAnalysis]);
 
-  const handleOpenScene = (scene: SatelliteScene) => {
-  const url = clippedThumbs[scene.id] ?? scene.previewUrl ?? scene.thumbnail ?? scene.itemUrl;
+// المتصفحات الحديثة (خصوصًا Chrome) بتمنع window.open على data: URLs مباشرة
+// (بترجع تاب فاضي/about:blank كإجراء أمان) — ده اللي كان بيخلي "Open" مايعملش
+// حاجة لما "Clip to drawn shape" يكون شغال، لإن clipImageToPolygon بترجع
+// data URL. الحل: نحوّلها لـ Blob ونفتح object URL بدالها (مسموح بيه).
+function openImageUrlSafely(url: string) {
+  if (!url.startsWith("data:")) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  try {
+    const [meta, base64] = url.split(",");
+    const mimeMatch = meta.match(/data:([^;]+);base64/);
+    const mime = mimeMatch?.[1] ?? "image/png";
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mime });
+    const objectUrl = URL.createObjectURL(blob);
+    const opened = window.open(objectUrl, "_blank", "noopener,noreferrer");
+    // لو المتصفح لسه عامل block (popup blocker)، سيبيها فترة أطول عشان مايتقفلش الـ objectUrl قبل ما يستخدمه
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), opened ? 60_000 : 5_000);
+  } catch {
+    // fallback أخير: لو فشل التحويل لأي سبب، جرّبي تفتحيه زي ما هو
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
+  const handleOpenScene = async (scene: SatelliteScene) => {
+  const analysis = activeAnalysis;
+  // نفس مصدر الصورة اللي بيتعرض في "Preview on map" وبينزل في "Download PNG"،
+  // مش الـ thumbnail الصغير بتاع STAC (ده كان بيبقى undefined غالبًا فالزرار ميعملش حاجة)
+  const url =
+    scenePreviewUrls[scene.id] ??
+    makeRasterProxyAnalyzeUrl(scene, analysis) ??
+    clippedThumbs[scene.id] ??
+    scene.previewUrl ??
+    scene.thumbnail ??
+    scene.itemUrl;
   if (!url) return;
-  window.open(url, "_blank", "noopener,noreferrer");
+  openImageUrlSafely(url);
 };
 
   const handleDownloadScene = async (scene: SatelliteScene) => {
@@ -1053,7 +1106,7 @@ if (previewUrl && scenePreviewUrls[scene.id] !== previewUrl) {
 
     try {
       if (format === "png") {
-        const imageUrl = scenePreviewUrls[scene.id] ?? makePlanetaryComputerPreviewUrl(scene, analysis);
+        const imageUrl = scenePreviewUrls[scene.id] ?? makeRasterProxyAnalyzeUrl(scene, analysis);
         if (!imageUrl) return;
         await downloadExternalFile(imageUrl, `${baseName}.png`);
         return;
@@ -1434,7 +1487,7 @@ if (previewUrl && scenePreviewUrls[scene.id] !== previewUrl) {
                   <button
                     type="button"
                     onClick={() => handleOpenScene(scene)}
-                    disabled={!makePlanetaryComputerPreviewUrl(scene, activeAnalysis)}
+                    disabled={!hasPreviewSource(scene, activeAnalysis)}
                     className="h-7 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 text-[0.62rem] font-medium text-slate-300 transition-colors hover:border-cyan-400/30 hover:bg-cyan-400/10 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-45"
                   >
                     Open
@@ -1448,6 +1501,25 @@ if (previewUrl && scenePreviewUrls[scene.id] !== previewUrl) {
                 className="h-7 rounded-md border border-cyan-400/20 bg-cyan-400/10 px-2 text-[0.62rem] font-semibold text-cyan-200 transition-colors hover:border-cyan-400/40 hover:bg-cyan-400/15 disabled:cursor-wait disabled:opacity-55"
               >
                 {previewingSceneId === scene.id ? "..." : "Preview on map"}
+              </button>
+            </div>
+
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedScene({
+                    id: scene.id,
+                    collection: scene.collection,
+                    date: scene.date,
+                    cloud: scene.cloud,
+                  });
+                  openRasterCalculatorPanel();
+                }}
+                className="h-7 w-full rounded-md border border-emerald-400/25 bg-emerald-400/[0.08] px-2 text-[0.62rem] font-semibold text-emerald-200 transition-colors hover:border-emerald-400/45 hover:bg-emerald-400/15"
+                title="Sends this exact scene to Raster Calculator, skipping its own date/cloud search"
+              >
+                Use this scene in Raster Calculator
               </button>
             </div>
 

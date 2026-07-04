@@ -21,7 +21,7 @@ import LayerPanel, { MapLayer } from "./LayerPanel";
 import ProjectStartDialog from "./projects/ProjectStartDialog";
 import { updateProject } from "./projects/projectStorage";
 import type { ProjectSnapshot, UserProject } from "./projects/projectTypes";
-import type { ChangeDetectionPreviewConfig } from "../_components/AnalysisSidebar/ChangeDetectionPanel";
+import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from "../_components/AnalysisSidebar/ChangeDetectionPanel";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
@@ -141,6 +141,7 @@ export default function MapPage() {
   const changeOpacityRef       = useRef<((o: number) => void) | null>(null);
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
   const rasterOverlayRef       = useRef<((config: RasterPreviewConfig) => void) | null>(null);
+  const swipeCompareRef        = useRef<((config: ChangeDetectionSwipeConfig | null) => void) | null>(null);
   const lastCoordsRef          = useRef<{ lat: number; lng: number }>({ lat: 30.0, lng: 31.0 });
   const lastActivePanelRef     = useRef<string>("overview");
 
@@ -882,6 +883,11 @@ export default function MapPage() {
   });
 }, []);
 
+  // ── Change Detection: Before/After swipe overlay on the map ───────────────
+  const handleSwipeCompare = useCallback((config: ChangeDetectionSwipeConfig | null) => {
+    swipeCompareRef.current?.(config);
+  }, []);
+
   // Sync uploaded GeoJSON as layers
   useEffect(() => {
     const uploadedIds = Object.keys(uploadedGeoJsonMap).map(name => `uploaded_${name}`);
@@ -1101,6 +1107,7 @@ export default function MapPage() {
       onSatellitePreview={handleSatellitePreview}
       onRasterPreview={handleRasterPreview}
       onChangeDetectionPreview={handleChangeDetectionPreview}
+      onChangeDetectionSwipe={handleSwipeCompare}
       onOpenElevationFloat={() => setElevationFloatOpen(true)}
     />
   ), [
@@ -1132,6 +1139,7 @@ export default function MapPage() {
     handleSatellitePreview,
     handleRasterPreview,
     handleChangeDetectionPreview,
+    handleSwipeCompare,
   ]);
 
   const toggle2DButton = useMemo(() => (

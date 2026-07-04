@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useLang } from "../translations";
 import JSONUploadModal from "./DataManagerPanel";
 import { type MapCapture } from "./TemplateMatchPanel";
@@ -12,6 +12,7 @@ import { type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } fr
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
 import SavedAnalysesPanel from "./SavedAnalysesPanel";
 import VolumeCalculationPanel from "./VolumeCalculationPanel";
+import { OPEN_RASTER_CALCULATOR_EVENT } from "./sharedSceneSelection";
 
 export default function AnalysisSidebar(
   {
@@ -122,6 +123,21 @@ export default function AnalysisSidebar(
       setInternalActivePanel(next);
     }
   };
+
+  // SatelliteDataPanel dispatches this when the user clicks "Use this scene
+  // in Raster Calculator" — always OPEN the panel (unlike togglePanel,
+  // never close it even if it's already the active one).
+  useEffect(() => {
+    const openRasterPanel = () => {
+      if (onActivePanelChange) {
+        onActivePanelChange("raster");
+      } else {
+        setInternalActivePanel("raster");
+      }
+    };
+    window.addEventListener(OPEN_RASTER_CALCULATOR_EVENT, openRasterPanel);
+    return () => window.removeEventListener(OPEN_RASTER_CALCULATOR_EVENT, openRasterPanel);
+  }, [onActivePanelChange]);
   //^ معرفة بيانات الـ Panel
   const activeItem = panels.find((p) => p.id === activePanel);
 

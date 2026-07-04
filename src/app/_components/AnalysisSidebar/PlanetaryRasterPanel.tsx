@@ -11,6 +11,7 @@
 
 import { useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
+import { useSelectedScene, setSelectedScene } from "./sharedSceneSelection";
 
 // ─── Sentinel-2 L2A band reference (so the user writes valid expressions) ──
 const SENTINEL2_BANDS: { id: string; label: string; gsd: string; desc: string }[] = [
@@ -262,6 +263,7 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   const [rescaleMax, setRescaleMax] = useState(EXPRESSION_PRESETS[0].rescale[1]);
   const [opacity, setOpacity] = useState(85);
   const [clipToShape, setClipToShape] = useState(true);
+  const pickedScene = useSelectedScene();
   const [cloudCover, setCloudCover] = useState(10); // kept for potential future use
   const [dateFrom, setDateFrom] = useState("2026-04-01");
   const [dateTo, setDateTo] = useState("2026-04-28");
@@ -342,7 +344,10 @@ if (!requestGeometry) {
   geometry: requestGeometry,
   date: dateRange,
   expression,
-  collection: "sentinel-2-l2a",
+  collection: pickedScene?.collection ?? "sentinel-2-l2a",
+  // When set, the backend fetches this exact scene by ID and skips its
+  // own date/cloud-cover search entirely (picked from Satellite Data).
+  ...(pickedScene ? { scene_id: pickedScene.id } : {}),
 })
     });
 
@@ -609,6 +614,27 @@ if (!requestGeometry) {
           </label>
         </div>
       </div>
+
+      {pickedScene && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-400/25 bg-emerald-400/[0.06] p-3">
+          <div className="min-w-0">
+            <p className="text-[0.62rem] uppercase tracking-wider text-emerald-300">Using picked scene</p>
+            <p className="mt-1 truncate text-[0.58rem] text-slate-500" title={pickedScene.id}>
+              {pickedScene.id}
+            </p>
+            <p className="mt-0.5 text-[0.58rem] text-slate-500">
+              {pickedScene.date} | cloud {pickedScene.cloud}% | {pickedScene.collection} — date/cloud search below is skipped
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSelectedScene(null)}
+            className="h-7 shrink-0 rounded-md border border-white/[0.1] bg-white/[0.04] px-2 text-[0.62rem] font-medium text-slate-300 transition-colors hover:border-red-400/30 hover:bg-red-400/10 hover:text-red-200"
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       {/* Clip to shape */}
       <div className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">

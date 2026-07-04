@@ -12,6 +12,8 @@
 //   GET /api/raster-proxy/analyze
 //       ?type=rgb|swir|ndvi|ndwi|ndmi
 //       &urls=<url1>,<url2>[,<url3>]   ← بالترتيب المطلوب لكل نوع (تحت)
+//       &bbox=west,south,east,north     ← إلزامي (WGS84) — بيحدد الـ pixel window
+//                                          المطلوب قراءته بدل تحميل الـ scene كاملة
 //       &token=...
 //
 //   rgb  → urls = B04,B03,B02  (R,G,B)
@@ -26,7 +28,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
-import { fromArrayBuffer } from "geotiff";
+import { fromUrl } from "geotiff";
 import proj4 from "proj4";
 import { toProj4 } from "geotiff-geokeys-to-proj4";
 import { RAMPS, buildLUT } from "@/lib/rasterColor"; 
@@ -38,6 +40,116 @@ type BandRaster = {
   height: number;
   bbox: [number, number, number, number] | null;
 };
+
+// ── SAS signing + GeoTIFF-header caching ────────────────────────────────────
+// قبل كده الفرونت كانت بتعمل request منفصل لكل asset لـ
+// planetarycomputer.microsoft.com/api/sas/v1/sign *قبل* ما تبعت أي حاجة
+// للباك (2-3 requests لوحدهم)، وبعدين الباك كان بيعمل fromUrl على كل باند
+// من الأول تاني (header/IFD fetches) حتى لو نفس الـ scene اتطلبت قبل كده
+// بثواني. دلوقتي التوقيع بقى مسؤولية الباك وحده، ومعاه cache قصير المدى
+// عشان الطلبات المتكررة (تغيير باند/لون على نفس الـ scene) متعملش
+// signing/header-fetch جديد كل مرة.
+
+// الحجم النهائي المستهدف للصورة الخارجة (نفس القيمة المستخدمة في renderComposite/renderIndex).
+// بنستخدمها هنا كمان عشان نختار أنسب overview level بدل ما نقرا الصورة كاملة الدقة.
+const TARGET_MAX_DIM = 1024;
+
+const SIGN_CACHE_TTL_MS = 50 * 60 * 1000; // التوكن بتاع PC صالح ~ساعة، بنجدده قبلها بأمان
+const IMAGE_CACHE_TTL_MS = 4 * 60 * 1000; // مجرد تقليل header round-trips على الطلبات المتقاربة
+
+type SignedEntry = { href: string; expiresAt: number };
+const signCache = new Map<string, SignedEntry>();
+
+type GeotiffImage = Awaited<ReturnType<Awaited<ReturnType<typeof fromUrl>>["getImage"]>>;
+type OverviewLevel = { image: GeotiffImage; width: number; height: number };
+type ImageCacheEntry = {
+  // levels[0] هي دايمًا الصورة كاملة الدقة (base)، والباقي overviews بترتيب
+  // تنازلي في الدقة — Sentinel-2 COGs عادة فيها 3-5 مستويات زي كده جوه نفس
+  // الملف، فقراءة مستوى مناسب بدل الـ base بتقلل البيانات المنقولة جدًا.
+  levels: OverviewLevel[];
+  fullWidth: number;
+  fullHeight: number;
+  geoKeys: unknown;
+  nativeBbox: [number, number, number, number];
+  nativeIsDegrees: boolean;
+  expiresAt: number;
+};
+const imageCache = new Map<string, ImageCacheEntry>();
+
+// بتختار أنسب overview level لنافذة الـ AOI المطلوبة: أوطى دقة تقدر توفي
+// بالحجم المستهدف (TARGET_MAX_DIM) من غير ما تنزل تحته (عشان مايبانش ضبابي).
+function pickOverviewLevel(
+  levels: OverviewLevel[],
+  windowWidthFull: number,
+  windowHeightFull: number
+): OverviewLevel {
+  const desiredFactor = Math.max(windowWidthFull, windowHeightFull) / TARGET_MAX_DIM;
+  if (desiredFactor <= 1) return levels[0]; // الـ AOI أصلًا أصغر من الهدف — استخدمي الـ base
+
+  const base = levels[0];
+  let best = base;
+  let bestFactor = 1;
+  for (const level of levels) {
+    const factor = base.width / level.width; // downsample ratio بالنسبة للـ base
+    if (factor <= desiredFactor && factor > bestFactor) {
+      best = level;
+      bestFactor = factor;
+    }
+  }
+  return best;
+}
+
+function isPlanetaryComputerBlobUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return host.endsWith(".blob.core.windows.net");
+  } catch {
+    return false;
+  }
+}
+
+function isAlreadySigned(url: string): boolean {
+  try {
+    const params = new URL(url).searchParams;
+    // Azure SAS tokens بتحتوي على sig= و se= (وغيرهم)
+    return params.has("sig") && params.has("se");
+  } catch {
+    return false;
+  }
+}
+
+// بتوقّع رابط Planetary Computer (لو محتاج توقيع فعلاً) مع caching، عشان
+// نفس الـ asset متتوقعش تاني في كل preview جديد قبل ما التوكن ينتهي.
+async function signPlanetaryComputerUrl(url: string): Promise<string> {
+  if (!isPlanetaryComputerBlobUrl(url) || isAlreadySigned(url)) return url;
+
+  const cached = signCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) return cached.href;
+
+  try {
+    const res = await fetch(
+      `https://planetarycomputer.microsoft.com/api/sas/v1/sign?href=${encodeURIComponent(url)}`
+    );
+    if (!res.ok) return url;
+    const data = await res.json();
+    const href = typeof data?.href === "string" ? data.href : url;
+
+    let expiresAt = Date.now() + SIGN_CACHE_TTL_MS;
+    const expiryRaw = data?.["msft:expiry"];
+    if (typeof expiryRaw === "string") {
+      const parsed = Date.parse(expiryRaw);
+      if (Number.isFinite(parsed)) {
+        // نسيب مساحة أمان 2 دقيقة قبل الانتهاء الفعلي
+        expiresAt = Math.min(expiresAt, parsed - 2 * 60 * 1000);
+      }
+    }
+
+    signCache.set(url, { href, expiresAt });
+    return href;
+  } catch {
+    return url;
+  }
+}
 
 type AnalysisType = "rgb" | "swir" | "ndvi" | "ndwi" | "ndmi";
 
@@ -70,52 +182,212 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig> = {
   },
 };
 
-// ── fetch + read GeoTIFF band (نفس منطق الـ bbox reprojection من route.ts) ──
-async function fetchTiffBuffer(url: string, token?: string | null): Promise<ArrayBuffer> {
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(url, { headers });
-  if (!res.ok) throw new Error(`Upstream fetch failed (${res.status}): ${url}`);
-  return res.arrayBuffer();
-}
+// ── reproject a native-CRS bbox into WGS84 (lon/lat), reused by full & windowed reads ──
+function reprojectToWGS84(
+  bbox: [number, number, number, number],
+  geoKeys: unknown
+): [number, number, number, number] | null {
+  const looksLikeDegrees =
+    Math.abs(bbox[0]) <= 180 && Math.abs(bbox[2]) <= 180 &&
+    Math.abs(bbox[1]) <= 90 && Math.abs(bbox[3]) <= 90;
 
-async function readBand(arrayBuffer: ArrayBuffer): Promise<BandRaster> {
-  const tiff = await fromArrayBuffer(arrayBuffer);
-  const image = await tiff.getImage();
-  const width = image.getWidth();
-  const height = image.getHeight();
-  const rasters = await image.readRasters({ interleave: false });
-  const data = rasters[0] as Float32Array | Uint16Array | Uint8Array;
-
-  let bbox: [number, number, number, number] | null = null;
-  try {
-    let bb = image.getBoundingBox();
-    const geoKeys = image.getGeoKeys();
-    const looksLikeDegrees =
-      Math.abs(bb[0]) <= 180 && Math.abs(bb[2]) <= 180 &&
-      Math.abs(bb[1]) <= 90 && Math.abs(bb[3]) <= 90;
-
-    if (!looksLikeDegrees && geoKeys) {
-      const { proj4: srcProj4 } = toProj4(geoKeys);
+  let bb = bbox;
+  if (!looksLikeDegrees && geoKeys) {
+    try {
+      const { proj4: srcProj4 } = toProj4(geoKeys as Parameters<typeof toProj4>[0]);
       if (srcProj4) {
-        const [w, s] = proj4(srcProj4, "EPSG:4326", [bb[0], bb[1]]);
-        const [e, n] = proj4(srcProj4, "EPSG:4326", [bb[2], bb[3]]);
+        const [w, s] = proj4(srcProj4, "EPSG:4326", [bbox[0], bbox[1]]);
+        const [e, n] = proj4(srcProj4, "EPSG:4326", [bbox[2], bbox[3]]);
         bb = [w, s, e, n];
       }
+    } catch {
+      return null;
     }
-
-    if (
-      bb.every((v) => Number.isFinite(v)) &&
-      Math.abs(bb[0]) <= 180 && Math.abs(bb[2]) <= 180 &&
-      Math.abs(bb[1]) <= 90 && Math.abs(bb[3]) <= 90
-    ) {
-      bbox = bb as [number, number, number, number];
-    }
-  } catch {
-    bbox = null;
   }
 
-  return { data, width, height, bbox };
+  if (
+    bb.every((v) => Number.isFinite(v)) &&
+    Math.abs(bb[0]) <= 180 && Math.abs(bb[2]) <= 180 &&
+    Math.abs(bb[1]) <= 90 && Math.abs(bb[3]) <= 90
+  ) {
+    return bb as [number, number, number, number];
+  }
+  return null;
+}
+
+// ── reproject a WGS84 (lon/lat) bbox into the image's native CRS ──
+function wgs84ToNative(
+  bboxWGS84: [number, number, number, number],
+  geoKeys: unknown,
+  nativeIsDegrees: boolean
+): [number, number, number, number] | null {
+  if (nativeIsDegrees) return bboxWGS84;
+  try {
+    const { proj4: dstProj4 } = toProj4(geoKeys as Parameters<typeof toProj4>[0]);
+    if (!dstProj4) return null;
+    const [w, s] = proj4("EPSG:4326", dstProj4, [bboxWGS84[0], bboxWGS84[1]]);
+    const [e, n] = proj4("EPSG:4326", dstProj4, [bboxWGS84[2], bboxWGS84[3]]);
+    return [w, s, e, n];
+  } catch {
+    return null;
+  }
+}
+
+// ── فتح الـ GeoTIFF مباشرة من الـ URL (بيستفيد من HTTP range-requests بتاعة
+// geotiff.js على COGs) وقراءة الـ pixel window المطابق للـ AOI بس — مش الصورة
+// كلها. ده أساسي: Sentinel-2 scene كامل ~11000×11000 بكسل/باند، وتحميل/فك تشفير
+// الملف كامل هو اللي كان بيخلي الـ request يعلّق أو يقعد "loading" لمدة طويلة جدًا.
+async function readBand(
+  url: string,
+  token: string | null | undefined,
+  queryBboxWGS84: [number, number, number, number] | null
+): Promise<BandRaster & { timing: Record<string, number> }> {
+  const t: Record<string, number> = { sign: 0, headerOpen: 0, overviewList: 0, pixelRead: 0, cacheHit: 0 };
+  const tStart = performance.now();
+
+  // الكاش متعامل على الـ raw url (قبل التوقيع) عشان مفتاح ثابت حتى لو
+  // التوكن اتجدد؛ التوقيع نفسه ليه cache منفصل جوه signPlanetaryComputerUrl.
+  const cacheKey = url;
+  const cached = imageCache.get(cacheKey);
+
+  let levels: OverviewLevel[];
+  let fullWidth: number;
+  let fullHeight: number;
+  let geoKeys: unknown;
+  let nativeBbox: [number, number, number, number];
+  let nativeIsDegrees: boolean;
+
+  if (cached && cached.expiresAt > Date.now()) {
+    ({ levels, fullWidth, fullHeight, geoKeys, nativeBbox, nativeIsDegrees } = cached);
+    t.cacheHit = 1;
+  } else {
+    let tp = performance.now();
+    const signedUrl = await signPlanetaryComputerUrl(url);
+    t.sign = performance.now() - tp;
+
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    let tiff;
+    tp = performance.now();
+    try {
+      tiff = await fromUrl(signedUrl, { headers });
+    } catch (err) {
+      throw new Error(`Upstream fetch failed: ${url} (${(err as Error).message})`);
+    }
+
+    const baseImage = await tiff.getImage(0);
+    fullWidth = baseImage.getWidth();
+    fullHeight = baseImage.getHeight();
+    geoKeys = baseImage.getGeoKeys();
+
+    try {
+      nativeBbox = baseImage.getBoundingBox() as [number, number, number, number];
+    } catch {
+      nativeBbox = [0, 0, fullWidth, fullHeight];
+    }
+
+    nativeIsDegrees =
+      Math.abs(nativeBbox[0]) <= 180 && Math.abs(nativeBbox[2]) <= 180 &&
+      Math.abs(nativeBbox[1]) <= 90 && Math.abs(nativeBbox[3]) <= 90;
+    t.headerOpen = performance.now() - tp;
+
+    levels = [{ image: baseImage, width: fullWidth, height: fullHeight }];
+    // بناء قائمة overviews — دي metadata بس (مفيش pixel data بتتقرا هنا)،
+    // فالتكلفة صغيرة جدًا مقارنة بقراءة الصورة كاملة الدقة لاحقًا
+    tp = performance.now();
+    try {
+      const count = await tiff.getImageCount();
+      for (let i = 1; i < count; i++) {
+        const img = await tiff.getImage(i);
+        levels.push({ image: img, width: img.getWidth(), height: img.getHeight() });
+      }
+    } catch {
+      // لو الملف مفيهوش overviews أو فشل السرد، نكمل بالـ base بس
+    }
+    t.overviewList = performance.now() - tp;
+
+    imageCache.set(cacheKey, {
+      levels, fullWidth, fullHeight, geoKeys, nativeBbox, nativeIsDegrees,
+      expiresAt: Date.now() + IMAGE_CACHE_TTL_MS,
+    });
+  }
+
+  // الخطوة 1: نحسب النافذة على دقة الـ base الأول، عشان نعرف حجم الـ AOI
+  // بالبكسل ونقدر نختار أنسب overview level بناءً عليه.
+  let baseWindow: [number, number, number, number] | undefined;
+  let windowNativeBbox = nativeBbox;
+
+  if (queryBboxWGS84) {
+    const queryNative = wgs84ToNative(queryBboxWGS84, geoKeys, nativeIsDegrees);
+
+    if (queryNative) {
+      const xRes = (nativeBbox[2] - nativeBbox[0]) / fullWidth;
+      const yRes = (nativeBbox[3] - nativeBbox[1]) / fullHeight;
+
+      let x0 = Math.floor((queryNative[0] - nativeBbox[0]) / xRes);
+      let x1 = Math.ceil((queryNative[2] - nativeBbox[0]) / xRes);
+      let y0 = Math.floor((nativeBbox[3] - queryNative[3]) / yRes);
+      let y1 = Math.ceil((nativeBbox[3] - queryNative[1]) / yRes);
+
+      x0 = Math.max(0, Math.min(fullWidth - 1, x0));
+      x1 = Math.max(x0 + 1, Math.min(fullWidth, x1));
+      y0 = Math.max(0, Math.min(fullHeight - 1, y0));
+      y1 = Math.max(y0 + 1, Math.min(fullHeight, y1));
+
+      if (x1 > x0 && y1 > y0) {
+        baseWindow = [x0, y0, x1, y1];
+        windowNativeBbox = [
+          nativeBbox[0] + x0 * xRes,
+          nativeBbox[3] - y1 * yRes,
+          nativeBbox[0] + x1 * xRes,
+          nativeBbox[3] - y0 * yRes,
+        ];
+      }
+    }
+  }
+
+  if (!baseWindow) {
+    // مفيش bbox صالح — بنرجع لسلوك القراءة الكاملة (فallback بس، غير مستحسن للـ scenes الكبيرة)
+    throw new Error("Missing/invalid bbox — refusing full-scene read to avoid timing out; pass ?bbox=west,south,east,north");
+  }
+
+  // الخطوة 2: نختار أنسب overview level بناءً على حجم النافذة، ونعيد حساب
+  // نفس النافذة الجغرافية (windowNativeBbox) بمقاس البكسل بتاع الـ level ده.
+  // ده اللي بيقلل البيانات المنقولة من الشبكة بشكل كبير للـ AOI الكبيرة —
+  // بدل ما نقرا نافذة من صورة 11000×11000، بنقرا نفس المنطقة من overview
+  // أصغر بكتير ومقاسه أصلًا قريب من حجم الإخراج المطلوب (~1024px).
+  const baseWindowWidth = baseWindow[2] - baseWindow[0];
+  const baseWindowHeight = baseWindow[3] - baseWindow[1];
+  const level = pickOverviewLevel(levels, baseWindowWidth, baseWindowHeight);
+
+  const levelScaleX = level.width / fullWidth;
+  const levelScaleY = level.height / fullHeight;
+
+  let x0 = Math.floor(baseWindow[0] * levelScaleX);
+  let x1 = Math.ceil(baseWindow[2] * levelScaleX);
+  let y0 = Math.floor(baseWindow[1] * levelScaleY);
+  let y1 = Math.ceil(baseWindow[3] * levelScaleY);
+
+  x0 = Math.max(0, Math.min(level.width - 1, x0));
+  x1 = Math.max(x0 + 1, Math.min(level.width, x1));
+  y0 = Math.max(0, Math.min(level.height - 1, y0));
+  y1 = Math.max(y0 + 1, Math.min(level.height, y1));
+
+  const window: [number, number, number, number] = [x0, y0, x1, y1];
+
+  const tRead = performance.now();
+  const rasters = await level.image.readRasters({ window, interleave: false });
+  t.pixelRead = performance.now() - tRead;
+
+  const data = rasters[0] as Float32Array | Uint16Array | Uint8Array;
+  const width = window[2] - window[0];
+  const height = window[3] - window[1];
+
+  const bbox = reprojectToWGS84(windowNativeBbox, geoKeys);
+
+  t.total = performance.now() - tStart;
+  return { data, width, height, bbox, timing: t };
 }
 
 function checkSameGrid(bands: BandRaster[]) {
@@ -168,7 +440,6 @@ async function renderComposite(bands: BandRaster[], gamma: number, doSharpen: bo
   // بترجع صورة صغيرة جدًا بالبكسل، ولو من غير الخطوة دي المتصفح/Leaflet هو
   // اللي بيكبرها nearest-neighbor فبتبان مربعات "colormap-style" بدل صورة
   // ناعمة. ملحوظة: ده بيحسّن العرض بس مش بيخترع تفاصيل تحت دقة الـ 10م الأصلية.
-  const TARGET_MAX_DIM = 1024;
   const scale = Math.min(32, Math.max(1, TARGET_MAX_DIM / Math.max(width, height)));
   const outW = Math.round(width * scale);
   const outH = Math.round(height * scale);
@@ -243,7 +514,6 @@ async function renderIndex(
     ? { min: minV, max: maxV, mean: sum / validPixels, validPixels }
     : { min: rMin, max: rMax, mean: 0, validPixels: 0 };
 
-  const TARGET_MAX_DIM = 1024;
   const scale = Math.min(32, Math.max(1, TARGET_MAX_DIM / Math.max(width, height)));
   const outW = Math.round(width * scale);
   const outH = Math.round(height * scale);
@@ -257,10 +527,12 @@ async function renderIndex(
 }
 
 export async function GET(req: NextRequest) {
+  const tRequestStart = performance.now();
   const { searchParams } = req.nextUrl;
   const type = (searchParams.get("type") ?? "rgb") as AnalysisType;
   const urlsParam = searchParams.get("urls");
   const token = searchParams.get("token");
+  const bboxParam = searchParams.get("bbox");
 
   const config = ANALYSIS_CONFIG[type];
   if (!config) {
@@ -283,13 +555,32 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // bbox إلزامي دلوقتي — من غيره هنضطر نقرا الـ scene كاملة وده اللي كان بيعلّق الطلب
+  let queryBbox: [number, number, number, number] | null = null;
+  if (bboxParam) {
+    const parts = bboxParam.split(",").map(Number);
+    if (parts.length === 4 && parts.every((n) => Number.isFinite(n))) {
+      queryBbox = parts as [number, number, number, number];
+    }
+  }
+  if (!queryBbox) {
+    return NextResponse.json(
+      { error: "Missing/invalid bbox param — expected ?bbox=west,south,east,north (WGS84) to crop the read window" },
+      { status: 400 }
+    );
+  }
+
+  const tBandsStart = performance.now();
   let bands: BandRaster[];
+  let bandTimings: Record<string, number>[];
   try {
-    const buffers = await Promise.all(urls.map((u) => fetchTiffBuffer(u, token)));
-    bands = await Promise.all(buffers.map((buf) => readBand(buf)));
+    const results = await Promise.all(urls.map((u) => readBand(u, token, queryBbox)));
+    bands = results;
+    bandTimings = results.map((r) => r.timing);
   } catch (err) {
     return NextResponse.json({ error: `Failed to read bands: ${(err as Error).message}` }, { status: 502 });
   }
+  const bandsMs = performance.now() - tBandsStart;
 
   if (!checkSameGrid(bands)) {
     return NextResponse.json(
@@ -301,6 +592,7 @@ export async function GET(req: NextRequest) {
   const realBbox = bands[0].bbox;
   let pngBuffer: Buffer;
   let stats: unknown;
+  const tRenderStart = performance.now();
 
   if (config.kind === "composite") {
     const gamma = parseFloat(searchParams.get("gamma") ?? "1.1");
@@ -324,6 +616,25 @@ export async function GET(req: NextRequest) {
     pngBuffer = result.pngBuffer;
     stats = result.stats;
   }
+  const renderMs = performance.now() - tRenderStart;
+  const totalMs = performance.now() - tRequestStart;
+
+  // debug timing — بتبان في الـ Network tab (Response Headers) من غير ما تحتاجي
+  // تدخلي لوجات السيرفر. لو عايزة تشوفيها بسرعة: افتحي DevTools → Network →
+  // اضغطي على طلب /api/raster-proxy/analyze → Headers → دوّري على X-Debug-Timing.
+  const debugTiming = {
+    totalMs: Math.round(totalMs),
+    bandsMs: Math.round(bandsMs),
+    renderMs: Math.round(renderMs),
+    perBand: bandTimings.map((bt) => ({
+      cacheHit: bt.cacheHit === 1,
+      signMs: Math.round(bt.sign),
+      headerOpenMs: Math.round(bt.headerOpen),
+      overviewListMs: Math.round(bt.overviewList),
+      pixelReadMs: Math.round(bt.pixelRead),
+      totalMs: Math.round(bt.total),
+    })),
+  };
 
   return new NextResponse(new Uint8Array(pngBuffer), {
     status: 200,
@@ -333,6 +644,7 @@ export async function GET(req: NextRequest) {
       "X-Real-Bbox":       realBbox ? realBbox.join(",") : "",
       "X-Raster-Stats":    JSON.stringify(stats),
       "X-Analysis-Type":   type,
+      "X-Debug-Timing":    JSON.stringify(debugTiming),
     },
   });
 }

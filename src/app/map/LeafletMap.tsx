@@ -378,7 +378,7 @@ export default function LeafletMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onImagePlacerRegister, mapReady]);
 
-  useEffect(() => {
+useEffect(() => {
     if (!onRasterOverlayRegister) return;
     onRasterOverlayRegister((config) => {
       const map = mapInstanceRef.current;
@@ -403,13 +403,22 @@ export default function LeafletMap({
       rasterOverlayRef.current.set(overlayKey, layer);
 
       // map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 14, duration: 0.8 });
-      L.circleMarker([config.coords.lat, config.coords.lng], {
+      const sceneMarker = L.circleMarker([config.coords.lat, config.coords.lng], {
         radius: 7,
         color: "#22d3ee",
         fillColor: "#22d3ee",
         fillOpacity: 0.75,
         weight: 2,
       }).addTo(map).bindPopup(`<b>${config.name}</b><br/>${config.coords.lat.toFixed(5)}, ${config.coords.lng.toFixed(5)}`);
+
+      // سجّليه عشان زرار Clear يقدر يمسحه لو احتاج
+      drawLayersRef.current.push(sceneMarker);
+
+      // ولو المستخدم قفل الـ popup بزرار X، امسحي النقطة خالص مش بس اقفلي الـ popup
+      sceneMarker.on("popupclose", () => {
+        map.removeLayer(sceneMarker);
+        drawLayersRef.current = drawLayersRef.current.filter((l) => l !== sceneMarker);
+      });
     });
   }, [onRasterOverlayRegister, mapReady]);
 
@@ -973,7 +982,7 @@ if (!check.ok) {
 
     const c    = TOOL_COLORS.polygon;
     const poly = L.polygon(pts, { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
-    
+    drawLayersRef.current.push(poly);
     const coords = [...pts, pts[0]].map(([lat, lng]) => [lng, lat]);
 
 const polygon = turf.polygon([coords]);
@@ -1224,25 +1233,7 @@ if (!restoredRef.current) {
 // ─────────────────────────────────────────────
 // ✅ HERE 👇 (restore AOI polygons after refresh)
 // ─────────────────────────────────────────────
-const saved = JSON.parse(localStorage.getItem("aoi_polygons") || "[]");
 
-saved.forEach((item: any) => {
-  const c = TOOL_COLORS.polygon;
-
-  const poly = L.polygon(item.coords, {
-    color: c.stroke,
-    weight: 2,
-    fillColor: c.fill,
-    fillOpacity: 0,
-  }).addTo(map);
-
-  drawLayersRef.current.push(poly);
-
-  // (اختياري مهم) لو عايزة edit بعد الريفريش:
-  poly.on("click", () => {
-    startAOIEdit(poly, "polygon");
-  });
-});
 
       // ── Canvas Layer ──────────────────────────────────────────────────────
       const CanvasLayer = (L.Layer as any).extend({
@@ -1359,34 +1350,19 @@ saved.forEach((item: any) => {
       flyToRef.current = (lat, lng) => {
   const safeLat = Number(lat);
   const safeLng = Number(lng);
-
   if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return;
 
   map.flyTo([safeLat, safeLng], 13, { duration: 1.6 });
-
   setTimeout(() => {
-  if (!searchMarkerRef.current) {
-    searchMarkerRef.current = L.circleMarker(
-      [safeLat, safeLng],
-      {
-        radius: 9,
-        color: "#00d4ff",
-        fillColor: "#00d4ff",
-        fillOpacity: 0.7,
-        weight: 2,
-      }
-    ).addTo(map);
-  }
-
-  searchMarkerRef.current.setLatLng([safeLat, safeLng]);
-
-  searchMarkerRef.current
-    .bindPopup(
-      `<b>📍 Location</b><br/>${safeLat.toFixed(5)}°N, ${safeLng.toFixed(5)}°E`
-    )
-    .openPopup();
-
-}, 1700);
+    const searchMarker = L.circleMarker([safeLat, safeLng], {
+      radius: 9, color: "#00d4ff", fillColor: "#00d4ff", fillOpacity: 0.7, weight: 2,
+    })
+      .addTo(map)
+      .bindPopup(`<b>📍 Location</b><br/>${safeLat.toFixed(5)}°N, ${safeLng.toFixed(5)}°E`)
+      .openPopup();
+    // ✅ سجّليه هنا عشان زرار الـ Clear/Delete يقدر يمسحه زي أي شكل تاني
+    drawLayersRef.current.push(searchMarker);
+  }, 1700);
 };
 
       clearRef.current = () => {
