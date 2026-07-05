@@ -62,26 +62,40 @@ const CHANGE_INDEX_DEFS: Record<ChangeIndexKey, {
   NDBI: { label: "NDBI", desc: "Built-up / urban change (SWIR, NIR)", assets: ["B11", "B08"], color: "#f97316", rescale: "-0.35,0.35" },
 };
 
-// Diverging ramp: red = decrease, green = increase.
-// Gamma-boosted (k^0.55) so moderate changes near the sensitivity threshold read as clearly
-// colored instead of washing out toward gray — the previous linear ramp made everything but
-// the most extreme pixels look faint.
-function diffColor(delta: number): [number, number, number] {
-  const t = Math.max(-1, Math.min(1, delta));
-  const k = Math.pow(Math.abs(t), 0.55);
-  if (t >= 0) {
-    // pale green (k=0) -> vivid emerald (k=1)
-    return [
-      Math.round(214 - k * 198), // 214 -> 16
-      Math.round(245 - k * 60),  // 245 -> 185
-      Math.round(214 - k * 85),  // 214 -> 129
-    ];
-  }
-  // pale red (k=0) -> vivid red (k=1)
+// Maps the panel's index selector to the server-side change-detection analysis
+// type exposed by /api/raster-proxy/analyze — the actual classification (5
+// clear classes, computed from real band math, not colorized-PNG guessing)
+// happens server-side in that route.
+const CHANGE_API_TYPE: Record<ChangeIndexKey, string> = {
+  NDVI: "change_ndvi",
+  NDWI: "change_ndwi",
+  NDBI: "change_ndbi",
+};
+
+interface ChangeLegendItem { key: string; label: string; color: string }
+interface ChangeStats {
+  noDataPct: number;
+  noChangePct: number;
+  gainPct: number;
+  lossPct: number;
+  otherPct: number;
+}
+
+// Fallback legend (labels/colors) in case the API response is missing the
+// X-Change-Legend header for some reason — mirrors route.ts exactly.
+function defaultChangeLegend(indexKey: ChangeIndexKey): ChangeLegendItem[] {
+  const GAIN_LOSS_LABELS: Record<ChangeIndexKey, [string, string]> = {
+    NDVI: ["Vegetation Gain", "Vegetation Loss"],
+    NDWI: ["Water Gain", "Water Loss"],
+    NDBI: ["Built-up Gain", "Built-up Loss"],
+  };
+  const [gainLabel, lossLabel] = GAIN_LOSS_LABELS[indexKey];
   return [
-    Math.round(254 - k * 15),  // 254 -> 239
-    Math.round(228 - k * 160), // 228 -> 68
-    Math.round(228 - k * 160), // 228 -> 68
+    { key: "gain", label: gainLabel, color: "#00c853" },
+    { key: "noChange", label: "No Change", color: "#228b22" },
+    { key: "loss", label: lossLabel, color: "#e53935" },
+    { key: "other", label: "Other Change", color: "#eab308" },
+    { key: "noData", label: "No Data", color: "#9ca3af" },
   ];
 }
 
@@ -169,88 +183,6 @@ function makePreviewUrl(
   url.searchParams.set("rescale", rescale);
   url.searchParams.set("colormap_name", "rdylgn");
   return url.toString();
-}
-
-// load an <img> from a URL into a same-size canvas and return its ImageData
-async function loadImageData(url: string, size = 256): Promise<ImageData> {
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = () => reject(new Error("Failed to load scene preview image"));
-    img.src = url;
-  });
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas unavailable");
-  ctx.drawImage(img, 0, 0, size, size);
-  return ctx.getImageData(0, 0, size, size);
-}
-
-// The preview PNGs from Planetary Computer are already colorized (rdylgn) per-scene index images.
-// We approximate each pixel's index value back from luminance-weighted green-vs-red channel balance,
-// which is sufficient for relative change detection between two same-style renders.
-function approxIndexFromRGB(r: number, g: number, b: number): number {
-  // rdylgn colormap: red ~ -1, yellow ~ 0, green ~ +1
-  // Use (G - R) normalized as a proxy for index value
-  return Math.max(-1, Math.min(1, (g - r) / 255));
-}
-
-interface DiffResult {
-  canvas: HTMLCanvasElement;
-  stats: { meanDelta: number; increasedPct: number; decreasedPct: number; stablePct: number };
-}
-
-function computeDiff(beforeData: ImageData, afterData: ImageData, threshold: number): DiffResult {
-  const { width, height } = beforeData;
-  const out = document.createElement("canvas");
-  out.width = width;
-  out.height = height;
-  const ctx = out.getContext("2d")!;
-  const outData = ctx.createImageData(width, height);
-
-  let sum = 0;
-  let inc = 0;
-  let dec = 0;
-  let stable = 0;
-  const total = width * height;
-
-  for (let i = 0; i < total; i++) {
-    const o = i * 4;
-    const beforeVal = approxIndexFromRGB(beforeData.data[o], beforeData.data[o + 1], beforeData.data[o + 2]);
-    const afterVal = approxIndexFromRGB(afterData.data[o], afterData.data[o + 1], afterData.data[o + 2]);
-    const delta = afterVal - beforeVal;
-    sum += delta;
-
-    if (Math.abs(delta) < threshold) {
-      stable++;
-      outData.data[o] = 30;
-      outData.data[o + 1] = 41;
-      outData.data[o + 2] = 59;
-      outData.data[o + 3] = 60;
-    } else {
-      if (delta > 0) inc++; else dec++;
-      const [r, g, b] = diffColor(delta);
-      outData.data[o] = r;
-      outData.data[o + 1] = g;
-      outData.data[o + 2] = b;
-      outData.data[o + 3] = 248;
-    }
-  }
-
-  ctx.putImageData(outData, 0, 0);
-
-  return {
-    canvas: out,
-    stats: {
-      meanDelta: sum / total,
-      increasedPct: (inc / total) * 100,
-      decreasedPct: (dec / total) * 100,
-      stablePct: (stable / total) * 100,
-    },
-  };
 }
 
 function formatDateDMY(value: string) {
@@ -653,10 +585,9 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
 
   const [computing, setComputing] = useState(false);
   const [computeError, setComputeError] = useState<string | null>(null);
-  const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
+  const [changeResult, setChangeResult] = useState<{ stats: ChangeStats | null; legend: ChangeLegendItem[] } | null>(null);
   const [diffDataUrl, setDiffDataUrl] = useState<string | null>(null);
   const [compareModalOpen, setCompareModalOpen] = useState(false);
-  const resultCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const indexDef = CHANGE_INDEX_DEFS[indexKey];
   const collection = source === "sentinel-2" ? "sentinel-2-l2a" : "landsat-c2-l2";
@@ -743,13 +674,13 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
 
   const handleSelectBefore = useCallback((scene: SatelliteScene) => {
     setBeforeScene(scene);
-    setDiffResult(null);
+    setChangeResult(null);
     setDiffDataUrl(null);
     setComputeError(null);
   }, []);
   const handleSelectAfter = useCallback((scene: SatelliteScene) => {
     setAfterScene(scene);
-    setDiffResult(null);
+    setChangeResult(null);
     setDiffDataUrl(null);
     setComputeError(null);
   }, []);
@@ -815,12 +746,10 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
 
   // Push a real, georeferenced Before/After swipe onto the actual map as soon as both
   // scenes are selected — updates live as the user changes scenes/index, clears when not ready.
+  // (This stays on the real map — only the sidebar preview card was removed.)
   useEffect(() => {
     if (!onSwipeCompare) return;
     if (beforeDisplayUrl && afterDisplayUrl && beforeScene && afterScene) {
-      // The previews are now rendered cropped to `bounds` itself (see makePreviewUrl),
-      // so that's the correct overlay extent — not the scene's full tile bbox, which
-      // used to make the swipe render as a huge stretched rectangle over the map.
       onSwipeCompare({
         beforeUrl: beforeDisplayUrl,
         afterUrl: afterDisplayUrl,
@@ -850,47 +779,76 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     return "Run Change Detection";
   }, [computing, beforeScene, afterScene]);
 
+  // Runs the real change-detection computation server-side via
+  // /api/raster-proxy/analyze (type=change_ndvi|change_ndwi|change_ndbi):
+  // it reads the actual raw band pixels for Before + After and classifies
+  // every pixel into 5 clear classes (Gain / No Change / Loss / Other / No
+  // Data) — much more accurate than approximating index values back out of
+  // already-colorized preview PNGs.
   const runChangeDetection = useCallback(async () => {
     if (!beforeScene || !afterScene) return;
-    if (!beforePreviewUrl || !afterPreviewUrl) {
-      setComputeError("Could not build a preview for one of the selected scenes. Try picking another scene.");
-      return;
-    }
     setComputing(true);
     setComputeError(null);
-    setDiffResult(null);
+    setChangeResult(null);
     setDiffDataUrl(null);
 
     try {
-      const [beforeImg, afterImg] = await Promise.all([
-        loadImageData(beforePreviewUrl),
-        loadImageData(afterPreviewUrl),
-      ]);
-      const result = computeDiff(beforeImg, afterImg, threshold);
-      setDiffResult(result);
-      setDiffDataUrl(result.canvas.toDataURL("image/png"));
-      setCompareModalOpen(true);
+      const [assetAKey, assetBKey] = indexDef.assets;
+      const beforeAHref = getSceneAssetUrl(beforeScene, assetAKey);
+      const beforeBHref = getSceneAssetUrl(beforeScene, assetBKey);
+      const afterAHref = getSceneAssetUrl(afterScene, assetAKey);
+      const afterBHref = getSceneAssetUrl(afterScene, assetBKey);
 
-      const resultBounds = stacBBoxToBounds(afterScene.bbox ?? beforeScene.bbox, bounds);
-      const center = boundsCenter(resultBounds);
+      if (!beforeAHref || !beforeBHref || !afterAHref || !afterBHref) {
+        throw new Error("Could not resolve the required band URLs for the selected scenes.");
+      }
 
-      onPreview?.({
-        name: `ChangeDetection_${indexKey}_${beforeScene.date}_to_${afterScene.date}`,
-        indexKey,
-        expression: `${indexDef.assets[0]}/${indexDef.assets[1]} diff (${beforeScene.date} → ${afterScene.date})`,
-        date: `${beforeScene.date} → ${afterScene.date}`,
-        coords: center,
-        bounds: resultBounds,
-        opacity: 0.78,
-        colorRamp: "Change (red=decrease, green=increase)",
-        dataUrl: result.canvas.toDataURL("image/png"),
+      const params = new URLSearchParams({
+        type: CHANGE_API_TYPE[indexKey],
+        urls: [beforeAHref, beforeBHref, afterAHref, afterBHref].join(","),
+        bbox: `${west},${south},${east},${north}`,
+        threshold: String(threshold),
       });
+
+      const res = await fetch(`/api/raster-proxy/analyze?${params.toString()}`);
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        throw new Error(errBody?.error ?? `Change detection API failed (${res.status})`);
+      }
+
+      const legendHeader = res.headers.get("X-Change-Legend");
+      const statsHeader = res.headers.get("X-Raster-Stats");
+      const legend: ChangeLegendItem[] = legendHeader ? JSON.parse(legendHeader) : defaultChangeLegend(indexKey);
+      const stats: ChangeStats | null = statsHeader ? JSON.parse(statsHeader) : null;
+
+      const blob = await res.blob();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("Failed to read the change map image"));
+        reader.readAsDataURL(blob);
+      });
+
+      setChangeResult({ stats, legend });
+      setDiffDataUrl(dataUrl);
+      // (no longer auto-opening the Before/After compare modal here — running
+      // Change Detection should just show the diff/legend below; the person
+      // can still open the full Before/After/Change compare manually via the
+      // "Compare" button next to the Change Map.)
+
+      // NOTE: we intentionally do NOT push the classified diff onto the real
+      // map anymore — only the Before/After swipe stays on the real map, and
+      // the diff/classification result stays in the sidebar (Change Map card
+      // above). This also removes the old bug where the diff overlay used
+      // `afterScene.bbox` (the whole raw satellite scene tile — tens of km
+      // wide) instead of your actual selected AOI, which is why it used to
+      // cover a much bigger area than what you drew/selected.
     } catch (err) {
       setComputeError(err instanceof Error ? err.message : "Change detection computation failed.");
     } finally {
       setComputing(false);
     }
-  }, [beforePreviewUrl, afterPreviewUrl, beforeScene, afterScene, threshold, indexKey, indexDef, bounds, onPreview]);
+  }, [beforeScene, afterScene, indexKey, indexDef, threshold, west, south, east, north]);
 
   const downloadDiff = useCallback(() => {
     if (!diffDataUrl) return;
@@ -899,12 +857,6 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     a.download = `change_detection_${indexKey}_${Date.now()}.png`;
     a.click();
   }, [diffDataUrl, indexKey]);
-
-  const filteredStats = useMemo(() => {
-    if (!diffResult) return null;
-    const { increasedPct, decreasedPct, stablePct, meanDelta } = diffResult.stats;
-    return { increasedPct, decreasedPct, stablePct, meanDelta };
-  }, [diffResult]);
 
   return (
     <div className="space-y-4">
@@ -932,7 +884,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
               <button
                 key={key}
                 type="button"
-                onClick={() => { setIndexKey(key); setDiffResult(null); setDiffDataUrl(null); }}
+                onClick={() => { setIndexKey(key); setChangeResult(null); setDiffDataUrl(null); }}
                 className={`rounded-lg border p-2.5 text-left transition-all cursor-pointer ${
                   indexKey === key ? "border-cyan-400/40 bg-cyan-400/[0.08]" : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.14]"
                 }`}
@@ -988,46 +940,21 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
         onSearch={handleSearchAfter}
       />
 
-      {/* Before / After swipe comparison — visible as soon as both scenes are selected */}
-      {beforeDisplayUrl && afterDisplayUrl && (
-        <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/[0.04] p-3 space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-[0.62rem] uppercase tracking-wider text-slate-400">Before / After comparison</p>
-            <button
-              type="button"
-              onClick={() => setCompareModalOpen(true)}
-              className="text-[0.58rem] font-semibold text-cyan-300 hover:text-cyan-200 border border-cyan-400/25 rounded-md px-2 py-0.5 transition"
-            >
-              Expand ↗
-            </button>
-          </div>
-          <span className="block text-[0.52rem] text-slate-500 font-mono -mt-1">
-            {beforeScene?.date && afterScene?.date ? `${formatDateDMY(beforeScene.date)} → ${formatDateDMY(afterScene.date)}` : ""}
-          </span>
-          {polygonRing && (
-            <div className="flex items-center justify-between -mt-1">
-              <span className="text-[0.55rem] text-slate-500">Clip to drawn shape</span>
-              <button
-                type="button"
-                onClick={() => setClipToShape((p) => !p)}
-                className={`relative w-9 h-5 rounded-full border transition-colors ${clipToShape ? "bg-cyan-400/20 border-cyan-400/30" : "bg-white/[0.03] border-white/[0.08]"}`}
-                aria-pressed={clipToShape}
-              >
-                <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all ${clipToShape ? "left-[18px] bg-cyan-400" : "left-0.5 bg-slate-600"}`} />
-              </button>
-            </div>
-          )}
-          {onSwipeCompare && (
-            <p className="text-[0.52rem] text-cyan-300/70 -mt-1">
-              ↔ نفس المقارنة شغالة كمان فوق الخريطة الحقيقية — زوّمي/حركي وهي شغالة
-            </p>
-          )}
-          <ImageSwipeCompare
-            beforeUrl={beforeDisplayUrl}
-            afterUrl={afterDisplayUrl}
-            beforeLabel="Before"
-            afterLabel="After"
-          />
+      {/* Clip-to-drawn-shape control only — the auto Before/After swipe preview
+          card that used to sit here was removed; the clipping still matters for
+          the "Compare" view in the Results section and for the on-map overlay,
+          so we keep the toggle itself, just without the swipe preview around it. */}
+      {(beforeDisplayUrl || afterDisplayUrl) && polygonRing && (
+        <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3 flex items-center justify-between">
+          <span className="text-[0.6rem] text-slate-400">Clip to drawn shape</span>
+          <button
+            type="button"
+            onClick={() => setClipToShape((p) => !p)}
+            className={`relative w-9 h-5 rounded-full border transition-colors ${clipToShape ? "bg-cyan-400/20 border-cyan-400/30" : "bg-white/[0.03] border-white/[0.08]"}`}
+            aria-pressed={clipToShape}
+          >
+            <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all ${clipToShape ? "left-[18px] bg-cyan-400" : "left-0.5 bg-slate-600"}`} />
+          </button>
         </div>
       )}
 
@@ -1087,20 +1014,12 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
       )}
 
       {/* Results */}
-      {diffResult && diffDataUrl && (
+      {changeResult && diffDataUrl && (
         <div className="rounded-lg border border-white/[0.07] bg-[#020817]/70 p-3 space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Change Map</p>
             <div className="flex items-center gap-1.5">
-              {beforePreviewUrl && afterPreviewUrl && (
-                <button
-                  type="button"
-                  onClick={() => setCompareModalOpen(true)}
-                  className="text-[0.6rem] text-slate-400 hover:text-cyan-400 border border-white/[0.08] hover:border-cyan-400/30 rounded-lg px-2 py-1 transition-all cursor-pointer"
-                >
-                  Compare
-                </button>
-              )}
+              
               <button
               type="button"
               onClick={downloadDiff}
@@ -1117,36 +1036,31 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
           </div>
 
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={diffDataUrl} alt="Change detection heat map" className="w-full rounded-md border border-white/[0.06]" />
+          <img src={diffDataUrl} alt="Change detection classification map" className="w-full rounded-md border border-white/[0.06]" style={{ imageRendering: "pixelated" }} />
 
-          <div className="flex items-center gap-2">
-            <span className="text-[0.55rem] text-slate-500">Decrease</span>
-            <div className="flex-1 h-2 rounded-full" style={{ background: "linear-gradient(to right, #f87171, #1e293b, #4ade80)" }} />
-            <span className="text-[0.55rem] text-slate-500">Increase</span>
+          {/* Legend — clear, distinct colors matching the classification, computed server-side */}
+          <div className="space-y-1.5">
+            {changeResult.legend.map((item) => {
+              const pct = changeResult.stats
+                ? (changeResult.stats as any)[`${item.key}Pct`] as number | undefined
+                : undefined;
+              return (
+                <div key={item.key} className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: item.color, boxShadow: `0 0 6px ${item.color}88` }} />
+                  <span className="text-[0.62rem] text-slate-300 flex-1">{item.label}</span>
+                  {typeof pct === "number" && (
+                    <span className="text-[0.62rem] font-semibold text-slate-400 font-mono">{pct.toFixed(1)}%</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
-
-          {filteredStats && (
-            <div className="grid grid-cols-3 gap-1.5">
-              <div className="rounded-md border border-emerald-400/15 bg-emerald-400/[0.06] p-2 text-center">
-                <p className="text-xs font-bold text-emerald-300">{filteredStats.increasedPct.toFixed(1)}%</p>
-                <p className="text-[0.5rem] text-slate-500 mt-0.5">Increased</p>
-              </div>
-              <div className="rounded-md border border-red-400/15 bg-red-400/[0.06] p-2 text-center">
-                <p className="text-xs font-bold text-red-300">{filteredStats.decreasedPct.toFixed(1)}%</p>
-                <p className="text-[0.5rem] text-slate-500 mt-0.5">Decreased</p>
-              </div>
-              <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2 text-center">
-                <p className="text-xs font-bold text-slate-300">{filteredStats.stablePct.toFixed(1)}%</p>
-                <p className="text-[0.5rem] text-slate-500 mt-0.5">Stable</p>
-              </div>
-            </div>
-          )}
         </div>
       )}
 
       <p className="text-[0.55rem] text-slate-600 text-center leading-relaxed">
-        Scenes are sourced from Microsoft Planetary Computer (Sentinel-2 L2A) via STAC search. Index values are
-        derived client-side from the rendered preview images for the selected band pair.
+        Scenes are sourced from Microsoft Planetary Computer (Sentinel-2 L2A) via STAC search. The change map is
+        computed server-side from the real band pixel data for the selected index.
       </p>
     </div>
   );

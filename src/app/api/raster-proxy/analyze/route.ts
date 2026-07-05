@@ -151,7 +151,7 @@ async function signPlanetaryComputerUrl(url: string): Promise<string> {
   }
 }
 
-type AnalysisType = "rgb" | "swir" | "ndvi" | "ndwi" | "ndmi";
+type AnalysisType = "rgb" | "swir" | "ndvi" | "ndwi" | "ndmi" | "change_ndvi" | "change_ndwi" | "change_ndbi";
 
 type CompositeConfig = { kind: "composite"; bandCount: 3; label: string };
 type IndexConfig = {
@@ -161,8 +161,18 @@ type IndexConfig = {
   formula: (a: number, b: number) => number;
   defaultColormap: string;
 };
+type ChangeConfig = {
+  kind: "change";
+  bandCount: 4; // [beforeA, beforeB, afterA, afterB]
+  label: string;
+  formula: (a: number, b: number) => number;
+  /** label shown for a positive (increase) change — e.g. "Vegetation Gain" */
+  gainLabel: string;
+  /** label shown for a negative (decrease) change — e.g. "Vegetation Loss" */
+  lossLabel: string;
+};
 
-const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig> = {
+const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | ChangeConfig> = {
   rgb:  { kind: "composite", bandCount: 3, label: "True color (e.g. B04,B03,B02 → R,G,B)" },
   swir: { kind: "composite", bandCount: 3, label: "SWIR false color (e.g. B12,B8A,B04 → R,G,B)" },
   ndvi: {
@@ -179,6 +189,21 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig> = {
     kind: "index", bandCount: 2, label: "NDMI (NIR,SWIR1 — e.g. B08,B11)",
     formula: (nir, swir1) => (nir - swir1) / (nir + swir1 || 1e-6),
     defaultColormap: "greens",
+  },
+  change_ndvi: {
+    kind: "change", bandCount: 4, label: "Change NDVI (beforeNIR,beforeRed,afterNIR,afterRed — e.g. B08,B04,B08,B04)",
+    formula: (nir, red) => (nir - red) / (nir + red || 1e-6),
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_ndwi: {
+    kind: "change", bandCount: 4, label: "Change NDWI (beforeGreen,beforeNIR,afterGreen,afterNIR — e.g. B03,B08,B03,B08)",
+    formula: (green, nir) => (green - nir) / (green + nir || 1e-6),
+    gainLabel: "Water Gain", lossLabel: "Water Loss",
+  },
+  change_ndbi: {
+    kind: "change", bandCount: 4, label: "Change NDBI (beforeSWIR,beforeNIR,afterSWIR,afterNIR — e.g. B11,B08,B11,B08)",
+    formula: (swir, nir) => (swir - nir) / (swir + nir || 1e-6),
+    gainLabel: "Built-up Gain", lossLabel: "Built-up Loss",
   },
 };
 
@@ -526,6 +551,101 @@ async function renderIndex(
   return { pngBuffer, stats };
 }
 
+// ── Change Detection path (change_ndvi / change_ndwi / change_ndbi) ────────
+// Classifies each pixel into one of 5 clear, distinct classes instead of a
+// continuous diverging ramp — matches the "No Change / Gain / Loss / Other
+// Change / No Data" legend style used by reference change-detection products.
+type ChangeClass = "noData" | "noChange" | "gain" | "loss" | "other";
+
+const CHANGE_COLORS: Record<ChangeClass, [number, number, number]> = {
+  noData:   [156, 163, 175], // gray-400
+  noChange: [34, 139, 34],   // forest green
+  gain:     [0, 200, 83],    // vivid green
+  loss:     [229, 57, 53],   // red
+  other:    [234, 179, 8],   // amber/yellow
+};
+
+// alpha لكل كلاس — "noChange" بيغطي غالبًا 90%+ من أي صورة، فلو اديناه
+// نفس شفافية باقي الكلاسات (235) هيرسم شبه معتم فوق الصورة كلها ويخلي
+// الـ Change Map يبان "أخضر solid" ويغطي أي تفاصيل. هنا بنسيبه شبه شفاف
+// (يبين إن الأرض متغيرتش من غير ما يخبي الصورة تحته)، وبنسيب الكلاسات
+// الفعلية (gain/loss/other) واضحة وملفتة عشان هي بيت القصيد.
+const CHANGE_ALPHA: Record<ChangeClass, number> = {
+  noData:   90,
+  noChange: 25,
+  gain:     235,
+  loss:     235,
+  other:    235,
+};
+
+async function renderChange(
+  beforeA: BandRaster,
+  beforeB: BandRaster,
+  afterA: BandRaster,
+  afterB: BandRaster,
+  formula: (a: number, b: number) => number,
+  threshold: number,
+  classThreshold: number,
+) {
+  const { width, height } = beforeA;
+  const n = width * height;
+  const rgbaData = Buffer.alloc(n * 4);
+
+  const counts: Record<ChangeClass, number> = { noData: 0, noChange: 0, gain: 0, loss: 0, other: 0 };
+
+  for (let i = 0; i < n; i++) {
+    const bA = beforeA.data[i], bB = beforeB.data[i];
+    const aA = afterA.data[i], aB = afterB.data[i];
+
+    let cls: ChangeClass;
+    if ((bA === 0 && bB === 0) || (aA === 0 && aB === 0)) {
+      cls = "noData";
+    } else {
+      const beforeVal = formula(bA, bB);
+      const afterVal = formula(aA, aB);
+      const delta = afterVal - beforeVal;
+
+      if (Math.abs(delta) < threshold) {
+        cls = "noChange";
+      } else if (delta > 0 && afterVal >= classThreshold) {
+        cls = "gain";
+      } else if (delta < 0 && beforeVal >= classThreshold) {
+        cls = "loss";
+      } else {
+        cls = "other";
+      }
+    }
+
+    counts[cls]++;
+    const [r, g, b] = CHANGE_COLORS[cls];
+    const o = i * 4;
+    rgbaData[o] = r;
+    rgbaData[o + 1] = g;
+    rgbaData[o + 2] = b;
+    rgbaData[o + 3] = CHANGE_ALPHA[cls];
+  }
+
+  const total = n || 1;
+  const stats = {
+    noDataPct: (counts.noData / total) * 100,
+    noChangePct: (counts.noChange / total) * 100,
+    gainPct: (counts.gain / total) * 100,
+    lossPct: (counts.loss / total) * 100,
+    otherPct: (counts.other / total) * 100,
+  };
+
+  const scale = Math.min(32, Math.max(1, TARGET_MAX_DIM / Math.max(width, height)));
+  const outW = Math.round(width * scale);
+  const outH = Math.round(height * scale);
+
+  const pngBuffer = await sharp(rgbaData, { raw: { width, height, channels: 4 } })
+    .resize(outW, outH, { kernel: sharp.kernel.lanczos3 })
+    .png({ compressionLevel: 6 })
+    .toBuffer();
+
+  return { pngBuffer, stats };
+}
+
 export async function GET(req: NextRequest) {
   const tRequestStart = performance.now();
   const { searchParams } = req.nextUrl;
@@ -594,6 +714,8 @@ export async function GET(req: NextRequest) {
   let stats: unknown;
   const tRenderStart = performance.now();
 
+  let changeLegend: { key: string; label: string; color: string }[] | null = null;
+
   if (config.kind === "composite") {
     const gamma = parseFloat(searchParams.get("gamma") ?? "1.1");
     const doSharpen = (searchParams.get("sharpen") ?? "1") !== "0";
@@ -602,7 +724,7 @@ export async function GET(req: NextRequest) {
     const result = await renderComposite(bands, gamma, doSharpen, low, high);
     pngBuffer = result.pngBuffer;
     stats = result.stats;
-  } else {
+  } else if (config.kind === "index") {
     const colormap = searchParams.get("colormap") ?? config.defaultColormap;
     const rMin = parseFloat(searchParams.get("min") ?? "-1");
     const rMax = parseFloat(searchParams.get("max") ?? "1");
@@ -615,6 +737,22 @@ export async function GET(req: NextRequest) {
     );
     pngBuffer = result.pngBuffer;
     stats = result.stats;
+  } else {
+    // change_ndvi / change_ndwi / change_ndbi
+    const threshold = parseFloat(searchParams.get("threshold") ?? "0.08");
+    const classThreshold = parseFloat(searchParams.get("classThreshold") ?? "0.25");
+    const result = await renderChange(
+      bands[0], bands[1], bands[2], bands[3], config.formula, threshold, classThreshold
+    );
+    pngBuffer = result.pngBuffer;
+    stats = result.stats;
+    changeLegend = [
+      { key: "gain",     label: config.gainLabel, color: "#00c853" },
+      { key: "noChange", label: "No Change",       color: "#228b22" },
+      { key: "loss",     label: config.lossLabel,  color: "#e53935" },
+      { key: "other",    label: "Other Change",    color: "#eab308" },
+      { key: "noData",   label: "No Data",         color: "#9ca3af" },
+    ];
   }
   const renderMs = performance.now() - tRenderStart;
   const totalMs = performance.now() - tRequestStart;
@@ -645,6 +783,7 @@ export async function GET(req: NextRequest) {
       "X-Raster-Stats":    JSON.stringify(stats),
       "X-Analysis-Type":   type,
       "X-Debug-Timing":    JSON.stringify(debugTiming),
+      ...(changeLegend ? { "X-Change-Legend": JSON.stringify(changeLegend) } : {}),
     },
   });
 }

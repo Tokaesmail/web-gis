@@ -4,6 +4,7 @@ import { SATELLITE_LEGENDS, SATELLITE_PIPELINES, type SatelliteAnalysisType, typ
 import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
 import { clipImageToPolygon, getPolygonRing } from "./geoClipUtils";
 import { setSelectedScene, openRasterCalculatorPanel } from "./sharedSceneSelection";
+import { useSharedDateRange } from "./sharedDateRange";
 
 export type SatellitePreviewConfig = {
   source: "sentinel-2" | "landsat";
@@ -582,8 +583,10 @@ export function SatelliteDataPanel({
   onPreview?: (config: SatellitePreviewConfig) => void;
 }) {
   const [source, setSource] = useState<"sentinel-2" | "landsat">("sentinel-2");
-  const [dateFrom, setDateFrom] = useState("2026-04-10");
-  const [dateTo, setDateTo] = useState("2026-05-10");
+  // التاريخ بقى مشترك بين البانلز (sharedDateRange.ts) بدل local state —
+  // كده لو غيرتي التاريخ هنا وبعدين فتحتي Raster Calculator (أو الباند اتقفل
+  // وترندر تاني)، التاريخ بيفضل زي ما اخترتيه ومش بيرجع للديفولت.
+  const { dateFrom, dateTo, setDateFrom, setDateTo } = useSharedDateRange();
   const [cloudCover, setCloudCover] = useState(20);
   const [band, setBand] = useState<IdxKey>("RGB");
   const [viewerMode, setViewerMode] = useState<SatelliteViewerMode>("multispectral");

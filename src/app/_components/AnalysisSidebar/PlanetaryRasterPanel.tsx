@@ -12,6 +12,7 @@
 import { useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 import { useSelectedScene, setSelectedScene } from "./sharedSceneSelection";
+import { useSharedDateRange } from "./sharedDateRange";
 
 // ─── Sentinel-2 L2A band reference (so the user writes valid expressions) ──
 const SENTINEL2_BANDS: { id: string; label: string; gsd: string; desc: string }[] = [
@@ -265,9 +266,16 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   const [clipToShape, setClipToShape] = useState(true);
   const pickedScene = useSelectedScene();
   const [cloudCover, setCloudCover] = useState(10); // kept for potential future use
-  const [dateFrom, setDateFrom] = useState("2026-04-01");
-  const [dateTo, setDateTo] = useState("2026-04-28");
-  const [showBandRef, setShowBandRef] = useState(true);
+  // التاريخ بقى مشترك بين البانلز (sharedDateRange.ts) بدل local state —
+  // نفس التاريخ اللي اخترتيه في Satellite Data (أو هنا) بيفضل موجود لما
+  // تفتحي preset تاني أو تتنقلي بين البانلز، مش بيرجع للديفولت.
+  const { dateFrom, dateTo, setDateFrom, setDateTo } = useSharedDateRange();
+  // ── UI state للـ redesign الجديد: زراير الباندات بقت popover جوه
+  // الـ Expression نفسها (بتظهر لما تدخلي التكست، وتختفي لما تختاري باند)،
+  // والـ presets السته بقوا dropdown واحد بدل شبكة 7 زراير تاخد مساحة كبيرة
+  const [showBandPicker, setShowBandPicker] = useState(false);
+  const [presetMenuOpen, setPresetMenuOpen] = useState(false);
+  const [colorMenuOpen, setColorMenuOpen] = useState(false);
 
 
   const [previewStatus, setPreviewStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
@@ -301,6 +309,14 @@ const renderBbox = useMemo(
 // الجديد عشان الـ clip يبقى مطابق للشكل الفعلي مش مجرد الـ bbox المستطيل
 const requestGeometry = useMemo(() => getRequestGeometry(selectedFeature), [selectedFeature]);
   const validation = useMemo(() => validateExpression(expression), [expression]);
+  const activeIndexPreset = useMemo(
+    () => EXPRESSION_PRESETS.find((p) => p.key === activePreset) ?? null,
+    [activePreset]
+  );
+  const activeColorRamp = useMemo(
+    () => COLOR_RAMPS.find((r) => r.key === colormap) ?? COLOR_RAMPS[COLOR_RAMPS.length - 2],
+    [colormap]
+  );
 
 
 
@@ -312,11 +328,13 @@ const requestGeometry = useMemo(() => getRequestGeometry(selectedFeature), [sele
     setColormap(preset.colormap);
     setRescaleMin(preset.rescale[0]);
     setRescaleMax(preset.rescale[1]);
+    setPresetMenuOpen(false);
   };
 
   const insertBand = (bandId: string) => {
     setActivePreset("");
     setExpression((prev) => (prev ? `${prev}${bandId}` : bandId));
+    setShowBandPicker(false);
   };
 
 
@@ -372,20 +390,29 @@ if (!requestGeometry) {
     const tifUrl: string = payload?.data?.url ?? "";
     if (!tifUrl) throw new Error("Backend returned no output URL");
 
-    // ── used_scene_id + method جايين تلقائي مع كل نتيجة من الباكند ──
-    // بنخزنهم عشان نعرضهم لليوزر تحت النتيجة، يعرف إحنا حسبنا على أنهي
-    // صورة بالظبط وهل ده كان باختياره (explicit_id) ولا اختيار تلقائي
-    // بالتاريخ (date_fallback)
-    const usedSceneId: string | undefined = payload?.data?.used_scene_id;
-    const usedMethod: string | undefined = payload?.data?.method;
-    if (usedSceneId || usedMethod) {
-      setSceneMeta({ usedSceneId: usedSceneId ?? "—", method: usedMethod ?? "—" });
+    // ── الـ scene id اللي فعليًا اتحسب عليها الناتج، جاي من الباكند ──
+    // ملحوظة: الباكند بيرجّعه باسم "scene_id_used" (مش "used_scene_id")،
+    // وكمان مفيش حقل "method" خالص في الـ response — فبنستنتجه إحنا:
+    // لو إحنا أصلاً بعتنا scene_id في الـ request (يعني فيه pickedScene
+    // من "Use this scene in Raster Calculator")، يبقى ده اختيار يدوي
+    // (explicit_id)، غير كده الباكند هو اللي دوّر واختار تلقائي جوه
+    // الـ date range (date_fallback).
+    const usedSceneId: string | undefined =
+      payload?.data?.scene_id_used ?? payload?.data?.used_scene_id;
+    const usedMethod: string = pickedScene ? "explicit_id" : "date_fallback";
+    if (usedSceneId) {
+      setSceneMeta({ usedSceneId, method: usedMethod });
     }
 
-    // ── 3. Rescale from preset or manual input ─────────────────────────────
-    const currentPreset = EXPRESSION_PRESETS.find(p => p.key === activePreset);
-    let finalMin = currentPreset?.rescale[0] ?? rescaleMin;
-    let finalMax = currentPreset?.rescale[1] ?? rescaleMax;
+    // ── 3. Rescale — بناخد القيم من الـ state مباشرة (rescaleMin/rescaleMax)
+    // مش من preset table تاني. الـ state دي أصلاً بتتظبط لما تختاري preset
+    // (applyPreset بيعمل setRescaleMin/setRescaleMax)، وكمان بتتحدث لما
+    // اليوزر يكتب في الـ 2 input بتوع Rescale min/max. المشكلة كانت إن
+    // السطر القديم كان بيرجع لقيمة الـ preset الأصلية من EXPRESSION_PRESETS
+    // كل مرة (طول ما فيه activePreset)، فأي تعديل يدوي من اليوزر في
+    // الـ input كان بيتجاهل تمامًا ومايوصلش للـ request خالص.
+    let finalMin = rescaleMin;
+    let finalMax = rescaleMax;
     if (finalMax === finalMin) finalMax = finalMin + 0.01;
 
     // ── 4. Convert TIF → PNG via Next.js proxy ────────────────────────────
@@ -509,61 +536,78 @@ if (!requestGeometry) {
 
 
 
-      {/* Band reference */}
-      <div className="rounded-lg border border-white/[0.07] bg-white/[0.025]">
+      {/* Index presets — dropdown واحد مضغوط بدل شبكة 7 زراير كبيرة.
+          ملحوظة: العنصر ده جوه الـ flow العادي للصفحة (مش absolute) —
+          يعني لما يفتح بيدفع اللي تحته (Color ramp..) لتحت عادي، ولما
+          يتقفل كل حاجة بترجع مكانها بالظبط. كده مفيش أي تراكب/شفافية
+          غريبة بين طبقتين فوق بعض زي ما كان بيحصل قبل كده. */}
+      <div className="space-y-1.5">
+        <span className="text-[0.62rem] uppercase tracking-wider text-slate-500">Index preset</span>
         <button
           type="button"
-          onClick={() => setShowBandRef((p) => !p)}
-          className="flex w-full items-center justify-between px-3 py-2.5 text-left cursor-pointer"
+          onClick={() => setPresetMenuOpen((p) => !p)}
+          className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors cursor-pointer ${
+            presetMenuOpen ? "border-cyan-400/40 bg-cyan-400/[0.06]" : "border-white/[0.08] bg-[#020817]/70 hover:border-white/[0.16]"
+          }`}
         >
-          <span className="text-[0.62rem] uppercase tracking-wider text-slate-500">Sentinel-2 band reference</span>
+          <span className="flex min-w-0 items-center gap-2.5">
+            <span
+              className="h-3.5 w-3.5 shrink-0 rounded-full ring-1 ring-white/[0.12]"
+              style={{ background: colormapPreviewGradient(activeIndexPreset?.colormap ?? colormap) }}
+            />
+            <span className="min-w-0">
+              <span className="block text-xs font-bold text-slate-200">
+                {activeIndexPreset ? activeIndexPreset.label : "Custom expression"}
+              </span>
+              <span className="block truncate text-[0.55rem] text-slate-500">
+                {activeIndexPreset ? activeIndexPreset.desc : "Not matching a preset — written manually"}
+              </span>
+            </span>
+          </span>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-            className={`text-slate-500 transition-transform ${showBandRef ? "rotate-180" : ""}`}>
+            className={`shrink-0 text-slate-500 transition-transform ${presetMenuOpen ? "rotate-180" : ""}`}>
             <polyline points="6 9 12 15 18 9" />
           </svg>
         </button>
-        {showBandRef && (
-          <div className="grid grid-cols-2 gap-1.5 px-3 pb-3">
-            {SENTINEL2_BANDS.map((band) => (
-              <button
-                key={band.id}
-                type="button"
-                onClick={() => insertBand(band.id)}
-                title={`Insert ${band.id} into expression`}
-                className="flex items-center justify-between gap-2 rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-1.5 text-left transition-colors hover:border-cyan-400/30 hover:bg-cyan-400/[0.06] cursor-pointer"
-              >
-                <span>
-                  <span className="block font-mono text-[0.65rem] font-bold text-cyan-300">{band.id}</span>
-                  <span className="block text-[0.55rem] text-slate-500">{band.label}</span>
-                </span>
-                <span className="shrink-0 text-[0.5rem] text-slate-600">{band.gsd}</span>
-              </button>
-            ))}
+
+        {presetMenuOpen && (
+          <div className="overflow-hidden rounded-lg border border-white/[0.1] bg-[#050b1a]">
+            <div className="max-h-64 overflow-y-auto p-1">
+              {EXPRESSION_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  onClick={() => applyPreset(preset.key)}
+                  className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors cursor-pointer ${
+                    activePreset === preset.key ? "bg-cyan-400/10" : "hover:bg-white/[0.05]"
+                  }`}
+                >
+                  <span
+                    className="h-3.5 w-3.5 shrink-0 rounded-full ring-1 ring-white/[0.12]"
+                    style={{ background: colormapPreviewGradient(preset.colormap) }}
+                  />
+                  <span className="min-w-0">
+                    <span className={`block text-[0.68rem] font-bold ${activePreset === preset.key ? "text-cyan-300" : "text-slate-200"}`}>
+                      {preset.label}
+                    </span>
+                    <span className="block truncate text-[0.53rem] text-slate-500">{preset.desc}</span>
+                  </span>
+                  {activePreset === preset.key && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"
+                      className="ml-auto shrink-0 text-cyan-300">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
 
-      {/* Presets */}
-      <div className="space-y-2">
-        <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Index presets</p>
-        <div className="grid grid-cols-2 gap-1.5">
-          {EXPRESSION_PRESETS.map((preset) => (
-            <button
-              key={preset.key}
-              type="button"
-              onClick={() => applyPreset(preset.key)}
-              className={`rounded-lg border p-2.5 text-left transition-all cursor-pointer ${
-                activePreset === preset.key ? "border-cyan-400/40 bg-cyan-400/[0.08]" : "border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.06]"
-              }`}
-            >
-              <p className={`text-[0.68rem] font-bold ${activePreset === preset.key ? "text-cyan-400" : "text-slate-300"}`}>{preset.label}</p>
-              <p className="mt-0.5 text-[0.55rem] text-slate-500 leading-tight">{preset.desc}</p>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Expression input */}
+      {/* Expression input — زراير الباندات بقت تظهر جوه هنا (تحت التكست
+          مباشرة، جوه الـ flow العادي برضو مش absolute)، بتظهر لما تدخلي
+          التكست وتختفي أول ما تختاري باند أو تقفليها بنفسك */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <span className="text-[0.62rem] uppercase tracking-wider text-slate-500">Expression</span>
@@ -571,14 +615,58 @@ if (!requestGeometry) {
             {validation.ok ? `${validation.usedBands.length} band${validation.usedBands.length === 1 ? "" : "s"} used` : "incomplete"}
           </span>
         </div>
+
         <textarea
           value={expression}
           onChange={(e) => { setExpression(e.target.value); setActivePreset(""); }}
+          onFocus={() => setShowBandPicker(true)}
+          onBlur={() => setShowBandPicker(false)}
           rows={3}
           spellCheck={false}
           placeholder="e.g. (B08-B04)/(B08+B04)"
           className="w-full resize-none rounded-lg border border-white/[0.08] bg-[#020817]/80 px-3 py-2 font-mono text-xs leading-relaxed text-cyan-200 outline-none focus:border-cyan-400/40"
         />
+
+        {showBandPicker && (
+          <div className="overflow-hidden rounded-lg border border-cyan-400/25 bg-[#050b1a]">
+            <div className="flex items-center justify-between border-b border-white/[0.06] px-2.5 py-1.5">
+              <span className="text-[0.55rem] uppercase tracking-wider text-cyan-300/80">Tap a band to insert</span>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => setShowBandPicker(false)}
+                className="rounded-full p-0.5 text-slate-500 transition-colors hover:bg-white/[0.06] hover:text-slate-300 cursor-pointer"
+                aria-label="Close band picker"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <div className="grid max-h-52 grid-cols-2 gap-1.5 overflow-y-auto p-2">
+              {SENTINEL2_BANDS.map((band) => (
+                <button
+                  key={band.id}
+                  type="button"
+                  // بيمنع الـ textarea من عمل blur قبل ما الـ click يتسجل،
+                  // فالـ insertBand يتنفذ والـ picker يتقفل بشكل نضيف
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => insertBand(band.id)}
+                  title={`Insert ${band.id} into expression`}
+                  className="flex items-center justify-between gap-2 rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-1.5 text-left transition-colors hover:border-cyan-400/30 hover:bg-cyan-400/[0.08] cursor-pointer"
+                >
+                  <span>
+                    <span className="block font-mono text-[0.65rem] font-bold text-cyan-300">{band.id}</span>
+                    <span className="block text-[0.55rem] text-slate-500">{band.label}</span>
+                  </span>
+                  <span className="shrink-0 text-[0.5rem] text-slate-600">{band.gsd}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {validation.unknownTokens.length > 0 && (
           <p className="text-[0.58rem] text-amber-300">
             Unknown token{validation.unknownTokens.length > 1 ? "s" : ""}?: {validation.unknownTokens.join(", ")} — use band IDs like B08, B04.
@@ -589,33 +677,55 @@ if (!requestGeometry) {
         </p>
       </div>
 
+
       {/* Colormap + rescale */}
       <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3 space-y-3">
-        <div>
-          <div className="mb-2 flex items-center justify-between">
-            <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Color ramp</p>
-            <span className="text-[0.58rem] text-cyan-300">{COLOR_RAMPS.find((r) => r.key === colormap)?.label ?? colormap}</span>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            {COLOR_RAMPS.map((ramp) => (
-              <button
-                key={ramp.key}
-                type="button"
-                onClick={() => setColormap(ramp.key)}
-                title={ramp.label}
-                className={`group rounded-lg border p-1.5 transition-all cursor-pointer ${
-                  colormap === ramp.key ? "border-cyan-400/45 bg-cyan-400/[0.06]" : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.16]"
-                }`}
-              >
-                <span className="block h-7 rounded-md" style={{ background: ramp.gradient }} />
-                <span className={`mt-1.5 block text-[0.56rem] font-medium truncate ${
-                  colormap === ramp.key ? "text-cyan-300" : "text-slate-500 group-hover:text-slate-300"
-                }`}>
-                  {ramp.label}
-                </span>
-              </button>
-            ))}
-          </div>
+        <div className="space-y-1.5">
+          <span className="text-[0.62rem] uppercase tracking-wider text-slate-500">Color ramp</span>
+          <button
+            type="button"
+            onClick={() => setColorMenuOpen((p) => !p)}
+            className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors cursor-pointer ${
+              colorMenuOpen ? "border-cyan-400/40 bg-cyan-400/[0.06]" : "border-white/[0.08] bg-[#020817]/70 hover:border-white/[0.16]"
+            }`}
+          >
+            <span className="flex min-w-0 items-center gap-2.5">
+              <span
+                className="h-5 w-9 shrink-0 rounded-md ring-1 ring-white/[0.12]"
+                style={{ background: activeColorRamp.gradient }}
+              />
+              <span className="text-xs font-bold text-slate-200 truncate">{activeColorRamp.label}</span>
+            </span>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+              className={`shrink-0 text-slate-500 transition-transform ${colorMenuOpen ? "rotate-180" : ""}`}>
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+
+          {colorMenuOpen && (
+            <div className="overflow-hidden rounded-lg border border-white/[0.1] bg-[#050b1a]">
+              <div className="grid max-h-64 grid-cols-3 gap-2 overflow-y-auto p-2">
+                {COLOR_RAMPS.map((ramp) => (
+                  <button
+                    key={ramp.key}
+                    type="button"
+                    onClick={() => { setColormap(ramp.key); setColorMenuOpen(false); }}
+                    title={ramp.label}
+                    className={`group rounded-lg border p-1.5 text-left transition-all cursor-pointer ${
+                      colormap === ramp.key ? "border-cyan-400/45 bg-cyan-400/[0.08]" : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.16]"
+                    }`}
+                  >
+                    <span className="block h-7 rounded-md" style={{ background: ramp.gradient }} />
+                    <span className={`mt-1.5 block text-[0.56rem] font-medium truncate ${
+                      colormap === ramp.key ? "text-cyan-300" : "text-slate-500 group-hover:text-slate-300"
+                    }`}>
+                      {ramp.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <div className="grid grid-cols-2 gap-2">
           <label className="space-y-1">
@@ -766,10 +876,6 @@ if (!requestGeometry) {
               <div className="flex items-center justify-between">
                 <p className="text-[0.58rem] uppercase tracking-wider text-slate-500">Legend</p>
                 <div className="flex items-center gap-2">
-                  <span className="flex items-center gap-1 text-[0.55rem] text-slate-500">
-                    <span className="inline-block w-2 h-2 rounded-full border border-slate-500" />
-                    Theoretical
-                  </span>
                   <span className="flex items-center gap-1 text-[0.55rem] text-cyan-400">
                     <span className="inline-block w-2 h-2 rounded-full bg-cyan-400" />
                     Dynamic

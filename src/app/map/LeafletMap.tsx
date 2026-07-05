@@ -61,6 +61,15 @@ interface Props {
     colorRamp: string;
     coords: { lat: number; lng: number };
   }) => void) => void;
+  /** register a real, georeferenced Before/After swipe overlay directly on the map
+   *  (Change Detection panel only). Call the registered handler with `null` to remove it. */
+  onSwipeOverlayRegister?: (handler: (config: {
+    beforeUrl: string;
+    afterUrl: string;
+    bounds: [[number, number], [number, number]];
+    beforeLabel?: string;
+    afterLabel?: string;
+  } | null) => void) => void;
   onCapture?:     (capture: CaptureResult) => void;
   /** callback لما يضغط على GeoJSON feature */
   onFeatureClick?: (feature: GeoJSON.Feature) => void;
@@ -146,6 +155,7 @@ export default function LeafletMap({
   geoJsonData, extraGeoJsonData, latestGeoJson, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
   onImagePlacerRegister,
   onRasterOverlayRegister,
+  onSwipeOverlayRegister,
   extrusionGeoJson,
   extrusionConfig,
   initialFeatures,
@@ -190,6 +200,7 @@ export default function LeafletMap({
   const imagePaneReadyRef = useRef(false);
   const imageOverlaysRef = useRef<{ id: string; name: string; src: string; bounds: [[number, number], [number, number]]; layer: any }[]>([]);
   const rasterOverlayRef = useRef<Map<string, any>>(new Map());
+  const swipeOverlayRef = useRef<{ cleanup: () => void } | null>(null);
   const placingImageRef = useRef<{
     file: File;
     src: string; // data URL (persistent across refresh)
@@ -399,6 +410,12 @@ useEffect(() => {
       const layer = L.imageOverlay(config.dataUrl, bounds, {
         opacity: config.opacity,
         pane: "imagePane",
+        // الصورة الأصلية low-res (كلاسات مصنّفة، مش صورة عادية)، فلو المتصفح
+        // كبّرها بـ smooth/bilinear scaling الافتراضي، البقع/النقط الحمرا
+        // والخضرا الصغيرة بتتمسح وتتحول لبقعة ضبابية (زي اللي كان بيبان أخضر
+        // "شايل" فوق الخريطة). pixelated بيخلي كل بكسل مصنّف يبان بحدوده
+        // واضحة زي في صورة السايد بار بالظبط.
+        className: "change-detection-raster-overlay",
       }).addTo(map);
       rasterOverlayRef.current.set(overlayKey, layer);
 
@@ -421,6 +438,127 @@ useEffect(() => {
       });
     });
   }, [onRasterOverlayRegister, mapReady]);
+
+  // ── Change Detection: real, georeferenced Before/After swipe directly on the map ──
+  // Two stacked L.imageOverlay layers (before + after) covering the exact same AOI
+  // bounds. The "after" layer's own DOM element is clipped with a CSS clip-path
+  // expressed as a percentage of *its own* box — since that box always exactly
+  // spans `bounds` regardless of zoom/pan, a plain 0..1 fraction is enough and
+  // never needs recalculating on zoom. Only the divider handle's on-screen pixel
+  // position needs to be recomputed on pan/zoom (via latLngToContainerPoint).
+  useEffect(() => {
+    if (!onSwipeOverlayRegister) return;
+    onSwipeOverlayRegister((config) => {
+      const map = mapInstanceRef.current;
+      const L = LRef.current;
+
+      // Always clear whatever swipe overlay exists first (update or teardown).
+      if (swipeOverlayRef.current) {
+        swipeOverlayRef.current.cleanup();
+        swipeOverlayRef.current = null;
+      }
+      if (!config || !map || !L) return;
+
+      const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
+      const beforeLayer = L.imageOverlay(config.beforeUrl, bounds, { pane: "imagePane", opacity: 1 }).addTo(map);
+      const afterLayer  = L.imageOverlay(config.afterUrl,  bounds, { pane: "imagePane", opacity: 1 }).addTo(map);
+
+      // UI: divider line + drag handle + before/after labels, as a plain DOM
+      // overlay sitting above the imagePane (350) but positioned/sized manually
+      // since it isn't a leaflet layer itself (needs free pixel-space dragging).
+      const ui = L.DomUtil.create("div", "swipe-compare-ui", map.getContainer()) as HTMLDivElement;
+      ui.style.cssText = "position:absolute; inset:0; z-index:610; pointer-events:none; overflow:hidden;";
+
+      const line = document.createElement("div");
+      line.style.cssText = "position:absolute; width:2px; background:#22d3ee; box-shadow:0 0 10px rgba(34,211,238,.8); pointer-events:none;";
+      ui.appendChild(line);
+
+      const handle = document.createElement("div");
+      handle.style.cssText = "position:absolute; width:34px; height:34px; margin-left:-17px; margin-top:-17px; border-radius:9999px; background:#020817ee; border:2px solid #22d3ee; color:#22d3ee; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; cursor:ew-resize; pointer-events:all; box-shadow:0 4px 16px rgba(0,0,0,.55);";
+      handle.textContent = "↔";
+      ui.appendChild(handle);
+
+      const beforeLabel = document.createElement("div");
+      beforeLabel.textContent = config.beforeLabel ?? "Before";
+      beforeLabel.style.cssText = "position:absolute; background:rgba(0,0,0,.7); color:#7dd3fc; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
+      ui.appendChild(beforeLabel);
+
+      const afterLabel = document.createElement("div");
+      afterLabel.textContent = config.afterLabel ?? "After";
+      afterLabel.style.cssText = "position:absolute; background:rgba(0,0,0,.7); color:#fdba74; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
+      ui.appendChild(afterLabel);
+
+      let position = 0.5; // fraction 0..1 across the AOI width — before on the left, after on the right
+
+      const applyClip = () => {
+        const afterEl = (afterLayer as any).getElement?.() as HTMLElement | undefined;
+        if (afterEl) afterEl.style.clipPath = `inset(0 0 0 ${position * 100}%)`;
+      };
+
+      const reposition = () => {
+        const nw = map.latLngToContainerPoint(bounds.getNorthWest());
+        const se = map.latLngToContainerPoint(bounds.getSouthEast());
+        const left = Math.min(nw.x, se.x), right = Math.max(nw.x, se.x);
+        const top = Math.min(nw.y, se.y), bottom = Math.max(nw.y, se.y);
+        const x = left + (right - left) * position;
+        line.style.left = `${x}px`;
+        line.style.top = `${top}px`;
+        line.style.height = `${Math.max(0, bottom - top)}px`;
+        handle.style.left = `${x}px`;
+        handle.style.top = `${(top + bottom) / 2}px`;
+        beforeLabel.style.left = `${left + 10}px`;
+        beforeLabel.style.top = `${top + 10}px`;
+        afterLabel.style.left = `${Math.max(left + 10, right - 10 - afterLabel.offsetWidth)}px`;
+        afterLabel.style.top = `${top + 10}px`;
+      };
+
+      afterLayer.on("load", () => { applyClip(); reposition(); });
+      beforeLayer.on("load", reposition);
+      applyClip();
+      reposition();
+
+      const onMapMove = () => reposition();
+      map.on("move", onMapMove);
+      map.on("zoom", onMapMove);
+
+      let dragging = false;
+      const onPointerDown = (e: PointerEvent) => {
+        dragging = true;
+        handle.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      };
+      const onPointerMove = (e: PointerEvent) => {
+        if (!dragging) return;
+        const nw = map.latLngToContainerPoint(bounds.getNorthWest());
+        const se = map.latLngToContainerPoint(bounds.getSouthEast());
+        const left = Math.min(nw.x, se.x), right = Math.max(nw.x, se.x);
+        const rect = map.getContainer().getBoundingClientRect();
+        const clientX = e.clientX - rect.left;
+        const frac = (clientX - left) / Math.max(1, right - left);
+        position = Math.max(0, Math.min(1, frac));
+        applyClip();
+        reposition();
+      };
+      const onPointerUp = () => { dragging = false; };
+
+      handle.addEventListener("pointerdown", onPointerDown);
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+
+      swipeOverlayRef.current = {
+        cleanup: () => {
+          map.off("move", onMapMove);
+          map.off("zoom", onMapMove);
+          handle.removeEventListener("pointerdown", onPointerDown);
+          window.removeEventListener("pointermove", onPointerMove);
+          window.removeEventListener("pointerup", onPointerUp);
+          try { map.removeLayer(beforeLayer); } catch {}
+          try { map.removeLayer(afterLayer); } catch {}
+          try { ui.remove(); } catch {}
+        },
+      };
+    });
+  }, [onSwipeOverlayRegister, mapReady]);
 
   // Escape cancels only the in-progress interaction.
   useEffect(() => {
@@ -1687,6 +1825,10 @@ console.log("Area m²:", turf.area(polygon));
         if (aoiEditorRef.current.isActive) aoiEditorRef.current.stopEditing(false);
         aoiEditorRef.current = null;
       }
+      if (swipeOverlayRef.current) {
+        swipeOverlayRef.current.cleanup();
+        swipeOverlayRef.current = null;
+      }
       if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; }
     };
   }, []);
@@ -1714,6 +1856,7 @@ console.log("Area m²:", turf.area(polygon));
         .leaflet-popup-close-button{color:#64748b!important}
         .leaflet-control-attribution{background:rgba(4,13,26,.8)!important;color:#475569!important;font-size:.55rem!important}
         .aoi-vertex-handle{cursor:grab!important}
+        .change-detection-raster-overlay{image-rendering:pixelated;image-rendering:crisp-edges;image-rendering:-moz-crisp-edges}
         @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         .animate-fadeUp{animation:fadeUp .25s ease both}
       `}</style>

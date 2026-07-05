@@ -1210,6 +1210,7 @@ export default function MapPage() {
               onOpacityChangeRegister={(h) => { changeOpacityRef.current = h; }}
             onImagePlacerRegister={(h) => { startImagePlacementRef.current = h; }}
             onRasterOverlayRegister={(h) => { rasterOverlayRef.current = h as any; }}
+            onSwipeOverlayRegister={(h) => { swipeCompareRef.current = h as any; }}
             geoJsonData={contourLayer?.visible ? geoJsonData : null}
             extraGeoJsonData={combinedGeoJson}
             latestGeoJson={latestGeoJson}
