@@ -565,19 +565,6 @@ const CHANGE_COLORS: Record<ChangeClass, [number, number, number]> = {
   other:    [234, 179, 8],   // amber/yellow
 };
 
-// alpha لكل كلاس — "noChange" بيغطي غالبًا 90%+ من أي صورة، فلو اديناه
-// نفس شفافية باقي الكلاسات (235) هيرسم شبه معتم فوق الصورة كلها ويخلي
-// الـ Change Map يبان "أخضر solid" ويغطي أي تفاصيل. هنا بنسيبه شبه شفاف
-// (يبين إن الأرض متغيرتش من غير ما يخبي الصورة تحته)، وبنسيب الكلاسات
-// الفعلية (gain/loss/other) واضحة وملفتة عشان هي بيت القصيد.
-const CHANGE_ALPHA: Record<ChangeClass, number> = {
-  noData:   90,
-  noChange: 25,
-  gain:     235,
-  loss:     235,
-  other:    235,
-};
-
 async function renderChange(
   beforeA: BandRaster,
   beforeB: BandRaster,
@@ -622,7 +609,7 @@ async function renderChange(
     rgbaData[o] = r;
     rgbaData[o + 1] = g;
     rgbaData[o + 2] = b;
-    rgbaData[o + 3] = CHANGE_ALPHA[cls];
+    rgbaData[o + 3] = cls === "noData" ? 90 : 235;
   }
 
   const total = n || 1;

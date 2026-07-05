@@ -163,6 +163,11 @@ export async function GET(req: NextRequest) {
   const rMin     = parseFloat(searchParams.get("min") ?? "-1");
   const rMax     = parseFloat(searchParams.get("max") ?? "1");
   const colormap = searchParams.get("colormap") ?? "rdylgn";
+  // ── عدد خانات الـ histogram بقى قابل للتحكم من الفرونت (مش ثابت 10) ──
+  // كل ما الرقم يكبر، كل ما قدرنا نقسم البيانات على أي عدد Zones/Classes
+  // بدقة أعلى بعدين في الواجهة (مش لازم يكون قاسم للعدد بالظبط). 100 قيمة
+  // افتراضية كويسة (دقة كفاية) لو الفرونت مبعتش الباراميتر ده.
+  const bins = Math.max(2, Math.min(500, parseInt(searchParams.get("bins") ?? "100", 10) || 100));
 
   // ── شفافية ذكية: نخفي البكسلات "المحايدة" (قريبة من الصفر = مفيش تحليل
   // حقيقي) ونوريّ بس البكسلات اللي بعيدة عن الصفر (إشارة قوية فعلًا) ──────────
@@ -285,6 +290,13 @@ export async function GET(req: NextRequest) {
   // والقيم البعيدة (إشارة قوية في أي اتجاه، موجبة أو سالبة) تتلوّن وتظهر.
   // ده بيشتغل صح مع كل أنواع الـ ramps (sequential زي Vegetation، أو
   // diverging زي Water/Moisture اللي الإشارة فيها ممكن تكون في الطرفين).
+  //
+  // ⚠️ ملحوظة مهمة: الـ alpha ده غرضه بصري بحت (يخبي على الخريطة البكسلات
+  // اللي مفيهاش إشارة قوية) — مش المفروض يتستخدم عشان "يستبعد" بكسلات من
+  // حساب الـ Zones/Histogram. لو استخدمناه في الإحصاء، أي بكسل قريب من
+  // الصفر (زي أرض جرداء NDVI~0) بيختفي من العدّ خالص، والزونز بتطلع
+  // متمركزة بشكل غير حقيقي على نطاق ضيق قريب من حافة الشفافية (وده اللي
+  // كان بيحصل قبل الإصلاح ده).
   const t0 = Math.max(0, Math.min(1, (zeroVal - rMin) / range)); // موقع الصفر داخل 0-1
   const maxDist = Math.max(t0, 1 - t0) || 1;
   const zeroByte = Math.max(0, Math.min(255, Math.round(t0 * 255)));
@@ -315,7 +327,7 @@ export async function GET(req: NextRequest) {
     alphaLUT[i] = Math.round(smooth * 255);
   }
 
-  const histogram = new Array(10).fill(0);
+  const histogram = new Array(bins).fill(0);
   let validPixels = 0;
   let grayMin = 255;
   let grayMax = 0;
@@ -332,14 +344,21 @@ export async function GET(req: NextRequest) {
   for (let i = 0; i < width * height; i++) {
     const v = grayData[i];                // 0-255
     const isMasked = maskUsable && nodataMask![i] === 1;
-    const alpha = isMasked ? 0 : alphaLUT[v];
-    if (alpha > 0) {
+    const alpha = isMasked ? 0 : alphaLUT[v]; // بصري بس — بيتحط في الـ PNG
+
+    // ✅ الإصلاح: الإحصاء (histogram/zones/stats) بيشمل أي بكسل حقيقي
+    // (مش nodata/مش برّه الـ polygon)، بغض النظر هو شفاف بصريًا على
+    // الخريطة ولا لأ. قبل كده كان الشرط `if (alpha > 0)` بيستبعد كل
+    // البكسلات القريبة من الصفر من العدّ كمان، مش بس من العرض — وده
+    // اللي كان بيخلي الـ Zones تتلخبط وتتركّز في زون واحدة غريبة.
+    if (!isMasked) {
       validPixels += 1;
       grayMin = Math.min(grayMin, v);
       grayMax = Math.max(grayMax, v);
       graySum += v;
-      histogram[Math.min(9, Math.floor((v / 256) * 10))] += 1;
+      histogram[Math.min(bins - 1, Math.floor((v / 256) * bins))] += 1;
     }
+
     rgbaData[i * 4]     = lut[v * 3];
     rgbaData[i * 4 + 1] = lut[v * 3 + 1];
     rgbaData[i * 4 + 2] = lut[v * 3 + 2];

@@ -262,6 +262,11 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   const [colormap, setColormap] = useState(EXPRESSION_PRESETS[0].colormap);
   const [rescaleMin, setRescaleMin] = useState(EXPRESSION_PRESETS[0].rescale[0]);
   const [rescaleMax, setRescaleMax] = useState(EXPRESSION_PRESETS[0].rescale[1]);
+  // Tracks whether the user manually typed into Rescale Min/Max. While false,
+  // the backend's auto-computed display range (from the actual result data)
+  // is applied after each render — needed because -0.2..0.9 is only correct
+  // for normalized indices like NDVI, not a plain ratio like B07/B06.
+  const [userEditedRescale, setUserEditedRescale] = useState(false);
   const [opacity, setOpacity] = useState(85);
   const [clipToShape, setClipToShape] = useState(true);
   const pickedScene = useSelectedScene();
@@ -328,12 +333,14 @@ const requestGeometry = useMemo(() => getRequestGeometry(selectedFeature), [sele
     setColormap(preset.colormap);
     setRescaleMin(preset.rescale[0]);
     setRescaleMax(preset.rescale[1]);
+    setUserEditedRescale(false);
     setPresetMenuOpen(false);
   };
 
   const insertBand = (bandId: string) => {
     setActivePreset("");
     setExpression((prev) => (prev ? `${prev}${bandId}` : bandId));
+    setUserEditedRescale(false);
     setShowBandPicker(false);
   };
 
@@ -404,15 +411,29 @@ if (!requestGeometry) {
       setSceneMeta({ usedSceneId, method: usedMethod });
     }
 
-    // ── 3. Rescale — بناخد القيم من الـ state مباشرة (rescaleMin/rescaleMax)
-    // مش من preset table تاني. الـ state دي أصلاً بتتظبط لما تختاري preset
-    // (applyPreset بيعمل setRescaleMin/setRescaleMax)، وكمان بتتحدث لما
-    // اليوزر يكتب في الـ 2 input بتوع Rescale min/max. المشكلة كانت إن
-    // السطر القديم كان بيرجع لقيمة الـ preset الأصلية من EXPRESSION_PRESETS
-    // كل مرة (طول ما فيه activePreset)، فأي تعديل يدوي من اليوزر في
-    // الـ input كان بيتجاهل تمامًا ومايوصلش للـ request خالص.
-    let finalMin = rescaleMin;
-    let finalMax = rescaleMax;
+    // ── 3. Rescale — بناخد القيم من preset (لو موجود)، وإلا من الـ display
+    // range اللي الباكند بيحسبه فعليًا من قيم الناتج (2%-98% percentile)
+    // لو اليوزر ملمسش حقول Rescale بنفسه، وإلا من الـ input اليدوي.
+    // السبب: -0.2..0.9 صح بس للمؤشرات المعيارية زي NDVI؛ معادلة عادية
+    // زي B07/B06 قيمتها ممكن تطلع 0..3+ وتتقص كلها لون واحد لو سبناها كده.
+    const currentPreset = EXPRESSION_PRESETS.find((p) => p.key === activePreset);
+    const autoRange = payload?.data?.display_range as { min: number; max: number } | undefined;
+
+    let finalMin: number;
+    let finalMax: number;
+
+    if (currentPreset) {
+      finalMin = currentPreset.rescale[0];
+      finalMax = currentPreset.rescale[1];
+    } else if (!userEditedRescale && autoRange) {
+      finalMin = autoRange.min;
+      finalMax = autoRange.max;
+      setRescaleMin(finalMin);
+      setRescaleMax(finalMax);
+    } else {
+      finalMin = rescaleMin;
+      finalMax = rescaleMax;
+    }
     if (finalMax === finalMin) finalMax = finalMin + 0.01;
 
     // ── 4. Convert TIF → PNG via Next.js proxy ────────────────────────────
@@ -618,7 +639,7 @@ if (!requestGeometry) {
 
         <textarea
           value={expression}
-          onChange={(e) => { setExpression(e.target.value); setActivePreset(""); }}
+          onChange={(e) => { setExpression(e.target.value); setActivePreset(""); setUserEditedRescale(false); }}
           onFocus={() => setShowBandPicker(true)}
           onBlur={() => setShowBandPicker(false)}
           rows={3}
@@ -730,12 +751,20 @@ if (!requestGeometry) {
         <div className="grid grid-cols-2 gap-2">
           <label className="space-y-1">
             <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Rescale min</span>
-            <input type="number" step="0.1" value={rescaleMin} onChange={(e) => setRescaleMin(Number(e.target.value))}
+            <input type="number" step="0.1" value={rescaleMin} onChange={(e) => {
+              const raw = e.target.value;
+              setUserEditedRescale(raw.trim() !== "");
+              setRescaleMin(raw.trim() === "" ? EXPRESSION_PRESETS[0].rescale[0] : Number(raw));
+            }}
               className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
           </label>
           <label className="space-y-1">
             <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Rescale max</span>
-            <input type="number" step="0.1" value={rescaleMax} onChange={(e) => setRescaleMax(Number(e.target.value))}
+            <input type="number" step="0.1" value={rescaleMax} onChange={(e) => {
+              const raw = e.target.value;
+              setUserEditedRescale(raw.trim() !== "");
+              setRescaleMax(raw.trim() === "" ? EXPRESSION_PRESETS[0].rescale[1] : Number(raw));
+            }}
               className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
           </label>
         </div>
