@@ -281,6 +281,11 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   histogram: number[];
 } | null>(null);
 const [classification, setClassification] = useState<string>("");
+// ── بيانات الصورة اللي فعليًا اتحسبت عليها النتيجة، جايين تلقائي مع كل
+// رد من الباكند (used_scene_id + method: "explicit_id" لو اليوزر اختار
+// سين معينة من Satellite Data، أو "date_fallback" لو النظام هو اللي دور
+// واختار تلقائي جوه الـ date range) ──────────────────────────────────
+const [sceneMeta, setSceneMeta] = useState<{ usedSceneId: string; method: string } | null>(null);
 
 const bbox = useMemo(
   () => getFeatureBBox(selectedFeature, fallbackCoords, true),
@@ -322,6 +327,7 @@ const runPreview = async () => {
   setPreviewError(null);
   setStats(null);
   setClassification("");
+  setSceneMeta(null);
 
   try {
     // ── 1. Build date range string ────────────────────────────────────────
@@ -365,6 +371,16 @@ if (!requestGeometry) {
 
     const tifUrl: string = payload?.data?.url ?? "";
     if (!tifUrl) throw new Error("Backend returned no output URL");
+
+    // ── used_scene_id + method جايين تلقائي مع كل نتيجة من الباكند ──
+    // بنخزنهم عشان نعرضهم لليوزر تحت النتيجة، يعرف إحنا حسبنا على أنهي
+    // صورة بالظبط وهل ده كان باختياره (explicit_id) ولا اختيار تلقائي
+    // بالتاريخ (date_fallback)
+    const usedSceneId: string | undefined = payload?.data?.used_scene_id;
+    const usedMethod: string | undefined = payload?.data?.method;
+    if (usedSceneId || usedMethod) {
+      setSceneMeta({ usedSceneId: usedSceneId ?? "—", method: usedMethod ?? "—" });
+    }
 
     // ── 3. Rescale from preset or manual input ─────────────────────────────
     const currentPreset = EXPRESSION_PRESETS.find(p => p.key === activePreset);
@@ -838,6 +854,32 @@ if (!requestGeometry) {
             <span className="text-[0.55rem] text-slate-600">{rescaleMax}</span>
           </div>
           <p className="break-all font-mono text-[0.52rem] leading-relaxed text-slate-600">{expression}</p>
+
+          {/* Scene used — used_scene_id + method جايين من الباكند ── */}
+          {sceneMeta && (
+            <div className="flex items-center justify-between gap-2 rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-1.5">
+              <div className="min-w-0">
+                <p className="text-[0.55rem] uppercase tracking-wider text-slate-500">Scene used</p>
+                <p className="mt-0.5 truncate font-mono text-[0.55rem] text-slate-400" title={sceneMeta.usedSceneId}>
+                  {sceneMeta.usedSceneId}
+                </p>
+              </div>
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[0.52rem] font-bold ${
+                  sceneMeta.method === "explicit_id"
+                    ? "bg-cyan-400/10 text-cyan-300"
+                    : "bg-amber-400/10 text-amber-300"
+                }`}
+                title={
+                  sceneMeta.method === "explicit_id"
+                    ? "Computed on the scene you picked from Satellite Data"
+                    : "Scene auto-selected by the server within the date range"
+                }
+              >
+                {sceneMeta.method === "explicit_id" ? "MANUAL PICK" : "AUTO (DATE)"}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>
