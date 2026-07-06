@@ -453,19 +453,26 @@ export async function GET(req: NextRequest) {
   }
 
   const grayToValue = (v: number) => rMin + (v / 255) * range;
+  // ✅ إضافة: totalPixels = إجمالي بكسلات الـ render rectangle (width×height)،
+  // بغض النظر هي valid ولا masked/nodata. ده اللي الفرونت محتاجه عشان يقدر
+  // يحسب نسبة الـ "No Data" الحقيقية بدل ما يفترض إن validPixels = الكل ────
+  const totalPixels = width * height;
+  const maskedPixels = totalPixels - validPixels;
   const valueStats = validPixels > 0
     ? {
         min: grayToValue(grayMin),
         max: grayToValue(grayMax),
         mean: grayToValue(graySum / validPixels),
         validPixels,
+        totalPixels,
+        maskedPixels,
       }
-    : { min: rMin, max: rMax, mean: 0, validPixels: 0 };
+    : { min: rMin, max: rMax, mean: 0, validPixels: 0, totalPixels, maskedPixels };
 
   // ── 3.5. Zones/Classes discrete classification (لو numClasses !== null) ───
   let zoneStats: Array<{
     zone: number; label: string; color: string; pixels: number;
-    pct: number; areaM2: number; lo: number; hi: number;
+    pct: number; areaM2: number; lo: number; hi: number; isNoData?: boolean;
   }> | null = null;
 
   if (numClasses !== null && validPixels > 0) {
@@ -525,6 +532,9 @@ export async function GET(req: NextRequest) {
       const cls = finalClassIndex[i];
       if (cls >= 0) counts[cls]++;
     }
+    // ✅ الإصلاح: النسبة بقت من totalPixels (كل الـ AOI) مش من validPixels
+    // بس — عشان لو فيه no-data جوه المنطقة، النسب متجمعش غلط على 100%
+    // وتدّي انطباع إن كل حاجة اتصنفت وهي مش كده ────────────────────────────
     zoneStats = counts.map((count, i) => {
       const lo = grayToValue(grayMin + (classSpan * i) / numClasses);
       const hi = grayToValue(grayMin + (classSpan * (i + 1)) / numClasses);
@@ -535,11 +545,27 @@ export async function GET(req: NextRequest) {
         label: `Zone ${i + 1}`,
         color: hexColor,
         pixels: count,
-        pct: (count / validPixels) * 100,
+        pct: (count / totalPixels) * 100,
         areaM2: pixelAreaM2 ? count * pixelAreaM2 : 0,
         lo, hi,
       };
     });
+
+    // ✅ إضافة: zone وهمية للـ "No Data" لو فيه بكسلات ماسكة جوه الـ render
+    // rectangle — كده الفرونت يقدر يعرضها كصف منفصل في الـ Legend بدل ما
+    // تختفي تمامًا من الحساب زي ما كان بيحصل قبل كده ─────────────────────
+    if (maskedPixels > 0) {
+      zoneStats.push({
+        zone: numClasses + 1,
+        label: "No Data",
+        color: "#475569", // slate-600 — رمادي محايد، مش من الـ colormap
+        pixels: maskedPixels,
+        pct: (maskedPixels / totalPixels) * 100,
+        areaM2: pixelAreaM2 ? maskedPixels * pixelAreaM2 : 0,
+        lo: 0, hi: 0,
+        isNoData: true,
+      });
+    }
   }
 
   // ── 4. تحسين الدقة الظاهرية + شد الألوان (vivid, زي أوروبا/Pixxel) ────────

@@ -228,7 +228,10 @@ function readRasterStatsFromHeaders(res: Response, fallbackMin: number, fallback
     ? histogramHeader.split(",").map((v) => Number(v)).filter((v) => Number.isFinite(v))
     : [];
 
-  let parsedStats: { min?: number; max?: number; mean?: number; validPixels?: number } = {};
+  let parsedStats: {
+    min?: number; max?: number; mean?: number;
+    validPixels?: number; totalPixels?: number; maskedPixels?: number;
+  } = {};
   if (statsHeader) {
     try {
       parsedStats = JSON.parse(statsHeader);
@@ -237,11 +240,26 @@ function readRasterStatsFromHeaders(res: Response, fallbackMin: number, fallback
     }
   }
 
+  const validPixels = Number.isFinite(parsedStats.validPixels)
+    ? Number(parsedStats.validPixels)
+    : histogram.reduce((a, b) => a + b, 0);
+  // ✅ إضافة: totalPixels/maskedPixels جايين من الباكند دلوقتي (بعد الإصلاح).
+  // لو رد قديم من الكاش مش فيه الحقول دي، بنفترض إن مفيش no-data (زي القديم)
+  // بدل ما نكسر الحساب ────────────────────────────────────────────────────
+  const totalPixels = Number.isFinite(parsedStats.totalPixels)
+    ? Number(parsedStats.totalPixels)
+    : validPixels;
+  const maskedPixels = Number.isFinite(parsedStats.maskedPixels)
+    ? Number(parsedStats.maskedPixels)
+    : Math.max(0, totalPixels - validPixels);
+
   return {
     min: Number.isFinite(parsedStats.min) ? Number(parsedStats.min) : fallbackMin,
     max: Number.isFinite(parsedStats.max) ? Number(parsedStats.max) : fallbackMax,
     mean: Number.isFinite(parsedStats.mean) ? Number(parsedStats.mean) : (fallbackMin + fallbackMax) / 2,
-    validPixels: Number.isFinite(parsedStats.validPixels) ? Number(parsedStats.validPixels) : histogram.reduce((a, b) => a + b, 0),
+    validPixels,
+    totalPixels,
+    maskedPixels,
     // الباكند بقى بيبعت bins متغيّر (100 افتراضيًا)، مش 10 ثابتة — أي طول
     // مقبول دلوقتي (كان قبل كده بيرفض أي حاجة مش 10 ويصفّرها بالغلط)
     histogram: histogram.length > 0 ? histogram : new Array(100).fill(0),
@@ -252,7 +270,7 @@ function readRasterStatsFromHeaders(res: Response, fallbackMin: number, fallback
 // sieve merge الحقيقي، مش محسوبين تقريبيًا من الـ histogram في الفرونت ──────
 type ZoneStat = {
   zone: number; label: string; color: string; pixels: number;
-  pct: number; areaM2: number; lo: number; hi: number;
+  pct: number; areaM2: number; lo: number; hi: number; isNoData?: boolean;
 };
 
 function readZoneStatsFromHeaders(res: Response): ZoneStat[] | null {
@@ -321,6 +339,8 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   max: number;
   mean: number;
   validPixels?: number;
+  totalPixels?: number;
+  maskedPixels?: number;
   histogram: number[];
 } | null>(null);
 const [classification, setClassification] = useState<string>("");
@@ -970,12 +990,22 @@ if (!requestGeometry) {
         // ── Zone distribution — real (from backend classification + sieve
         // merge) لما يكون متاح، وإلا fallback لتقريب الـ histogram القديم
         // (مثلًا لو الباكند مش محدّث لسه أو الـ response قديم من الكاش) ──────
-        const totalPixels = stats.histogram.reduce((a, b) => a + b, 0) || 1;
+        // ✅ الإصلاح: بنفصل الـ "No Data" (zone وهمية من الباكند) عن الـ zones
+        // المصنّفة الحقيقية، عشان numZones/الألوان/الـ legend تفضل صح، وبعدين
+        // بنعرضها كصف منفصل تحت. ولو مفيش zoneStats خالص (fallback)، منعرضش
+        // No Data لأننا مش عندنا معلومة حقيقية عن الـ masked pixels ──────────
+        const noDataStat = zoneStats?.find((z) => z.isNoData) ?? null;
+        const classifiedZoneStats = zoneStats ? zoneStats.filter((z) => !z.isNoData) : null;
+
+        // مرجع النسب: totalPixels الحقيقي (شامل الـ no-data) لو جاي من
+        // الباكند، وإلا نرجع للـ fallback القديم (مجموع الـ histogram، اللي
+        // أصلاً بيشمل بس البيكسلات الـ valid في الردود الأقدم)
+        const totalPixels = stats.totalPixels ?? (stats.histogram.reduce((a, b) => a + b, 0) || 1);
         const range = stats.max - stats.min;
 
-        const numZones = zoneStats ? zoneStats.length : nClasses;
-        const zoneCounts = zoneStats
-          ? zoneStats.map((z) => z.pixels)
+        const numZones = classifiedZoneStats ? classifiedZoneStats.length : nClasses;
+        const zoneCounts = classifiedZoneStats
+          ? classifiedZoneStats.map((z) => z.pixels)
           : Array.from({ length: numZones }, (_, zi) => {
               const binsPerZone = stats.histogram.length / numZones;
               const start = Math.floor(zi * binsPerZone);
@@ -984,11 +1014,11 @@ if (!requestGeometry) {
             });
         // الألوان بتتولد من نفس الـ colormap المختار (من الباكند لو متاح،
         // وإلا محسوبة محليًا) عشان الـ Legend تطابق فعليًا اللي ظاهر على الخريطة
-        const zoneColors = zoneStats
-          ? zoneStats.map((z) => z.color)
+        const zoneColors = classifiedZoneStats
+          ? classifiedZoneStats.map((z) => z.color)
           : Array.from({ length: numZones }, (_, i) => sampleColormapColor(colormap, (i + 0.5) / numZones));
-        const zoneLabels = zoneStats
-          ? zoneStats.map((z) => `Zone ${z.zone}: ${z.lo.toFixed(3)} – ${z.hi.toFixed(3)}`)
+        const zoneLabels = classifiedZoneStats
+          ? classifiedZoneStats.map((z) => `Zone ${z.zone}: ${z.lo.toFixed(3)} – ${z.hi.toFixed(3)}`)
           : Array.from({ length: numZones }, (_, i) => {
               const lo = stats.min + (range * i) / numZones;
               const hi = stats.min + (range * (i + 1)) / numZones;
@@ -996,8 +1026,8 @@ if (!requestGeometry) {
             });
         // مساحة حقيقية (م²→كم²) لكل zone لو جاية من الباكند، غير كده تقدير
         // تقريبي زي الأول من الـ bbox
-        const zoneAreasKm2: (number | null)[] = zoneStats
-          ? zoneStats.map((z) => z.areaM2 / 1_000_000)
+        const zoneAreasKm2: (number | null)[] = classifiedZoneStats
+          ? classifiedZoneStats.map((z) => z.areaM2 / 1_000_000)
           : new Array(numZones).fill(null);
 
         // ── Smooth histogram data for the bar chart ───────────────────────────
@@ -1105,7 +1135,36 @@ if (!requestGeometry) {
                     </div>
                   );
                 })}
+                {noDataStat && (
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="w-3 h-3 shrink-0 rounded-sm"
+                      style={{ background: noDataStat.color }}
+                    />
+                    <span className="text-[0.62rem] text-slate-400 w-12 shrink-0">No Data</span>
+                    <div className="flex-1 bg-white/[0.04] rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{ width: `${noDataStat.pct.toFixed(3)}%`, background: noDataStat.color }}
+                      />
+                    </div>
+                    <span className="text-[0.6rem] font-semibold text-slate-400 w-12 text-right shrink-0">
+                      {noDataStat.pct.toFixed(3)}%
+                    </span>
+                    <span className="text-[0.52rem] text-slate-500 w-14 text-right shrink-0">
+                      ({(noDataStat.areaM2 / 1_000_000).toFixed(3)}km²)
+                    </span>
+                  </div>
+                )}
               </div>
+              {/* ⚠️ تحذير واضح لو فيه نسبة معتبرة من المنطقة no-data — عشان محدش
+                  يفتكر إن المنطقة اتصنفت بالكامل وهي مش كده */}
+              {noDataStat && noDataStat.pct > 1 && (
+                <p className="text-[0.55rem] text-amber-400/90 leading-relaxed">
+                  ⚠ {noDataStat.pct.toFixed(1)}% من المنطقة المختارة no-data (سحاب، حواف الـ scene، أو NDVI غير صالحة) ومش
+                  داخلة في تصنيف أي Zone.
+                </p>
+              )}
 
               {/* Classification label */}
               <div className="pt-1 border-t border-white/[0.05]">
