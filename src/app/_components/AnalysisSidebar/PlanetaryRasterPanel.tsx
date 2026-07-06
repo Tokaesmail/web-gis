@@ -541,6 +541,10 @@ if (!requestGeometry) {
 
     // ── 6. Pixel stats from the converted PNG ─────────────────────────────
     const rasterStats = readRasterStatsFromHeaders(pngRes, finalMin, finalMax);
+    console.log("HISTOGRAM DEBUG:", {
+  histogramLength: rasterStats.histogram.length,
+  sumOfHistogram: rasterStats.histogram.reduce((a, b) => a + b, 0),
+});
     setStats({
       min:       finalMin,
       max:       finalMax,
