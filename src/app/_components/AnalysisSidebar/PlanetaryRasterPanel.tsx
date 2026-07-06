@@ -1035,8 +1035,17 @@ if (!requestGeometry) {
           : new Array(numZones).fill(null);
 
         // ── Smooth histogram data for the bar chart ───────────────────────────
-        const maxH = Math.max(...stats.histogram, 1);
-        const histPct = stats.histogram.map((h) => (h / maxH) * 100);
+        // ── Downsample histogram bins for display (100 bins + gaps = width≈0) ──
+const DISPLAY_BARS = 40;
+const rawHist = stats.histogram;
+const groupSize = Math.ceil(rawHist.length / DISPLAY_BARS);
+const displayHist: number[] = [];
+for (let i = 0; i < rawHist.length; i += groupSize) {
+  const chunk = rawHist.slice(i, i + groupSize);
+  displayHist.push(chunk.reduce((a, b) => a + b, 0));
+}
+const maxH = Math.max(...displayHist, 1);
+const histPct = displayHist.map((h) => (h / maxH) * 100);
 
         // ── Dynamic legend range ──────────────────────────────────────────────
         const legendMin = stats.min.toFixed(3);
@@ -1055,7 +1064,7 @@ if (!requestGeometry) {
             <div className="p-3 space-y-3">
               {/* Histogram bars */}
               <div className="space-y-1">
-                <div className="flex items-end gap-[3px] h-16">
+                <div className="flex items-end gap-[1px] h-16">
                   {histPct.map((pct, i) => {
                     // colour each bar by which zone it falls in
                     const zoneIdx = Math.min(numZones - 1, Math.floor((i / histPct.length) * numZones));
