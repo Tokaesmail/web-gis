@@ -593,16 +593,19 @@ export async function GET(req: NextRequest) {
   // الفعلية اللي الباكند بيرجّعها بعد الـ snap لشبكة البكسلات).
   const SEND_REAL_BBOX = true;
 
-  return new NextResponse(new Uint8Array(pngBuffer), {
-    status: 200,
-    headers: {
-      "Content-Type":  "image/png",
-      "Cache-Control": "public, max-age=300",
-      // ← الفرونت بيقرا الهيدر ده عشان يحط الصورة في مكانها الصح على الخريطة
-      "X-Real-Bbox": SEND_REAL_BBOX && realBbox ? realBbox.join(",") : "",
-      "X-Raster-Histogram": histogram.join(","),
-      "X-Raster-Stats": JSON.stringify(valueStats),
-      ...(zoneStats ? { "X-Zone-Stats": JSON.stringify(zoneStats) } : {}),
-    },
-  });
+ return new NextResponse(new Uint8Array(pngBuffer), {
+  status: 200,
+  headers: {
+    "Content-Type":  "image/png",
+    // ⚠️ شيلي الكاش مؤقتًا لحد ما تتأكدي إن كل الـ headers الجديدة مستقرة
+    // وبتوصل صح على فيرسيل. الكاش القديم كان بيرجّع responses قبل إضافة
+    // X-Raster-Histogram، فكان بيوصل بدونه رغم إنه X-Zone-Stats كان موجود
+    // من قبل كده.
+    "Cache-Control": "no-store",
+    "X-Real-Bbox": SEND_REAL_BBOX && realBbox ? realBbox.join(",") : "",
+    "X-Raster-Histogram": histogram.join(","),
+    "X-Raster-Stats": JSON.stringify(valueStats),
+    ...(zoneStats ? { "X-Zone-Stats": JSON.stringify(zoneStats) } : {}),
+  },
+});
 }
