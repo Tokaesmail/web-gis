@@ -156,6 +156,85 @@ function buildLUT(stops: Stop[]): Buffer {
   return lut;
 }
 
+// ── Sieve filter: بيدمج أي connected region (4-neighbor) أصغر من minPixels
+// جوه أقرب class مجاور ليها (الأكتر تكرارًا على حدودها) — زي GDAL sieve
+// filter بالظبط، وده اللي بيخلي "Min zone area" فعليًا يشيل الجزر الصغيرة
+// بدل ما يفضل شكل الصورة زي ما هو أيًا كان الرقم المكتوب.
+function sieveClasses(classIndex: Int16Array, width: number, height: number, minPixels: number): Int16Array {
+  if (minPixels <= 1) return classIndex;
+
+  const n = width * height;
+  const out = new Int16Array(classIndex); // نعدل نسخة، مش الأصل
+  const MAX_PASSES = 4;
+
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    const labels = new Int32Array(n).fill(-1);
+    const stack = new Int32Array(n);
+    const regionPixels: number[][] = []; // pixel indices لكل label
+    const regionClass: number[] = [];
+
+    let nextLabel = 0;
+    for (let start = 0; start < n; start++) {
+      if (out[start] < 0 || labels[start] !== -1) continue;
+      const cls = out[start];
+      let sp = 0;
+      stack[sp++] = start;
+      labels[start] = nextLabel;
+      const pixels: number[] = [];
+      while (sp > 0) {
+        const idx = stack[--sp];
+        pixels.push(idx);
+        const x = idx % width, y = (idx / width) | 0;
+        if (x > 0) { const ni = idx - 1; if (labels[ni] === -1 && out[ni] === cls) { labels[ni] = nextLabel; stack[sp++] = ni; } }
+        if (x < width - 1) { const ni = idx + 1; if (labels[ni] === -1 && out[ni] === cls) { labels[ni] = nextLabel; stack[sp++] = ni; } }
+        if (y > 0) { const ni = idx - width; if (labels[ni] === -1 && out[ni] === cls) { labels[ni] = nextLabel; stack[sp++] = ni; } }
+        if (y < height - 1) { const ni = idx + width; if (labels[ni] === -1 && out[ni] === cls) { labels[ni] = nextLabel; stack[sp++] = ni; } }
+      }
+      regionPixels.push(pixels);
+      regionClass.push(cls);
+      nextLabel++;
+    }
+
+    const order = regionPixels.map((_, i) => i).filter((i) => regionPixels[i].length < minPixels);
+    order.sort((a, b) => regionPixels[a].length - regionPixels[b].length);
+    if (order.length === 0) break;
+
+    let mergedAny = false;
+    for (const labelId of order) {
+      const pixels = regionPixels[labelId];
+      if (pixels.length >= minPixels) continue;
+
+      const neighborCounts = new Map<number, number>();
+      for (const idx of pixels) {
+        const x = idx % width, y = (idx / width) | 0;
+        const neighbors = [
+          x > 0 ? idx - 1 : -1,
+          x < width - 1 ? idx + 1 : -1,
+          y > 0 ? idx - width : -1,
+          y < height - 1 ? idx + width : -1,
+        ];
+        for (const ni of neighbors) {
+          if (ni < 0) continue;
+          const nc = out[ni];
+          if (nc < 0 || nc === regionClass[labelId]) continue;
+          neighborCounts.set(nc, (neighborCounts.get(nc) ?? 0) + 1);
+        }
+      }
+      if (neighborCounts.size === 0) continue;
+
+      let bestClass = regionClass[labelId], bestCount = -1;
+      for (const [cls, count] of neighborCounts) {
+        if (count > bestCount) { bestCount = count; bestClass = cls; }
+      }
+      for (const idx of pixels) out[idx] = bestClass;
+      mergedAny = true;
+    }
+    if (!mergedAny) break;
+  }
+
+  return out;
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const tifUrl   = searchParams.get("url");
@@ -168,6 +247,14 @@ export async function GET(req: NextRequest) {
   // بدقة أعلى بعدين في الواجهة (مش لازم يكون قاسم للعدد بالظبط). 100 قيمة
   // افتراضية كويسة (دقة كفاية) لو الفرونت مبعتش الباراميتر ده.
   const bins = Math.max(2, Math.min(500, parseInt(searchParams.get("bins") ?? "100", 10) || 100));
+
+  // ── Zones/Classes classification (discrete, EOS-style) ────────────────────
+  // لو الفرونت بعت classes، بنرجع صورة بألوان flat (مش continuous gradient)
+  // + نعمل sieve merge للـ zones الأصغر من minZoneArea (م²) جوه أقرب جار.
+  // classesParam === null يعني الفرونت لسه بتستخدم القديم (continuous colormap).
+  const classesParam = searchParams.get("classes");
+  const numClasses = classesParam ? Math.max(2, Math.min(50, parseInt(classesParam, 10) || 5)) : null;
+  const minZoneAreaM2 = Math.max(0, parseFloat(searchParams.get("minZoneArea") ?? "0") || 0);
 
   // ── شفافية ذكية: نخفي البكسلات "المحايدة" (قريبة من الصفر = مفيش تحليل
   // حقيقي) ونوريّ بس البكسلات اللي بعيدة عن الصفر (إشارة قوية فعلًا) ──────────
@@ -375,6 +462,86 @@ export async function GET(req: NextRequest) {
       }
     : { min: rMin, max: rMax, mean: 0, validPixels: 0 };
 
+  // ── 3.5. Zones/Classes discrete classification (لو numClasses !== null) ───
+  let zoneStats: Array<{
+    zone: number; label: string; color: string; pixels: number;
+    pct: number; areaM2: number; lo: number; hi: number;
+  }> | null = null;
+
+  if (numClasses !== null && validPixels > 0) {
+    // equal-interval breaks على الـ range الحقيقي للبيانات (زي EOS بالظبط:
+    // بتقسم من أصغر قيمة فعلية لأكبر قيمة فعلية جوه الـ AOI، مش من rMin/rMax
+    // الثابتين بتوع الـ colormap)
+    const classSpan = Math.max(1, grayMax - grayMin);
+
+    const classIndex = new Int16Array(width * height).fill(-1);
+    for (let i = 0; i < width * height; i++) {
+      const isMasked = maskUsable && nodataMask![i] === 1;
+      if (isMasked) continue;
+      const v = grayData[i];
+      let cls = Math.floor(((v - grayMin) / classSpan) * numClasses);
+      cls = Math.max(0, Math.min(numClasses - 1, cls));
+      classIndex[i] = cls;
+    }
+
+    // ── Pixel area (م²) من الـ bbox الحقيقي — لازم عشان نحول minZoneArea
+    // (م²) لعدد بكسلات فعلي (minPixels) للـ sieve filter ──────────────────
+    let pixelAreaM2: number | null = null;
+    if (realBbox) {
+      const [w, s, e, n] = realBbox;
+      const latMid = (s + n) / 2;
+      const metersPerDegLat = 111320;
+      const metersPerDegLon = 111320 * Math.cos((latMid * Math.PI) / 180);
+      const pixelW = (Math.abs(e - w) / width) * metersPerDegLon;
+      const pixelH = (Math.abs(n - s) / height) * metersPerDegLat;
+      pixelAreaM2 = pixelW * pixelH;
+    }
+
+    const minPixels = minZoneAreaM2 > 0 && pixelAreaM2 ? Math.round(minZoneAreaM2 / pixelAreaM2) : 0;
+    const finalClassIndex = minPixels > 1 ? sieveClasses(classIndex, width, height, minPixels) : classIndex;
+
+    // ── لون كل class من نفس الـ colormap المختار (نفس الـ ramp اللي شكل
+    // الـ continuous gradient، بس مقسّم flat) ──────────────────────────────
+    const zoneColorsRgb: [number, number, number][] = Array.from({ length: numClasses }, (_, i) => {
+      const t = (i + 0.5) / numClasses;
+      return applyColormap(stops, t);
+    });
+
+    // ── إعادة بناء rgbaData بألوان flat بدل الـ continuous gradient ──────
+    for (let i = 0; i < width * height; i++) {
+      const cls = finalClassIndex[i];
+      const isMasked = cls < 0;
+      const [r, g, b] = isMasked ? [0, 0, 0] : zoneColorsRgb[cls];
+      rgbaData[i * 4] = r;
+      rgbaData[i * 4 + 1] = g;
+      rgbaData[i * 4 + 2] = b;
+      rgbaData[i * 4 + 3] = isMasked ? 0 : 255;
+    }
+
+    // ── إحصائيات كل zone (بعد الـ sieve) عشان الفرونت يعرضها زي ما هي، من
+    // غير ما يحتاج يعيد حسابها من histogram تقريبي ─────────────────────────
+    const counts = new Array(numClasses).fill(0);
+    for (let i = 0; i < width * height; i++) {
+      const cls = finalClassIndex[i];
+      if (cls >= 0) counts[cls]++;
+    }
+    zoneStats = counts.map((count, i) => {
+      const lo = grayToValue(grayMin + (classSpan * i) / numClasses);
+      const hi = grayToValue(grayMin + (classSpan * (i + 1)) / numClasses);
+      const [r, g, b] = zoneColorsRgb[i];
+      const hexColor = "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
+      return {
+        zone: i + 1,
+        label: `Zone ${i + 1}`,
+        color: hexColor,
+        pixels: count,
+        pct: (count / validPixels) * 100,
+        areaM2: pixelAreaM2 ? count * pixelAreaM2 : 0,
+        lo, hi,
+      };
+    });
+  }
+
   // ── 4. تحسين الدقة الظاهرية + شد الألوان (vivid, زي أوروبا/Pixxel) ────────
   // الصورة الأصلية غالبًا صغيرة (حسب دقة Sentinel-2)، فبنكبّرها بـ Lanczos3
   // (interpolation ناعم) بدل ما المتصفح يكبرها بـ nearest-neighbor مبكسل.
@@ -409,6 +576,7 @@ export async function GET(req: NextRequest) {
       "X-Real-Bbox": SEND_REAL_BBOX && realBbox ? realBbox.join(",") : "",
       "X-Raster-Histogram": histogram.join(","),
       "X-Raster-Stats": JSON.stringify(valueStats),
+      ...(zoneStats ? { "X-Zone-Stats": JSON.stringify(zoneStats) } : {}),
     },
   });
 }

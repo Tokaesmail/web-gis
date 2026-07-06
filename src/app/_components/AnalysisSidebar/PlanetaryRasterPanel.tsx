@@ -242,8 +242,28 @@ function readRasterStatsFromHeaders(res: Response, fallbackMin: number, fallback
     max: Number.isFinite(parsedStats.max) ? Number(parsedStats.max) : fallbackMax,
     mean: Number.isFinite(parsedStats.mean) ? Number(parsedStats.mean) : (fallbackMin + fallbackMax) / 2,
     validPixels: Number.isFinite(parsedStats.validPixels) ? Number(parsedStats.validPixels) : histogram.reduce((a, b) => a + b, 0),
-    histogram: histogram.length === 10 ? histogram : new Array(10).fill(0),
+    // الباكند بقى بيبعت bins متغيّر (100 افتراضيًا)، مش 10 ثابتة — أي طول
+    // مقبول دلوقتي (كان قبل كده بيرفض أي حاجة مش 10 ويصفّرها بالغلط)
+    histogram: histogram.length > 0 ? histogram : new Array(100).fill(0),
   };
+}
+
+// ── Zone/Classes stats — جايين جاهزين من الباكند (X-Zone-Stats)، بعد الـ
+// sieve merge الحقيقي، مش محسوبين تقريبيًا من الـ histogram في الفرونت ──────
+type ZoneStat = {
+  zone: number; label: string; color: string; pixels: number;
+  pct: number; areaM2: number; lo: number; hi: number;
+};
+
+function readZoneStatsFromHeaders(res: Response): ZoneStat[] | null {
+  const header = res.headers.get("X-Zone-Stats");
+  if (!header) return null;
+  try {
+    const parsed = JSON.parse(header);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── الـ extent الحقيقي بقى جاي من الـ proxy نفسه (header: X-Real-Bbox) ──
@@ -269,6 +289,16 @@ export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Pro
   const [userEditedRescale, setUserEditedRescale] = useState(false);
   const [opacity, setOpacity] = useState(85);
   const [clipToShape, setClipToShape] = useState(true);
+  // ── Classes (Zones) + Min zone area — دلوقتي فعليًا متوصلين للباكند
+  // (كانوا قبل كده مش موجودين خالص، والـ zones كانت ثابتة على 5 دايمًا) ──
+  const [nClasses, setNClasses] = useState(5);
+  const [minZoneArea, setMinZoneArea] = useState(2000); // م²
+  // ── وضع العرض: continuous = تدرّج لوني ناعم (الافتراضي)، zones = تصنيف
+  // لـ N مناطق بألوان مصمتة (فلات). الـ Classes/Min zone area تحت دول
+  // بيبقى ليهم تأثير فعلي بس لما الوضع يكون "zones" — في continuous
+  // إحنا أصلاً مش بنبعتهم للباك خالص، فمفيش داعي يتلمسوا وهم من غير تأثير.
+  const [renderMode, setRenderMode] = useState<"continuous" | "zones">("continuous");
+  const [zoneStats, setZoneStats] = useState<ZoneStat[] | null>(null);
   const pickedScene = useSelectedScene();
   const [cloudCover, setCloudCover] = useState(10); // kept for potential future use
   // التاريخ بقى مشترك بين البانلز (sharedDateRange.ts) بدل local state —
@@ -387,12 +417,24 @@ if (!requestGeometry) {
       throw new Error(`Backend render failed (${res.status}). ${text.slice(0, 160)}`);
     }
 
-    const payload = await res.json();
-    // ── DEBUG: شوف الـ response كامل من الباكند — هل فيه bbox/bounds/transform حقيقي؟ ──
-    console.log("🛰️ raster-calc response:", JSON.stringify(payload, null, 2));
-    console.log("🛰️ bbox sent (renderBbox):", renderBbox);
+    const rawPayload = await res.json();
+    console.log("raster-calc response:", JSON.stringify(rawPayload, null, 2));
+    console.log("bbox sent (renderBbox):", renderBbox);
 
-    if (!payload?.success) throw new Error(payload?.message ?? "Render failed");
+    if (!rawPayload?.success) throw new Error(rawPayload?.message ?? "Render failed");
+
+    // ── الباكند أحيانًا بيرجّع الشكل القديم المسطّح:
+    //      { success, data: { url, scene_id_used, display_range } }
+    //    وأحيانًا بيرجّع نسخة متلغّمة (double-nested):
+    //      { success, data: { success, data: { url, ... } } }
+    //    عشان مانتكسرش لو الباكند رجع لأي شكل من الاتنين، بنفكّ الطبقة
+    //    الزيادة هنا لو موجودة، وبعد كده كل الكود تحت شغال زي ما هو من
+    //    غير أي تعديل تاني (payload?.data?.url، payload?.data?.scene_id_used، إلخ).
+    const innerData =
+      rawPayload?.data?.data && typeof rawPayload.data.data === "object"
+        ? rawPayload.data.data
+        : rawPayload?.data;
+    const payload = { ...rawPayload, data: innerData };
 
     const tifUrl: string = payload?.data?.url ?? "";
     if (!tifUrl) throw new Error("Backend returned no output URL");
@@ -422,10 +464,18 @@ if (!requestGeometry) {
     let finalMin: number;
     let finalMax: number;
 
-    if (currentPreset) {
+    // ── ملحوظة: لازم نتشيّك على userEditedRescale الأول، قبل حتى ما نتشيّك
+    // هل فيه preset (زي NDVI) مختار — عشان لو اليوزر لمس حقول Scale بإيده
+    // بعد ما اختار preset، تعديله يبقى هو الأولوية، مش القيم الثابتة
+    // بتاعة الـ preset. غير كده، السلوك القديم كان بيتجاهل أي تعديل يدوي
+    // طول ما فيه preset مختار (وده كان الباج اللي بيمنع تغيير الـ scale).
+    if (userEditedRescale) {
+      finalMin = rescaleMin;
+      finalMax = rescaleMax;
+    } else if (currentPreset) {
       finalMin = currentPreset.rescale[0];
       finalMax = currentPreset.rescale[1];
-    } else if (!userEditedRescale && autoRange) {
+    } else if (autoRange) {
       finalMin = autoRange.min;
       finalMax = autoRange.max;
       setRescaleMin(finalMin);
@@ -441,7 +491,9 @@ if (!requestGeometry) {
     // الـ proxy route بيجيب الـ TIF ويحوله PNG بـ sharp، وبيرجّع كمان
     // الـ extent الحقيقي (X-Real-Bbox header) اللي قراه من جوه الملف نفسه
     const zeroMode = finalMin >= 0 ? "at-or-below" : "around";
-    const proxyUrl = `/api/raster-proxy?url=${encodeURIComponent(tifUrl)}&min=${finalMin}&max=${finalMax}&colormap=${colormap}&zero=0&alphaLow=0&alphaHigh=0.18&zeroMode=${zeroMode}${accessToken ? `&token=${encodeURIComponent(accessToken)}` : ""}`;
+    const proxyUrl = `/api/raster-proxy?url=${encodeURIComponent(tifUrl)}&min=${finalMin}&max=${finalMax}&colormap=${colormap}&zero=0&alphaLow=0&alphaHigh=0.18&zeroMode=${zeroMode}${
+      renderMode === "zones" ? `&classes=${nClasses}&minZoneArea=${minZoneArea}` : ""
+    }${accessToken ? `&token=${encodeURIComponent(accessToken)}` : ""}`;
     const pngRes = await fetch(proxyUrl);
     if (!pngRes.ok) throw new Error(`PNG conversion failed (${pngRes.status})`);
 
@@ -476,6 +528,10 @@ if (!requestGeometry) {
       validPixels: rasterStats.validPixels,
       histogram: rasterStats.histogram,
     });
+    // ── Zones الحقيقية (بعد الـ classification + sieve merge) جايين من
+    // الباكند مباشرة — دلوقتي فعلاً بيتغيروا لما تغيّري Classes أو Min zone
+    // area، مش ثابتين على 5 زونز دايمًا زي الأول ─────────────────────────
+    setZoneStats(readZoneStatsFromHeaders(pngRes));
     setClassification(activePreset
       ? `📊 ${activePreset} · ${finalMin.toFixed(3)} → ${finalMax.toFixed(3)}`
       : rasterStats.mean > 0.3  ? "📈 High response"
@@ -699,7 +755,7 @@ if (!requestGeometry) {
       </div>
 
 
-      {/* Colormap + rescale */}
+      {/* Colormap + Render mode (Continuous → Rescale, Zones → Classes) */}
       <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3 space-y-3">
         <div className="space-y-1.5">
           <span className="text-[0.62rem] uppercase tracking-wider text-slate-500">Color ramp</span>
@@ -748,26 +804,102 @@ if (!requestGeometry) {
             </div>
           )}
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <label className="space-y-1">
-            <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Rescale min</span>
-            <input type="number" step="0.1" value={rescaleMin} onChange={(e) => {
-              const raw = e.target.value;
-              setUserEditedRescale(raw.trim() !== "");
-              setRescaleMin(raw.trim() === "" ? EXPRESSION_PRESETS[0].rescale[0] : Number(raw));
-            }}
-              className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
-          </label>
-          <label className="space-y-1">
-            <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Rescale max</span>
-            <input type="number" step="0.1" value={rescaleMax} onChange={(e) => {
-              const raw = e.target.value;
-              setUserEditedRescale(raw.trim() !== "");
-              setRescaleMax(raw.trim() === "" ? EXPRESSION_PRESETS[0].rescale[1] : Number(raw));
-            }}
-              className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
-          </label>
+
+        {/* Render mode toggle — Continuous يظهر تحته Rescale (Min/Max)،
+            و Zones يظهر تحته Classes/Min zone area. كل تاب بيعرض بس
+            الكنترولز اللي فعليًا بتأثر على الطلب في الوضع ده، بدل ما
+            تفضل الحقول ظاهرة ومالهاش تأثير في التاب التاني. */}
+        <div className="space-y-1.5">
+          <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Render mode</span>
+          <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-[#020817]/70 p-1">
+            <button
+              type="button"
+              onClick={() => setRenderMode("continuous")}
+              className={`rounded-md px-2.5 py-1.5 text-[0.65rem] font-bold transition-colors cursor-pointer ${
+                renderMode === "continuous" ? "bg-cyan-400/15 text-cyan-300" : "text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              Continuous
+            </button>
+            <button
+              type="button"
+              onClick={() => setRenderMode("zones")}
+              className={`rounded-md px-2.5 py-1.5 text-[0.65rem] font-bold transition-colors cursor-pointer ${
+                renderMode === "zones" ? "bg-cyan-400/15 text-cyan-300" : "text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              Zones
+            </button>
+          </div>
         </div>
+
+        {renderMode === "continuous" ? (
+          <div className="space-y-1.5">
+            <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Rescale</span>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="space-y-1">
+                <span className="text-[0.55rem] text-slate-600">Min</span>
+                <input type="number" step="0.1" value={rescaleMin} onChange={(e) => {
+                  const raw = e.target.value;
+                  setUserEditedRescale(raw.trim() !== "");
+                  setRescaleMin(raw.trim() === "" ? EXPRESSION_PRESETS[0].rescale[0] : Number(raw));
+                }}
+                  className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[0.55rem] text-slate-600">Max</span>
+                <input type="number" step="0.1" value={rescaleMax} onChange={(e) => {
+                  const raw = e.target.value;
+                  setUserEditedRescale(raw.trim() !== "");
+                  setRescaleMax(raw.trim() === "" ? EXPRESSION_PRESETS[0].rescale[1] : Number(raw));
+                }}
+                  className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40" />
+              </label>
+            </div>
+            <p className="text-[0.55rem] text-slate-600 leading-relaxed">
+              Smooth color gradient stretched between Min and Max — values outside this range are clipped to the nearest end color.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">Classes (Zones)</span>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="space-y-1">
+                <span className="text-[0.55rem] text-slate-600">Classes</span>
+                <input
+                  type="number"
+                  min={2}
+                  max={50}
+                  step={1}
+                  value={nClasses}
+                  onChange={(e) => {
+                    const v = Math.round(Number(e.target.value));
+                    setNClasses(Number.isFinite(v) ? Math.max(2, Math.min(50, v)) : 5);
+                  }}
+                  className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[0.55rem] text-slate-600">Min zone area (m²)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={minZoneArea}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setMinZoneArea(Number.isFinite(v) ? Math.max(0, v) : 0);
+                  }}
+                  className="w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-cyan-400/40"
+                />
+              </label>
+            </div>
+            <p className="text-[0.55rem] text-slate-600 leading-relaxed">
+              Reclassifies the map into flat colored zones (equal-interval breaks over the actual data range) and
+              merges any zone smaller than the min area into its largest neighbor — re-run to apply.
+            </p>
+          </div>
+        )}
       </div>
 
       {pickedScene && (
@@ -835,25 +967,38 @@ if (!requestGeometry) {
         {previewStatus === "loading" ? "Processing on WebGIS Backend…" : "Render & Preview on Map"}
       </button>
       {stats && previewStatus === "success" && (() => {
-        // ── Compute zone distribution from histogram ──────────────────────────
+        // ── Zone distribution — real (from backend classification + sieve
+        // merge) لما يكون متاح، وإلا fallback لتقريب الـ histogram القديم
+        // (مثلًا لو الباكند مش محدّث لسه أو الـ response قديم من الكاش) ──────
         const totalPixels = stats.histogram.reduce((a, b) => a + b, 0) || 1;
         const range = stats.max - stats.min;
-        const numZones = 5;
-        // Merge histogram bins (10) into 5 zones
-        const zoneCounts = Array.from({ length: numZones }, (_, zi) => {
-          const start = zi * 2, end = start + 2;
-          return stats.histogram.slice(start, end).reduce((a, b) => a + b, 0);
-        });
-        // الألوان دلوقتي بتتولد من نفس الـ colormap المختار (مش لون ثابت
-        // أخضر→أحمر) عشان الـ Legend تطابق فعليًا اللي ظاهر على الخريطة
-        const zoneColors = Array.from({ length: numZones }, (_, i) =>
-          sampleColormapColor(colormap, (i + 0.5) / numZones)
-        );
-        const zoneLabels = Array.from({ length: numZones }, (_, i) => {
-          const lo = stats.min + (range * i) / numZones;
-          const hi = stats.min + (range * (i + 1)) / numZones;
-          return `Zone ${i + 1}: ${lo.toFixed(3)} – ${hi.toFixed(3)}`;
-        });
+
+        const numZones = zoneStats ? zoneStats.length : nClasses;
+        const zoneCounts = zoneStats
+          ? zoneStats.map((z) => z.pixels)
+          : Array.from({ length: numZones }, (_, zi) => {
+              const binsPerZone = stats.histogram.length / numZones;
+              const start = Math.floor(zi * binsPerZone);
+              const end = Math.floor((zi + 1) * binsPerZone);
+              return stats.histogram.slice(start, end).reduce((a, b) => a + b, 0);
+            });
+        // الألوان بتتولد من نفس الـ colormap المختار (من الباكند لو متاح،
+        // وإلا محسوبة محليًا) عشان الـ Legend تطابق فعليًا اللي ظاهر على الخريطة
+        const zoneColors = zoneStats
+          ? zoneStats.map((z) => z.color)
+          : Array.from({ length: numZones }, (_, i) => sampleColormapColor(colormap, (i + 0.5) / numZones));
+        const zoneLabels = zoneStats
+          ? zoneStats.map((z) => `Zone ${z.zone}: ${z.lo.toFixed(3)} – ${z.hi.toFixed(3)}`)
+          : Array.from({ length: numZones }, (_, i) => {
+              const lo = stats.min + (range * i) / numZones;
+              const hi = stats.min + (range * (i + 1)) / numZones;
+              return `Zone ${i + 1}: ${lo.toFixed(3)} – ${hi.toFixed(3)}`;
+            });
+        // مساحة حقيقية (م²→كم²) لكل zone لو جاية من الباكند، غير كده تقدير
+        // تقريبي زي الأول من الـ bbox
+        const zoneAreasKm2: (number | null)[] = zoneStats
+          ? zoneStats.map((z) => z.areaM2 / 1_000_000)
+          : new Array(numZones).fill(null);
 
         // ── Smooth histogram data for the bar chart ───────────────────────────
         const maxH = Math.max(...stats.histogram, 1);
@@ -929,12 +1074,15 @@ if (!requestGeometry) {
               <div className="space-y-1.5">
                 {zoneCounts.map((count, i) => {
                   const pct = ((count / totalPixels) * 100).toFixed(3);
-                  const areaSqKm = ((count / totalPixels) * (
-                    // rough area estimate from bbox
-                    Math.abs(renderBbox[2] - renderBbox[0]) *
-                    Math.abs(renderBbox[3] - renderBbox[1]) *
-                    12321 // ~111km per degree squared
-                  )).toFixed(3);
+                  const areaSqKm = (
+                    zoneAreasKm2[i] ??
+                    // fallback تقريبي من bbox، بس لو مفيش zoneStats حقيقي من الباكند
+                    (count / totalPixels) * (
+                      Math.abs(renderBbox[2] - renderBbox[0]) *
+                      Math.abs(renderBbox[3] - renderBbox[1]) *
+                      12321
+                    )
+                  ).toFixed(3);
                   return (
                     <div key={i} className="flex items-center gap-2">
                       <span
