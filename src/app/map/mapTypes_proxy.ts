@@ -61,14 +61,6 @@ export const SAT_LAYERS = {
     maxZoom:        22,
     maxNativeZoom:  21,
   },
-  "Google Hybrid": {
-    url:            "/api/tile/{z}/{x}/{y}?source=google_hybrid",
-    type:           "xyz" as const,
-    layers:         "",
-    attribution:    "Imagery © Google",
-    maxZoom:        22,
-    maxNativeZoom:  21,
-  },
   "Sentinel-2": {
     url:            "/api/tile/{z}/{x}/{y}?source=sentinel",
     type:           "xyz" as const,

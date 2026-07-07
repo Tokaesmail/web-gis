@@ -1362,16 +1362,6 @@ if (!restoredRef.current) {
         { attribution: "", maxZoom: 22, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: "anonymous" }
       ).addTo(map);
 
-      labelsLayerRef.current = L.tileLayer(
-  "/api/tile/{z}/{x}/{y}?source=labels",
-  { attribution: "", maxZoom: 22, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: "anonymous" }
-).addTo(map);
-
-
-// ─────────────────────────────────────────────
-// ✅ HERE 👇 (restore AOI polygons after refresh)
-// ─────────────────────────────────────────────
-
 
       // ── Canvas Layer ──────────────────────────────────────────────────────
       const CanvasLayer = (L.Layer as any).extend({
@@ -1390,7 +1380,11 @@ if (!restoredRef.current) {
         _update(this: any) {
           const lmap = this._map, size = lmap.getSize();
           L.DomUtil.setPosition(this._canvas, lmap.containerPointToLayerPoint([0, 0]));
-          this._canvas.width = size.x; this._canvas.height = size.y;
+          // نغيّر width/height بس لو فعلاً اتغيّر الحجم — إعادة تخصيص الـ pixel
+          // buffer وهو بنفس القيمة بتعمل clear + realloc كامل من غير داعي
+          if (this._canvas.width !== size.x || this._canvas.height !== size.y) {
+            this._canvas.width = size.x; this._canvas.height = size.y;
+          }
           redrawCurrent(this._canvas, lmap, L);
         },
       });
@@ -1413,7 +1407,9 @@ if (!restoredRef.current) {
         _update(this: any) {
           const lmap = this._map, size = lmap.getSize();
           L.DomUtil.setPosition(this._canvas, lmap.containerPointToLayerPoint([0, 0]));
-          this._canvas.width = size.x; this._canvas.height = size.y;
+          if (this._canvas.width !== size.x || this._canvas.height !== size.y) {
+            this._canvas.width = size.x; this._canvas.height = size.y;
+          }
           // draw extrusions after resizing
           drawExtrusions();
         },

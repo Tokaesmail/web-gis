@@ -15,13 +15,6 @@ const TILE_SOURCES: Record<string, string | string[]> = {
     "https://mt2.google.com/vt/lyr=s&x={x}&y={y}&z={z}",
     "https://mt3.google.com/vt/lyr=s&x={x}&y={y}&z={z}",
   ],
-  // Google Hybrid (ساتلايت + أسماء الشوارع فوقيه)
-  google_hybrid: [
-    "https://mt0.google.com/vt/lyr=y&x={x}&y={y}&z={z}",
-    "https://mt1.google.com/vt/lyr=y&x={x}&y={y}&z={z}",
-    "https://mt2.google.com/vt/lyr=y&x={x}&y={y}&z={z}",
-    "https://mt3.google.com/vt/lyr=y&x={x}&y={y}&z={z}",
-  ],
 
   // ── Index visual layers (Sentinel-2 cloudless as the base — CSS filter تتطبق على الـ pane) ──
   // كلهم بيجيبوا Sentinel-2 tiles لكن الـ LeafletMap بيطبق CSS filter مختلف على كل واحد
@@ -79,11 +72,13 @@ export async function GET(req: NextRequest, { params }: Props) {
     if (!res?.ok) return new NextResponse("Not Found", { status: 404 });
 
     const contentType = res.headers.get("content-type") || "image/png";
-    console.log("Tile URL:", lastUrl, "z=", z, "x=", x, "y=", y);
     return new NextResponse(res.body, {
       headers: {
         "Content-Type": contentType,
-        "Cache-Control": "public, max-age=86400",
+        // stale-while-revalidate عشان المتصفح يعرض النسخة القديمة فورًا ويجدد
+        // في الخلفية، وده بيقلل عدد المرات اللي الـ proxy بيتنادى فيها فعليًا
+        // من نفس الجهاز لنفس التايل مع كل pan/zoom تكراري
+        "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800, immutable",
         "Access-Control-Allow-Origin": "*",
       },
     });

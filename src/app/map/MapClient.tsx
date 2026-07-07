@@ -27,6 +27,7 @@ const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
 const LAYER_SETTINGS_STORAGE_PREFIX = "gis_layer_settings_v1";
 const MAX_LOCAL_GEOJSON_STORAGE_CHARS = 2_000_000;
+const MAX_CAPTURES = 10; // حد أقصى لعدد الـ captures المحفوظة في الميموري
 
 type RasterPreviewConfig = {
   name: string;
@@ -487,8 +488,15 @@ export default function MapPage() {
   }, [geoJsonData, layers, uniData, uploadedGeoJsonMap]);
 
   // Sync uploadedGeoJsonMap to localStorage
-  useEffect(() => {
-    if (!isRestored.current) return;
+ // ضيفي ref جديد جنب الـ refs التانية
+const geoJsonSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+// وبدّلي الـ useEffect بده:
+useEffect(() => {
+  if (!isRestored.current) return;
+
+  if (geoJsonSaveTimer.current) clearTimeout(geoJsonSaveTimer.current);
+  geoJsonSaveTimer.current = setTimeout(() => {
     persistUploadedGeoJSON(uploadedGeoJsonMap, () => {
       if (storageWarningShownRef.current || Object.keys(uploadedGeoJsonMap).length === 0) return;
       storageWarningShownRef.current = true;
@@ -498,7 +506,12 @@ export default function MapPage() {
           : "This GeoJSON is large, so it will display now but will not be stored after refresh."
       );
     });
-  }, [uploadedGeoJsonMap, isRTL]);
+  }, 1200); // بدل الكتابة الفورية
+
+  return () => {
+    if (geoJsonSaveTimer.current) clearTimeout(geoJsonSaveTimer.current);
+  };
+}, [uploadedGeoJsonMap, isRTL]);
 
   const handleExtrusionConfig = useCallback((cfg: any) => {
     setExtrusionCfg(cfg);
@@ -564,22 +577,34 @@ export default function MapPage() {
     const displayUrl = capture.smallUrl ?? capture.largeUrl;
     if (!displayUrl) return;
     setCaptureUrl(displayUrl);
-    setCaptures((prev) => [
-      {
-        id: Date.now(),
-        type: capture.captureTarget,
-        url: displayUrl,
-        smallUrl: capture.smallUrl,
-        largeUrl: capture.largeUrl,
-        selectedCoordinates: capture.selectedCoordinates,
-        viewportCoordinates: capture.viewportCoordinates,
-        selectedBounds: capture.selectedBounds,
-        viewportBounds: capture.viewportBounds,
-        metadata: capture.metadata,
-        createdAt: capture.metadata.capturedAt,
-      },
-      ...prev,
-    ]);
+    setCaptures((prev) => {
+      const next = [
+        {
+          id: Date.now(),
+          type: capture.captureTarget,
+          url: displayUrl,
+          smallUrl: capture.smallUrl,
+          largeUrl: capture.largeUrl,
+          selectedCoordinates: capture.selectedCoordinates,
+          viewportCoordinates: capture.viewportCoordinates,
+          selectedBounds: capture.selectedBounds,
+          viewportBounds: capture.viewportBounds,
+          metadata: capture.metadata,
+          createdAt: capture.metadata.capturedAt,
+        },
+        ...prev,
+      ];
+      // نحد أقصى عشان الـ blobs متتراكمش في الميموري من غير تنضيف
+      if (next.length > MAX_CAPTURES) {
+        const overflow = next.slice(MAX_CAPTURES);
+        overflow.forEach((c) => {
+          try { URL.revokeObjectURL(c.url); } catch (e) {}
+          try { if (c.largeUrl && c.largeUrl !== c.url) URL.revokeObjectURL(c.largeUrl); } catch (e) {}
+        });
+        return next.slice(0, MAX_CAPTURES);
+      }
+      return next;
+    });
   }, []);
 
   const handleRequestTemplateCapture = useCallback(() => {
