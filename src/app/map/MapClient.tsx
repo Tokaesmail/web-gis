@@ -1044,7 +1044,19 @@ useEffect(() => {
   }, []);
 
   const handleFeatureClick = useCallback((feature: GeoJSON.Feature) => {
-    setSelectedFeature(feature);
+    // ── Defense in depth: لو virtual feature بنفس إحداثيات آخر selectedFeature (تقريباً)
+    // متعملش setState تاني، عشان منعملش re-render + طلبات NDVI/Weather من غير داعي.
+    // (الـ threshold الأساسي في LeafletMap.tsx، وده حماية إضافية على مستوى الـ state)
+    setSelectedFeature((prev: any) => {
+      const isVirtual = feature?.properties?._virtual;
+      if (isVirtual && prev?.geometry?.type === "Point" && feature.geometry?.type === "Point") {
+        const [lng1, lat1] = prev.geometry.coordinates as [number, number];
+        const [lng2, lat2] = feature.geometry.coordinates as [number, number];
+        const sameSpot = Math.abs(lat1 - lat2) < 0.0001 && Math.abs(lng1 - lng2) < 0.0001; // ~10م
+        if (sameSpot) return prev; // نفس المكان تقريباً — رجّع نفس الـ reference عشان مفيش re-render
+      }
+      return feature;
+    });
     setActivePanel((current) => current ?? lastActivePanelRef.current ?? "overview");
   }, []);
 

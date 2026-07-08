@@ -9,7 +9,8 @@
 // إحنا بنبعتها للـ backend اللي بيجيب الباندات، يطبق المعادلة،
 // ويرجع GeoTIFF جاهز. إحنا بس بنعرضه كـ overlay على الخريطة.
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useSession } from "next-auth/react";
 import { useSelectedScene, setSelectedScene } from "./sharedSceneSelection";
 import { useSharedDateRange } from "./sharedDateRange";
@@ -350,6 +351,17 @@ const [classification, setClassification] = useState<string>("");
 // واختار تلقائي جوه الـ date range) ──────────────────────────────────
 const [sceneMeta, setSceneMeta] = useState<{ usedSceneId: string; method: string } | null>(null);
 
+// ── Create chart — بيحسب المؤشر على كل الـ scenes المتاحة في الـ date range
+// (مش بس أحسن سين زي Render & preview)، ويرجّع time-series نعرضها كخط بياني
+const [chartStatus, setChartStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
+const [chartError, setChartError] = useState<string | null>(null);
+const [chartSeries, setChartSeries] = useState<
+  { date: string; value: number; min?: number; max?: number }[] | null
+>(null);
+// ── فتح/قفل شاشة الشارت الكبيرة (fullscreen) + مستوى الزووم بتاعها ──
+const [chartModalOpen, setChartModalOpen] = useState(false);
+const [chartZoom, setChartZoom] = useState(1);
+
 const bbox = useMemo(
   () => getFeatureBBox(selectedFeature, fallbackCoords, true),
   [selectedFeature, fallbackCoords?.lat, fallbackCoords?.lng]
@@ -584,6 +596,112 @@ if (!requestGeometry) {
     setPreviewError(err instanceof Error ? err.message : "Render request failed.");
   }
 };
+
+// ── Create chart — بتستخدم نفس الـ expression بالظبط، لكن بتبعت
+// للباكند طلب time-series (كل الـ scenes المتاحة في الـ date range، مش
+// سين واحدة زي Render & preview).
+// ملحوظة: الـ endpoint الحقيقي (من الـ Postman collection) هو
+// "{{baseUrl}}/gis/time-series" — مش "/gis/raster-calc/timeseries" —
+// وبياخد "bbox" (array [west, south, east, north]) بدل "geometry"،
+// وكمان "cloud_cover_max".
+const BACKEND_TIME_SERIES_URL = "https://webgiss.duckdns.org/gis/time-series";
+
+const runChart = async () => {
+  if (!validation.ok) return;
+  if (!requestGeometry) {
+    setChartStatus("error");
+    setChartError("No polygon selected");
+    return;
+  }
+
+  setChartStatus("loading");
+  setChartError(null);
+  setChartSeries(null);
+
+  try {
+    const dateRange = `${dateFrom}/${dateTo}`;
+    const res = await fetch(BACKEND_TIME_SERIES_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify({
+        bbox: renderBbox,
+        date: dateRange,
+        expression,
+        collection: pickedScene?.collection ?? "sentinel-2-l2a",
+        cloud_cover_max: cloudCover,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Chart request failed (${res.status}). ${text.slice(0, 160)}`);
+    }
+
+    const rawPayload = await res.json();
+    // ── مؤقت للتشخيص: شيليه بعد ما تتأكدي من شكل الـ response ──
+
+    if (rawPayload?.success === false) throw new Error(rawPayload?.message ?? "Chart failed");
+
+    // ── زي مشكلة raster-calc بالظبط: أحيانًا الباكند بيرجّع نسخة متلغّمة
+    // (double-nested) { success, data: { success, data: {...} } } — بنفكها هنا
+    const innerData: any =
+      rawPayload?.data?.data && typeof rawPayload.data.data === "object"
+        ? rawPayload.data.data
+        : rawPayload?.data ?? rawPayload;
+
+    // بنقبل أكتر من شكل ممكن يرجعه الباكند:
+    //  - { series: [{date, value}, ...] } أو { points: [...] }
+    //  - array مباشرة من الـ objects
+    //  - { dates: [...], values: [...] } (arrays منفصلة بدل array of objects)
+    let rawSeries: any[] = [];
+    if (Array.isArray(innerData?.series)) rawSeries = innerData.series;
+    else if (Array.isArray(innerData?.points)) rawSeries = innerData.points;
+    else if (Array.isArray(innerData)) rawSeries = innerData;
+    else if (Array.isArray(innerData?.dates) && Array.isArray(innerData?.values)) {
+      rawSeries = innerData.dates.map((d: any, i: number) => ({
+        date: d,
+        value: innerData.values[i],
+      }));
+    } else if (Array.isArray(rawPayload?.data)) {
+      rawSeries = rawPayload.data;
+    }
+
+    const series = (Array.isArray(rawSeries) ? rawSeries : [])
+      .map((p) => {
+        // min/max لو الباكند بيرجعهم (مش كل الردود فيها stats كاملة) —
+        // من غيرهم بنعرض خط الـ mean لوحده من غير الشريط الرمادي/الأزرق
+        const min = Number(p?.min ?? p?.min_value ?? p?.stats?.min ?? p?.p_min);
+        const max = Number(p?.max ?? p?.max_value ?? p?.stats?.max ?? p?.p_max);
+        return {
+          date: String(
+            p?.date ?? p?.scene_date ?? p?.datetime ?? p?.acquisition_date ?? ""
+          ).slice(0, 10),
+          value: Number(
+            p?.value ?? p?.mean ?? p?.index_value ?? p?.ndvi ?? p?.mean_value ?? p?.stats?.mean
+          ),
+          min: Number.isFinite(min) ? min : undefined,
+          max: Number.isFinite(max) ? max : undefined,
+        };
+      })
+      .filter((p) => p.date && Number.isFinite(p.value))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    if (!series.length) {
+      console.warn("time-series: parsed to empty series — check RAW response logged above.");
+      throw new Error("Backend returned no chart data for this range");
+    }
+
+    setChartSeries(series);
+    setChartStatus("success");
+  } catch (err) {
+    setChartStatus("error");
+    setChartError(err instanceof Error ? err.message : "Chart request failed.");
+  }
+};
+
   return (
     <div className="space-y-4">
       <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3">
@@ -981,15 +1099,78 @@ if (!requestGeometry) {
         <input type="range" min={20} max={100} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} className="w-full accent-cyan-400" />
       </div>
 
-      {/* Run */}
-      <button
-        type="button"
-        onClick={runPreview}
-        disabled={!validation.ok || previewStatus === "loading"}
-        className="w-full rounded-lg bg-cyan-400 px-3 py-3 text-xs font-bold text-[#03101d] transition-colors hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {previewStatus === "loading" ? "Processing on WebGIS Backend…" : "Render & Preview on Map"}
-      </button>
+      {/* Run + Chart */}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={runPreview}
+          disabled={!validation.ok || previewStatus === "loading"}
+          className="flex-1 rounded-lg bg-cyan-400 px-3 py-3 text-xs font-bold text-[#03101d] transition-colors hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {previewStatus === "loading" ? "Processing on WebGIS Backend…" : "▷ Render & preview"}
+        </button>
+        <button
+          type="button"
+          onClick={runChart}
+          disabled={!validation.ok || chartStatus === "loading"}
+          className="flex-1 rounded-lg border border-cyan-400/25 bg-white/[0.03] px-3 py-3 text-xs font-bold text-cyan-300 transition-colors hover:bg-cyan-400/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {chartStatus === "loading" ? "Computing chart…" : "⌂ Create chart"}
+        </button>
+      </div>
+      <p className="text-[0.55rem] text-slate-600 leading-relaxed -mt-2">
+        Render uses the single best scene in this range. Create chart computes every available scene in the same range.
+      </p>
+
+      {chartError && (
+        <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2.5 text-[0.65rem] text-red-300">
+          {chartError}
+        </div>
+      )}
+
+      {chartSeries && chartStatus === "success" && (
+        <div className="space-y-2.5 rounded-lg border border-white/[0.07] bg-[#020817]/70 p-3">
+          <div className="flex items-center justify-between">
+            <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">
+              {activePreset || "Expression"} time series
+            </p>
+            <div className="flex items-center gap-1.5">
+              <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-[0.55rem] font-bold text-emerald-300">
+                {chartSeries.length} scene{chartSeries.length === 1 ? "" : "s"}
+              </span>
+              {/* فتح الشارت في شاشة كبيرة منفصلة (fullscreen) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setChartZoom(1);
+                  setChartModalOpen(true);
+                }}
+                title="Open fullscreen"
+                className="flex h-5 w-5 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.03] text-slate-400 transition-colors hover:bg-cyan-400/10 hover:text-cyan-300"
+              >
+                <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2}>
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <TimeSeriesChart series={chartSeries} color={activeColorRamp.gradient} />
+        </div>
+      )}
+
+      {chartModalOpen && chartSeries && (
+        <TimeSeriesChartModal
+          series={chartSeries}
+          color={activeColorRamp.gradient}
+          title={activePreset || "Expression"}
+          sensor={pickedScene?.collection ?? "sentinel-2-l2a"}
+          period={`${dateFrom} → ${dateTo}`}
+          zoom={chartZoom}
+          onZoomChange={setChartZoom}
+          onClose={() => setChartModalOpen(false)}
+        />
+      )}
+
       {stats && previewStatus === "success" && (() => {
         // ── Zone distribution — real (from backend classification + sieve
         // merge) لما يكون متاح، وإلا fallback لتقريب الـ histogram القديم
@@ -1277,4 +1458,408 @@ function sampleColormapColor(name: string, t: number): string {
     }
   }
   return stops[stops.length - 1].hex;
+}
+
+// ── خط بياني بسيط لناتج "Create chart" (SVG خام، بدون أي مكتبة خارجية
+// جديدة) — بيرسم trend line بالـ index قيمته عبر الزمن، بنفس ستايل
+// اللوحة الداكنة الحالية ─────────────────────────────────────────────
+function TimeSeriesChart({
+  series,
+  color,
+}: {
+  series: { date: string; value: number }[];
+  color: string;
+}) {
+  const width = 600;
+  const height = 160;
+  const padX = 8;
+  const padY = 14;
+
+  const values = series.map((p) => p.value);
+  const minV = Math.min(...values);
+  const maxV = Math.max(...values);
+  const range = maxV - minV || 1;
+
+  const points = series.map((p, i) => {
+    const x = padX + (i / Math.max(1, series.length - 1)) * (width - padX * 2);
+    const y = padY + (1 - (p.value - minV) / range) * (height - padY * 2);
+    return { x, y, ...p };
+  });
+
+  const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+  const areaD = `${pathD} L${points[points.length - 1].x.toFixed(1)},${height - padY} L${points[0].x.toFixed(1)},${height - padY} Z`;
+
+  // كانت بتاخد أول hex في الـ gradient string (بيبقى غالبًا لون الطرف
+  // الشمال زي الأحمر الغامق في NDVI) — دلوقتي بناخد لون ثابت واحد للخط
+  // بغض النظر عن الـ colormap، بالظبط زي ستايل EO Browser (أزرق/سماوي)
+  const stroke = "#38bdf8";
+
+  return (
+    <div className="space-y-1.5">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="tsFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={stroke} stopOpacity="0.25" />
+            <stop offset="100%" stopColor={stroke} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path d={areaD} fill="url(#tsFill)" />
+        <path d={pathD} fill="none" stroke={stroke} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+        {points.map((p, i) => (
+          <circle key={i} cx={p.x} cy={p.y} r="2.5" fill={stroke} />
+        ))}
+      </svg>
+      <div className="flex items-center justify-between text-[0.52rem] text-slate-600">
+        <span>{series[0]?.date}</span>
+        <span className="text-slate-500">
+          min {minV.toFixed(3)} · max {maxV.toFixed(3)}
+        </span>
+        <span>{series[series.length - 1]?.date}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── شاشة الشارت الكبيرة (fullscreen) — نفس ديزاين EO Browser: خلفية
+// داكنة، شريط Min/Max ظليل، خط Mean أبيض منقّط، تواريخ مايلة تحت المحور،
+// وأزرار Zoom in / Zoom out / Close زي الصورة اللي بعتها بالظبط ──────
+function TimeSeriesChartModal({
+  series,
+  color,
+  title,
+  sensor,
+  period,
+  zoom,
+  onZoomChange,
+  onClose,
+}: {
+  series: { date: string; value: number; min?: number; max?: number }[];
+  color: string;
+  title: string;
+  sensor: string;
+  period: string;
+  zoom: number;
+  onZoomChange: (z: number) => void;
+  onClose: () => void;
+}) {
+  // نفس الإصلاح: لون ثابت للخط والـ band بدل ما نقرأ أول hex في الـ
+  // gradient string (اللي كان بيرجع أحمر غامق مع NDVI/Vegetation)
+  const stroke = "#38bdf8";
+  const hasBand = series.some((p) => Number.isFinite(p.min) && Number.isFinite(p.max));
+
+  const height = 420;
+  const padTop = 24;
+  const padBottom = 70; // مساحة للتواريخ المايلة
+  const padLeft = 46;
+  const padRight = 16;
+
+  // الشارت بيترسم بمقاس ثابت دايمًا، والزووم بقى بيكبر/يصغر الصورة كلها
+  // (زي أي PNG viewer عادي) بدل ما يمط المحور السيني بس — أي عنصر في
+  // الشارت (خطوط، نقط، تواريخ) بيكبر مع بعضه بنفس النسبة
+  const basePerPoint = 34;
+  const perPoint = basePerPoint;
+  const plotWidth = Math.max(600, perPoint * Math.max(1, series.length - 1));
+  const width = plotWidth + padLeft + padRight;
+
+  const allValues = series.flatMap((p) =>
+    [p.value, p.min, p.max].filter((v): v is number => Number.isFinite(v))
+  );
+  const rawMin = Math.min(...allValues);
+  const rawMax = Math.max(...allValues);
+  const span = rawMax - rawMin || 1;
+  const minV = rawMin - span * 0.12;
+  const maxV = rawMax + span * 0.12;
+  const range = maxV - minV || 1;
+
+  const yToPx = (v: number) => padTop + (1 - (v - minV) / range) * (height - padTop - padBottom);
+  const xToPx = (i: number) => padLeft + (i / Math.max(1, series.length - 1)) * plotWidth;
+
+  const points = series.map((p, i) => ({ ...p, x: xToPx(i), y: yToPx(p.value) }));
+  const meanPathD = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+
+  // شريط Min/Max (لو الباكند بعت min/max فعليًا لكل تاريخ)
+  let bandPathD = "";
+  if (hasBand) {
+    const top = series.map((p, i) => `${i === 0 ? "M" : "L"}${xToPx(i).toFixed(1)},${yToPx(p.max ?? p.value).toFixed(1)}`).join(" ");
+    const bottomRev = series
+      .map((p, i) => ({ x: xToPx(i), y: yToPx(p.min ?? p.value) }))
+      .reverse()
+      .map((p, i) => `${i === 0 ? "L" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`)
+      .join(" ");
+    bandPathD = `${top} ${bottomRev} Z`;
+  }
+
+  // خطوط Y grid (زي 1.0 / 0.8 / 0.6 ... في الصورة) — 6 مستويات
+  const gridLevels = 6;
+  const gridLines = Array.from({ length: gridLevels + 1 }, (_, i) => {
+    const v = maxV - (i / gridLevels) * range;
+    return { v, y: yToPx(v) };
+  });
+
+  // تباعد تواريخ المحور السيني: لو النقط كتير جدًا نعرض تاريخ كل نقطة
+  // ولو المسافة صغيرة (زووم قليل) نتخطى شوية عشان النص ميتكدسش —
+  // ده اللي بيحقق "يوم أو يومين على حسب اللي موجود"
+  const minLabelGapPx = 34;
+  const labelStep = Math.max(1, Math.ceil(minLabelGapPx / perPoint));
+
+  const zoomMin = 0.5;
+  const zoomMax = 4;
+
+  // ── بيتغلق بـ Escape، بالظبط زي أي image viewer عادي ──
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // ── بنتأكد إننا على الـ client الأول (document غير متاح وقت الـ SSR) ──
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  // ── تنزيل الشارت كـ PNG — بناخد الـ SVG زي ما هو (بمقاسه الحقيقي مش
+  // بمقاس الزووم الحالي عشان الصورة تطلع واضحة)، نحوله لـ data URL،
+  // نرسمه على canvas بخلفية داكنة #0a1220 (نفس خلفية الكارت)، وبعدين
+  // ننزّله كـ PNG — بالظبط زي زرار "Graph Image" في EO Browser ──────
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const handleDownload = () => {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+
+    const clone = svgEl.cloneNode(true) as SVGSVGElement;
+    clone.setAttribute("width", String(width));
+    clone.setAttribute("height", String(height));
+
+    const svgString = new XMLSerializer().serializeToString(clone);
+    const svgBlob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+
+    const img = new Image();
+    img.onload = () => {
+      const scale = 2; // مقاس أعلى شوية عشان الصورة النازلة تبقى حادة
+      const canvas = document.createElement("canvas");
+      canvas.width = width * scale;
+      canvas.height = height * scale;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.fillStyle = "#0a1220";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `${title.replace(/\s+/g, "_")}_time_series.png`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+      }, "image/png");
+    };
+    img.src = url;
+  };
+
+  if (!mounted) return null;
+
+  const modal = (
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4"
+      style={{
+        zIndex: 99999,
+        backgroundColor: "rgba(0,0,0,0.75)",
+        backdropFilter: "blur(6px)",
+        WebkitBackdropFilter: "blur(6px)",
+      }}
+      onClick={(e) => {
+        // اقفال لو ضغطت برا الكارت، زي أي صورة بتتفتح وتتقفل
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="flex h-full max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl shadow-2xl"
+        style={{
+          backgroundColor: "#0a1220",
+          border: "1px solid rgba(255,255,255,0.1)",
+        }}
+      >
+        {/* Header — زي شريط Index / Sensors / Period فوق في الصورة */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3" style={{ backgroundColor: "#0d1826" }}>
+          <div className="flex flex-wrap items-center gap-4 text-[0.68rem]">
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500">Index</span>
+              <span className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-1 font-semibold text-cyan-300">{title}</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500">Sensor</span>
+              <span className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-1 font-semibold text-slate-200">{sensor}</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500">Period</span>
+              <span className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-1 font-semibold text-slate-200">{period}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Zoom out */}
+            <button
+              type="button"
+              onClick={() => onZoomChange(Math.max(zoomMin, +(zoom - 0.5).toFixed(2)))}
+              disabled={zoom <= zoomMin}
+              title="Zoom out"
+              className="flex h-9 w-9 items-center justify-center rounded-md text-slate-200 transition-colors hover:bg-cyan-400/15 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-35"
+              style={{ backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}
+            >
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2}>
+                <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35M8 11h6" strokeLinecap="round" />
+              </svg>
+            </button>
+            {/* Zoom in */}
+            <button
+              type="button"
+              onClick={() => onZoomChange(Math.min(zoomMax, +(zoom + 0.5).toFixed(2)))}
+              disabled={zoom >= zoomMax}
+              title="Zoom in"
+              className="flex h-9 w-9 items-center justify-center rounded-md text-slate-200 transition-colors hover:bg-cyan-400/15 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-35"
+              style={{ backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}
+            >
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2}>
+                <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35M11 8v6M8 11h6" strokeLinecap="round" />
+              </svg>
+            </button>
+            {/* Reset zoom */}
+            <button
+              type="button"
+              onClick={() => onZoomChange(1)}
+              title="Reset zoom"
+              className="h-9 rounded-md px-3 text-[0.68rem] font-semibold text-slate-200 transition-colors hover:bg-cyan-400/15 hover:text-cyan-300"
+              style={{ backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}
+            >
+              Reset
+            </button>
+            {/* Download — بينزل الشارت PNG، زي زرار "Graph Image" في الصورة */}
+            <button
+              type="button"
+              onClick={handleDownload}
+              title="Download chart as image"
+              className="ml-1 flex h-9 items-center gap-1.5 rounded-md px-3 text-[0.68rem] font-semibold transition-colors hover:brightness-110"
+              style={{ backgroundColor: "rgba(34,211,238,0.15)", border: "1px solid rgba(34,211,238,0.4)", color: "#67e8f9" }}
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Download
+            </button>
+            {/* Close */}
+            <button
+              type="button"
+              onClick={onClose}
+              title="Close"
+              className="ml-1 flex h-9 w-9 items-center justify-center rounded-md text-slate-200 transition-colors hover:bg-red-500/20 hover:text-red-300"
+              style={{ backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Chart body — الزووم بيكبر/يصغر الصورة كلها زي أي PNG viewer،
+            و scroll في أي اتجاه لما الصورة تبقى أكبر من مساحة العرض */}
+        <div
+          className="flex-1 overflow-auto px-2 py-4"
+          onWheel={(e) => {
+            // Ctrl/⌘ + scroll wheel = zoom, زي أي image viewer عادي
+            if (!e.ctrlKey && !e.metaKey) return;
+            e.preventDefault();
+            const step = e.deltaY > 0 ? -0.25 : 0.25;
+            onZoomChange(Math.min(zoomMax, Math.max(zoomMin, +(zoom + step).toFixed(2))));
+          }}
+        >
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${width} ${height}`}
+            width={width * zoom}
+            height={height * zoom}
+            style={{ display: "block" }}
+          >
+            <defs>
+              <linearGradient id="modalBandFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={stroke} stopOpacity="0.28" />
+                <stop offset="100%" stopColor={stroke} stopOpacity="0.06" />
+              </linearGradient>
+            </defs>
+
+            {/* Y grid + labels */}
+            {gridLines.map((g, i) => (
+              <g key={i}>
+                <line x1={padLeft} x2={width - padRight} y1={g.y} y2={g.y} stroke="rgba(255,255,255,0.06)" strokeDasharray="3 3" />
+                <text x={padLeft - 8} y={g.y + 3} textAnchor="end" fontSize="10" fill="#64748b">
+                  {g.v.toFixed(2)}
+                </text>
+              </g>
+            ))}
+
+            {/* Min/Max shaded band */}
+            {hasBand && <path d={bandPathD} fill="url(#modalBandFill)" stroke="none" />}
+
+            {/* Mean line — أبيض منقّط زي الصورة بالظبط */}
+            <path d={meanPathD} fill="none" stroke="#ffffff" strokeWidth="1.75" strokeDasharray="1 3" strokeLinecap="round" />
+            {points.map((p, i) => (
+              <circle key={i} cx={p.x} cy={p.y} r="2.2" fill="#ffffff" />
+            ))}
+
+            {/* X axis date labels — مايلة، كل يوم أو يومين على حسب كثافة البيانات */}
+            {points
+              .filter((_, i) => i % labelStep === 0 || i === points.length - 1)
+              .map((p, i) => (
+                <text
+                  key={i}
+                  x={p.x}
+                  y={height - padBottom + 14}
+                  fontSize="9.5"
+                  fill="#64748b"
+                  textAnchor="end"
+                  transform={`rotate(-45 ${p.x} ${height - padBottom + 14})`}
+                >
+                  {p.date}
+                </text>
+              ))}
+
+            {/* baseline */}
+            <line x1={padLeft} x2={width - padRight} y1={height - padBottom} y2={height - padBottom} stroke="rgba(255,255,255,0.12)" />
+          </svg>
+        </div>
+
+        {/* Footer — Legend زي Min / Max / Mean في الصورة */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.07] px-5 py-3" style={{ backgroundColor: "#0d1826" }}>
+          <div className="flex items-center gap-4 text-[0.65rem] text-slate-400">
+            {hasBand && (
+              <>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2.5 w-4 rounded-sm" style={{ background: stroke, opacity: 0.3 }} /> Min
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2.5 w-4 rounded-sm" style={{ background: stroke, opacity: 0.65 }} /> Max
+                </span>
+              </>
+            )}
+            <span className="flex items-center gap-1.5">
+              <span className="h-0.5 w-4 rounded-sm bg-white" /> Mean
+            </span>
+          </div>
+          <span className="text-[0.6rem] text-slate-600">
+            {series.length} scene{series.length === 1 ? "" : "s"} · zoom {zoom.toFixed(2)}×
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── بورتال حقيقي على document.body — الشاشة بتخرج تمامًا برا الـ
+  // sidebar (مش متأثرة بأي overflow/transform بتاعه) وتظهر فوق كل حاجة
+  // في الصفحة، بالظبط زي فتح صورة PNG عادية مستقلة ────────────────────
+  return createPortal(modal, document.body);
 }

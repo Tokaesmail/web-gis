@@ -196,6 +196,8 @@ export default function LeafletMap({
   const initialFeaturesLayerRef = useRef<any[]>([]);
   const rafRef              = useRef<number | null>(null);
   const lastMoveRef         = useRef<any>(null);
+  // ── throttle للـ virtual feature clicks (pointer tool) عشان منبعتش طلبات NDVI/Weather كتير على الفاضي ──
+  const lastVirtualClickRef = useRef<{ lat: number; lng: number; time: number } | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const imagePaneReadyRef = useRef(false);
   const imageOverlaysRef = useRef<{ id: string; name: string; src: string; bounds: [[number, number], [number, number]]; layer: any }[]>([]);
@@ -1537,12 +1539,26 @@ if (!restoredRef.current) {
         if (aoiEditorRef.current?.isActive) return;
 
         // Trigger onFeatureClick with a virtual feature to update panels (Weather/NDVI) for any click
+        // ── Threshold: نتجاهل الكليكات اللي قريبة جداً (مكان) أو سريعة جداً (وقت) من آخر كليك ──
+        // ده بيمنع طلبات NDVI/Weather المتكررة لو المستخدم بس بيتصفح الخريطة بكليكات متقاربة
         if (tool === "pointer") {
-          onFeatureClick?.({
-            type: "Feature",
-            geometry: { type: "Point", coordinates: [lng, lat] },
-            properties: { _virtual: true }
-          });
+          const MIN_DISTANCE_M = 15;   // أقل مسافة (متر) عشان نعتبره كليك جديد فعلاً
+          const MIN_INTERVAL_MS = 250; // أقل فاصل زمني بين كليكين متتاليين
+          const now = Date.now();
+          const last = lastVirtualClickRef.current;
+          const isTooClose =
+            !!last &&
+            now - last.time < MIN_INTERVAL_MS &&
+            map.distance([lat, lng], [last.lat, last.lng]) < MIN_DISTANCE_M;
+
+          if (!isTooClose) {
+            lastVirtualClickRef.current = { lat, lng, time: now };
+            onFeatureClick?.({
+              type: "Feature",
+              geometry: { type: "Point", coordinates: [lng, lat] },
+              properties: { _virtual: true }
+            });
+          }
         }
 
         // ── Image placement mode (always takes precedence) ───────────────────
