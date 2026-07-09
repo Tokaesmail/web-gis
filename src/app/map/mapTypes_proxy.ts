@@ -44,9 +44,13 @@ export interface CaptureResult {
 }
 
 // ─── Satellite Layers ─────────────────────────────────────────────────────────
+// ⚠️ Default / Street Map / Terrain بيتكلموا مباشرة مع المصدر (مش عن طريق /api/tile)
+// لأن Esri و OpenStreetMap بيبعتوا CORS headers أصلًا، فمفيش داعي نستهلك من كوتة
+// Vercel Fast Origin Transfer عشانهم. Google و Sentinel-2 فضلوا عن طريق الـ proxy
+// لأنهم محتاجينه فعلًا (حظر hotlinking / CORS مش مضمون).
 export const SAT_LAYERS = {
   "Default": {
-    url:            "/api/tile/{z}/{x}/{y}?source=satellite",
+    url:            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     type:           "xyz" as const,
     layers:         "",
     attribution:    "Tiles © Esri",
@@ -70,7 +74,7 @@ export const SAT_LAYERS = {
     maxNativeZoom:  16,
   },
   "Street Map": {
-    url:            "/api/tile/{z}/{x}/{y}?source=osm",
+    url:            "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     type:           "xyz" as const,
     layers:         "",
     attribution:    "© OpenStreetMap contributors",
@@ -78,7 +82,7 @@ export const SAT_LAYERS = {
     maxNativeZoom:  19,
   },
   "Terrain": {
-    url:            "/api/tile/{z}/{x}/{y}?source=terrain",
+    url:            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}",
     type:           "xyz" as const,
     layers:         "",
     attribution:    "Shaded Relief © Esri",
@@ -88,7 +92,9 @@ export const SAT_LAYERS = {
 };
 
 // ─── Labels Layer ─────────────────────────────────────────────────────────────
-export const LABELS_TILE_URL = "/api/tile/{z}/{x}/{y}?source=labels";
+// مباشر برضه (نفس سبب Default) — الـ LeafletMap.tsx بقى بيستخدم الرابط ده مباشرة،
+// بس سايباه هنا للتوافق لو أي مكان تاني بيعمل import ليه.
+export const LABELS_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}";
 
 export type SatKey = keyof typeof SAT_LAYERS;
 export type IdxKey = string; // kept for type compatibility

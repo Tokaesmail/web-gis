@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// ⚠️ مهم: أي مصدر بيتحط هنا معناه إن كل تايل بيعدي من الجهاز → Vercel function → المصدر
+// الأصلي، وده بيستهلك Fast Origin Transfer من كوتة Vercel بتاعتنا لكل تايل لوحده.
+// ArcGIS (Esri) و OpenStreetMap بيبعتوا Access-Control-Allow-Origin أصلًا، فمفيش
+// داعي نمررهم من هنا — الـ frontend بقى بيكلمهم مباشرة (شوفي LeafletMap.tsx /
+// mapTypes_proxy.ts). الباقي هنا فضل لأنه محتاج الـ proxy فعلًا:
+//   - google_sat: جوجل مش بتسمح بـ CORS/hotlinking مباشر من دومين تاني
+//   - sentinel / idx-*: تايلز EOX s2cloudless مش دايمًا بتبعت CORS headers،
+//     ومحتاجينها crossOrigin=anonymous عشان الـ canvas capture (Template Match / تصوير الخريطة)
 const TILE_SOURCES: Record<string, string | string[]> = {
-  satellite: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-  osm:       "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-  labels:    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-  sentinel:  "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
-  terrain:   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}",
-  topo:      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+  sentinel: "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
 
   // ── Google Satellite (بديل لـ Esri — دقة أعلى في مناطق كتير) ──
   google_sat: [
@@ -22,8 +25,14 @@ const TILE_SOURCES: Record<string, string | string[]> = {
   "idx-ndwi": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
   "idx-ndmi": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
   "idx-ndsi": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
-  "idx-swir": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
 };
+
+// المصادر دي بقت direct من الفرونت (مش هنا) — سايبها كتعليق للرجوع ليها لو احتجنا:
+// satellite / idx-swir → ArcGIS World_Imagery
+// osm                  → tile.openstreetmap.org
+// labels               → ArcGIS Reference/World_Boundaries_and_Places
+// terrain              → ArcGIS World_Shaded_Relief
+// topo                 → ArcGIS World_Topo_Map
 
 type Props = {
   params: Promise<{
@@ -38,9 +47,10 @@ export async function GET(req: NextRequest, { params }: Props) {
     const { z, x, y } = await params;
 
     const { searchParams } = new URL(req.url);
-    const source = searchParams.get("source") || "satellite";
+    const source = searchParams.get("source") || "sentinel";
 
-    const templates = TILE_SOURCES[source] || TILE_SOURCES.satellite;
+    const templates = TILE_SOURCES[source];
+    if (!templates) return new NextResponse("Unknown source", { status: 400 });
     // لو المصدر عنده أكتر من subdomain (زي google_sat) بنختار واحد عشوائي
     // بدل ما نجرب بالترتيب دايمًا — كده بنوزع الحمل على mt0/mt1/mt2/mt3
     const templateList = Array.isArray(templates)

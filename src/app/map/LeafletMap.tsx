@@ -1349,9 +1349,10 @@ if (!restoredRef.current) {
         },
       });
 
-      // ① Esri WorldImagery عبر الـ proxy
+      // ① Esri WorldImagery — مباشر بدون proxy (Esri بيبعت CORS headers أصلًا،
+      // فمفيش داعي إننا نمرر كل تايل عبر السيرفر بتاعنا ونستهلك Fast Origin Transfer)
       baseTileRef.current = L.tileLayer(
-        "/api/tile/{z}/{x}/{y}?source=satellite", {
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
         attribution: "Tiles © Esri",
         maxZoom: 22,
         maxNativeZoom: 23,
@@ -1360,7 +1361,7 @@ if (!restoredRef.current) {
       attachTileErrorGuard(baseTileRef.current);
 
       labelsLayerRef.current = L.tileLayer(
-        "/api/tile/{z}/{x}/{y}?source=labels",
+        "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
         { attribution: "", maxZoom: 22, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: "anonymous" }
       ).addTo(map);
 
