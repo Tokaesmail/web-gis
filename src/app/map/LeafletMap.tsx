@@ -1083,11 +1083,19 @@ useEffect(() => {
       const captureResult = await capture(canvas, map, L, coordinates, metadata, captureTarget);
       const { smallBlob, largeBlob, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
       onCapture?.(captureResult);
-      const res = await sendToBackend(smallBlob, largeBlob, coordinates, metadata, {
-        viewportCoordinates,
-        selectedBounds,
-        viewportBounds,
-      }, captureTarget);
+      // ⚠️ largeBlob بيتحسب دايمًا محليًا عشان الـ preview في الواجهة (MapClient
+      // بيخزن largeUrl حتى مع captureTarget === "small")، بس ده مش معناه إنه
+      // لازم يترفع للباك. الباك دلوقتي dummy مش بيعمل حاجة بالصورة، فرفع صورتين
+      // (small + large) على كل capture واحد كان بيضاعف حجم الأپلود من غير أي
+      // فايدة فعلية. بنرفع بس الصورة اللي فعلاً مطلوبة حسب captureTarget.
+      const res = await sendToBackend(
+        smallBlob,
+        captureTarget === "large" ? largeBlob : undefined,
+        coordinates,
+        metadata,
+        { viewportCoordinates, selectedBounds, viewportBounds },
+        captureTarget
+      );
       if (res.ok) console.log("✅ Backend:", await res.json());
     } catch (err) {
       console.error("❌ Capture error:", err);
@@ -1790,11 +1798,15 @@ console.log("Area m²:", turf.area(polygon));
             const captureResult = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata, captureTarget);
               const { smallBlob, largeBlob, selectedCoordinates, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
               onCapture?.(captureResult);
-              const res = await sendToBackend(smallBlob, largeBlob, selectedCoordinates, metadata, {
-                viewportCoordinates,
-                selectedBounds,
-                viewportBounds,
-              }, captureTarget);
+              // نفس التعديل: مبنرفعش largeBlob للباك إلا لو captureTarget فعلاً "large"
+              const res = await sendToBackend(
+                smallBlob,
+                captureTarget === "large" ? largeBlob : undefined,
+                selectedCoordinates,
+                metadata,
+                { viewportCoordinates, selectedBounds, viewportBounds },
+                captureTarget
+              );
               if (res.ok) console.log("✅ Backend:", await res.json());
             }
             drawPointsRef.current = [];
