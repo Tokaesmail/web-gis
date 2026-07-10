@@ -480,6 +480,16 @@ useEffect(() => {
       handle.textContent = "↔";
       ui.appendChild(handle);
 
+      // CRITICAL: without this, dragging the handle also bubbles up as a
+      // click/mousedown to the Leaflet map container underneath. Leaflet then
+      // fires its own "click" handler (onFeatureClick with a virtual point
+      // feature), which overwrites selectedFeature -> AOI bounds change ->
+      // the swipe config gets recomputed with the wrong (or null) bounds and
+      // vanishes. disableClickPropagation stops click/dblclick/mousedown/
+      // touchstart/contextmenu from ever reaching the map for this element.
+      L.DomEvent.disableClickPropagation(handle);
+      L.DomEvent.disableClickPropagation(ui);
+
       const beforeLabel = document.createElement("div");
       beforeLabel.textContent = config.beforeLabel ?? "Before";
       beforeLabel.style.cssText = "position:absolute; background:rgba(0,0,0,.7); color:#7dd3fc; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
@@ -528,6 +538,9 @@ useEffect(() => {
         dragging = true;
         handle.setPointerCapture(e.pointerId);
         e.preventDefault();
+        e.stopPropagation();
+        // avoid the map itself panning/zooming while the handle is dragged
+        map.dragging.disable();
       };
       const onPointerMove = (e: PointerEvent) => {
         if (!dragging) return;
@@ -541,7 +554,10 @@ useEffect(() => {
         applyClip();
         reposition();
       };
-      const onPointerUp = () => { dragging = false; };
+      const onPointerUp = () => {
+        dragging = false;
+        map.dragging.enable();
+      };
 
       handle.addEventListener("pointerdown", onPointerDown);
       window.addEventListener("pointermove", onPointerMove);
@@ -554,6 +570,7 @@ useEffect(() => {
           handle.removeEventListener("pointerdown", onPointerDown);
           window.removeEventListener("pointermove", onPointerMove);
           window.removeEventListener("pointerup", onPointerUp);
+          try { map.dragging.enable(); } catch {}
           try { map.removeLayer(beforeLayer); } catch {}
           try { map.removeLayer(afterLayer); } catch {}
           try { ui.remove(); } catch {}
