@@ -1215,19 +1215,6 @@ const runChart = async () => {
           ? classifiedZoneStats.map((z) => z.areaM2 / 1_000_000)
           : new Array(numZones).fill(null);
 
-        // ── Smooth histogram data for the bar chart ───────────────────────────
-        // ── Downsample histogram bins for display (100 bins + gaps = width≈0) ──
-const DISPLAY_BARS = 40;
-const rawHist = stats.histogram;
-const groupSize = Math.ceil(rawHist.length / DISPLAY_BARS);
-const displayHist: number[] = [];
-for (let i = 0; i < rawHist.length; i += groupSize) {
-  const chunk = rawHist.slice(i, i + groupSize);
-  displayHist.push(chunk.reduce((a, b) => a + b, 0));
-}
-const maxH = Math.max(...displayHist, 1);
-const histPct = displayHist.map((h) => (h / maxH) * 100);
-
         // ── Dynamic legend range ──────────────────────────────────────────────
         const legendMin = stats.min.toFixed(3);
         const legendMax = stats.max.toFixed(3);
@@ -1243,49 +1230,112 @@ const histPct = displayHist.map((h) => (h / maxH) * 100);
             </div>
 
             <div className="p-3 space-y-3">
-              {/* Histogram bars */}
-              <div className="space-y-1">
-                <div className="flex items-end gap-[1px] h-16">
-                  {histPct.map((pct, i) => {
-                    // colour each bar by the REAL zone its value range falls in
-                    // (zones from the backend aren't necessarily equal-width, e.g.
-                    // natural-breaks/quantile classification) — matching against
-                    // z.lo/z.hi is correct; assuming equal division isn't.
-                    const binLo = stats.min + (range * i) / histPct.length;
-                    const binHi = stats.min + (range * (i + 1)) / histPct.length;
-                    const binMid = (binLo + binHi) / 2;
+              {/* Zone chart — SVG حقيقي بمحور X (Zones) ومحور Y (النسبة %) */}
+              <div className="rounded-md border border-white/[0.06] bg-white/[0.015] px-1 pt-2 pb-1">
+                {(() => {
+                  const zonePcts = zoneCounts.map((c) => (c / totalPixels) * 100);
+                  const maxPct = Math.max(...zonePcts, 0.0001);
+                  const yMax = Math.max(10, Math.ceil((maxPct * 1.15) / 10) * 10);
+                  const yTicks = [0, yMax * 0.25, yMax * 0.5, yMax * 0.75, yMax];
 
-                    let zoneIdx: number;
-                    if (classifiedZoneStats && classifiedZoneStats.length > 0) {
-                      const found = classifiedZoneStats.findIndex(
-                        (z) => binMid >= z.lo && binMid < z.hi
-                      );
-                      zoneIdx =
-                        found !== -1
-                          ? found
-                          : binMid < classifiedZoneStats[0].lo
-                          ? 0
-                          : classifiedZoneStats.length - 1;
-                    } else {
-                      // fallback only when we don't have real zone boundaries at all
-                      zoneIdx = Math.min(numZones - 1, Math.floor((i / histPct.length) * numZones));
-                    }
-                    return (
-                      <div
-                        key={i}
-                        className="w-full rounded-t-sm transition-all"
-                        style={{
-                          height: `${Math.max(pct, 2)}%`,
-                          background: zoneColors[zoneIdx],
-                        }}
+                  const W = 300;
+                  const H = 132;
+                  const padL = 26;
+                  const padR = 6;
+                  const padT = 12;
+                  const padB = 18;
+                  const chartW = W - padL - padR;
+                  const chartH = H - padT - padB;
+                  const n = Math.max(zonePcts.length, 1);
+                  const gap = 10;
+                  const barW = (chartW - gap * (n - 1)) / n;
+
+                  return (
+                    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 132 }}>
+                      {/* خطوط الشبكة + أرقام محور Y */}
+                      {yTicks.map((t, i) => {
+                        const y = padT + chartH - (t / yMax) * chartH;
+                        return (
+                          <g key={i}>
+                            <line
+                              x1={padL}
+                              x2={W - padR}
+                              y1={y}
+                              y2={y}
+                              stroke="rgba(255,255,255,0.06)"
+                              strokeWidth={1}
+                            />
+                            <text x={padL - 4} y={y + 2.5} textAnchor="end" fontSize="6.5" fill="#64748b">
+                              {Math.round(t)}%
+                            </text>
+                          </g>
+                        );
+                      })}
+
+                      {/* محور Y */}
+                      <line
+                        x1={padL}
+                        x2={padL}
+                        y1={padT}
+                        y2={padT + chartH}
+                        stroke="rgba(255,255,255,0.18)"
+                        strokeWidth={1}
                       />
-                    );
-                  })}
-                </div>
-                {/* X-axis labels */}
-                <div className="flex justify-between">
+                      {/* محور X */}
+                      <line
+                        x1={padL}
+                        x2={W - padR}
+                        y1={padT + chartH}
+                        y2={padT + chartH}
+                        stroke="rgba(255,255,255,0.18)"
+                        strokeWidth={1}
+                      />
+
+                      {/* الأعمدة — عمود ثابت واحد لكل Zone */}
+                      {zonePcts.map((pct, i) => {
+                        const barH = (pct / yMax) * chartH;
+                        const x = padL + i * (barW + gap);
+                        const y = padT + chartH - barH;
+                        return (
+                          <g key={i}>
+                            <rect
+                              x={x}
+                              y={y}
+                              width={barW}
+                              height={Math.max(barH, 1)}
+                              rx={2}
+                              fill={zoneColors[i]}
+                            />
+                            {pct > 0 && (
+                              <text
+                                x={x + barW / 2}
+                                y={Math.max(y - 3, padT + 6)}
+                                textAnchor="middle"
+                                fontSize="6.5"
+                                fill="#e2e8f0"
+                              >
+                                {pct.toFixed(1)}%
+                              </text>
+                            )}
+                            <text
+                              x={x + barW / 2}
+                              y={padT + chartH + 11}
+                              textAnchor="middle"
+                              fontSize="6"
+                              fill="#64748b"
+                            >
+                              Z{i + 1}
+                            </text>
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  );
+                })()}
+                {/* مدى القيم الأصلي (min → max) */}
+                <div className="flex justify-between px-1 pb-1">
                   <span className="text-[0.5rem] text-slate-600">{legendMin}</span>
-                  <span className="text-[0.5rem] text-slate-600">{((+legendMin + +legendMax) / 2).toFixed(3)}</span>
+                  <span className="text-[0.5rem] text-slate-600">value range</span>
                   <span className="text-[0.5rem] text-slate-600">{legendMax}</span>
                 </div>
               </div>
