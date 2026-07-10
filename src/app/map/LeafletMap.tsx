@@ -1222,14 +1222,43 @@ const area = parseFloat(
         shadowUrl:     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
       });
 
+      // ── استرجاع آخر مكان/زوم كان فاتحهم اليوزر بدل ما نرجع للسعودية كل مرة ──
+      const LAST_VIEW_STORAGE_KEY = "geosense_last_map_view";
+      const DEFAULT_VIEW = { lat: 21.54, lng: 39.19, zoom: 11 };
+      let initialView = DEFAULT_VIEW;
+      try {
+        const rawView = localStorage.getItem(LAST_VIEW_STORAGE_KEY);
+        if (rawView) {
+          const parsed = JSON.parse(rawView);
+          if (
+            Number.isFinite(parsed?.lat) &&
+            Number.isFinite(parsed?.lng) &&
+            Number.isFinite(parsed?.zoom)
+          ) {
+            initialView = parsed;
+          }
+        }
+      } catch (_) {}
+
       const map = L.map(mapRef.current!, {
-        center: [21.54, 39.19], zoom: 11, zoomControl: false,
+        center: [initialView.lat, initialView.lng], zoom: initialView.zoom, zoomControl: false,
         minZoom: 2, maxZoom: 22, worldCopyJump: false,
         maxBounds: [[-90, -180], [90, 180]], maxBoundsViscosity: 1.0,
         doubleClickZoom: false,   // ← وقف dblclick zoom
       });
       mapInstanceRef.current = map;
       mapObjRef.current      = map;
+
+      // بعد أي تحريك/زوم بنحفظ آخر مكان عشان لو عمل ريفريش يرجعله تاني
+      map.on("moveend zoomend", () => {
+        try {
+          const c = map.getCenter();
+          localStorage.setItem(
+            LAST_VIEW_STORAGE_KEY,
+            JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() })
+          );
+        } catch (_) {}
+      });
 
       // ── Zoom guard: لو التايلز فشلت تحمّل (404 / no data) عند زوم معين،
       // رجّع زوم واحد لورا أوتوماتيك بدل ما تفضل الصورة "not available" ──
@@ -1489,7 +1518,50 @@ if (!restoredRef.current) {
         if (labelsLayerRef.current) labelsLayerRef.current.setOpacity(o * 0.8 + 0.1);
       });
 
-      document.getElementById("map-zoom-in")?.addEventListener("click",  () => map.zoomIn());
+      // ── Scale-bar zoom cap (يوقف لما شريط المقياس يوصل ~30 م) ──────────────
+      // بعد الحد ده الـ API بيرجع بيانات غلط/متكررة، فبنوقف الزوم عند أقرب
+      // مستوى بيخلي شريط المقياس (اللي maxWidth بتاعه 150px هنا) يقرا ~30 متر
+      // ونطلع تنبيه، بدل ما نسيب اليوزر يكمّل زوم ويجيبله نتيجة غلط من الـ API.
+      // ملحوظة: ده مختلف عن "30 متر لكل بيكسل" اللي كانت بتوقف الزوم بدري
+      // جدًا (حوالي zoom 12 = شريط مقياس بيقرا كيلومترات) — المطلوب أعمق بكتير.
+      const TARGET_SCALE_LABEL_M = 30; // القراءة المطلوبة على شريط المقياس بالمتر
+      const SCALE_BAR_MAX_WIDTH_PX = 150; // لازم يطابق maxWidth بتاع L.control.scale فوق
+      const resolutionCapNotifiedRef = { current: false };
+
+      const computeMaxZoomForResolution = (lat: number, targetScaleLabelM: number) => {
+        const targetMpp = targetScaleLabelM / SCALE_BAR_MAX_WIDTH_PX;
+        const raw =
+          Math.log2((156543.03392 * Math.cos((lat * Math.PI) / 180)) / targetMpp);
+        return Math.min(map.options.maxZoom ?? 22, Math.max(map.getMinZoom(), Math.round(raw)));
+      };
+
+      const notifyResolutionCap = () => {
+        if (resolutionCapNotifiedRef.current) return;
+        resolutionCapNotifiedRef.current = true;
+        toast.error(
+          isRTL
+            ? `وصلت لأقصى زوم (دقة ${TARGET_SCALE_LABEL_M} متر) في المكان ده`
+            : `Reached max zoom (${TARGET_SCALE_LABEL_M} m resolution) for this area`
+        );
+      };
+
+      const applyResolutionCap = () => {
+        const lat = map.getCenter().lat;
+        const capZoom = computeMaxZoomForResolution(lat, TARGET_SCALE_LABEL_M);
+        map.setMaxZoom(capZoom);
+        resolutionCapNotifiedRef.current = false; // إعادة تعيين لما اليوزر يتحرك لمكان/دقة جديدة
+      };
+
+      applyResolutionCap();
+      map.on("moveend", applyResolutionCap);
+      map.on("zoomend", () => {
+        if (map.getZoom() >= map.getMaxZoom()) notifyResolutionCap();
+      });
+
+      document.getElementById("map-zoom-in")?.addEventListener("click",  () => {
+        if (map.getZoom() >= map.getMaxZoom()) { notifyResolutionCap(); return; }
+        map.zoomIn();
+      });
       document.getElementById("map-zoom-out")?.addEventListener("click", () => map.zoomOut());
 
       flyToRef.current = (lat, lng) => {

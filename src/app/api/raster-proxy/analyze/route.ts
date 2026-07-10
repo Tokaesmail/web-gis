@@ -4,23 +4,33 @@
 //   - rgb / swir  → "composite": 3 bands، كل باند ياخد 2%-98% stretch لوحده،
 //                   gamma، sharpen (زي true color بالظبط، بس أي bands اللي
 //                   الفرونت هيبعتها)
-//   - ndvi/ndwi/ndmi → "index": بانداتين، بتتحسب معادلة الـ index لكل بكسل،
-//                   وبعدين linear stretch + colormap + شفافية حوالين الصفر
-//                   (نفس منطق route.ts الأصلي بتاع الباند الواحد)
+//   - ndvi/ndwi/ndmi/ndbi/savi/evi/bsi → "index": من بانداتين لحد 4 بانداتات،
+//                   بتتحسب معادلة الـ index لكل بكسل، وبعدين linear stretch +
+//                   colormap + شفافية حوالين الصفر
+//   - change_*    → "change": نفس معادلة الـ index بتاعها، بس بتتحسب مرتين
+//                   (قبل/بعد) ويتصنف كل بكسل Gain/No Change/Loss/Other/No Data
+//                   بناءً على الفرق بينهم
 //
 // Usage:
 //   GET /api/raster-proxy/analyze
-//       ?type=rgb|swir|ndvi|ndwi|ndmi
-//       &urls=<url1>,<url2>[,<url3>]   ← بالترتيب المطلوب لكل نوع (تحت)
+//       ?type=rgb|swir|ndvi|ndwi|ndmi|ndbi|savi|evi|bsi|change_ndvi|change_ndwi|change_ndbi|change_ndmi|change_savi|change_evi|change_bsi
+//       &urls=<url1>,<url2>[,...]      ← بالترتيب المطلوب لكل نوع (تحت)
 //       &bbox=west,south,east,north     ← إلزامي (WGS84) — بيحدد الـ pixel window
 //                                          المطلوب قراءته بدل تحميل الـ scene كاملة
 //       &token=...
 //
 //   rgb  → urls = B04,B03,B02  (R,G,B)
 //   swir → urls = <SWIR>,<NIR>,<Red>  (حسب الكومبينيشن اللي الفرونت عايزاه، مثلًا B12,B8A,B04)
-//   ndvi → urls = B08,B04   (NIR, Red)
-//   ndwi → urls = B03,B08   (Green, NIR)
-//   ndmi → urls = B08,B11   (NIR, SWIR1)
+//   ndvi → urls = B08,B04         (NIR, Red)
+//   ndwi → urls = B03,B08         (Green, NIR)
+//   ndmi → urls = B08,B11         (NIR, SWIR1)
+//   ndbi → urls = B11,B08         (SWIR1, NIR)
+//   savi → urls = B08,B04         (NIR, Red) — L=0.5 مبني جوه المعادلة
+//   evi  → urls = B08,B04,B02     (NIR, Red, Blue)
+//   bsi  → urls = B11,B04,B08,B02 (SWIR1, Red, NIR, Blue)
+//
+//   change_<index> → urls = [...نفس بانداتات الـ index بتاعته لـ Before, ...نفس البانداتات لـ After]
+//     مثال change_evi → urls = beforeB08,beforeB04,beforeB02,afterB08,afterB04,afterB02
 //
 // اختياري لـ composite: gamma (افتراضي 1.1), sharpen (0/1), low/high (2/98)
 // اختياري لـ index: colormap, min/max (افتراضي -1/1), zero, alphaLow/alphaHigh, transparent
@@ -151,21 +161,27 @@ async function signPlanetaryComputerUrl(url: string): Promise<string> {
   }
 }
 
-type AnalysisType = "rgb" | "swir" | "ndvi" | "ndwi" | "ndmi" | "change_ndvi" | "change_ndwi" | "change_ndbi";
+type AnalysisType =
+  | "rgb" | "swir"
+  | "ndvi" | "ndwi" | "ndmi" | "ndbi" | "savi" | "evi" | "bsi"
+  | "change_ndvi" | "change_ndwi" | "change_ndbi" | "change_ndmi"
+  | "change_savi" | "change_evi" | "change_bsi";
 
 type CompositeConfig = { kind: "composite"; bandCount: 3; label: string };
 type IndexConfig = {
   kind: "index";
-  bandCount: 2;
+  bandCount: 2 | 3 | 4;
   label: string;
-  formula: (a: number, b: number) => number;
+  /** Applied per-pixel with each band's value as one arg, in the order listed in the type's `urls` doc. */
+  formula: (...values: number[]) => number;
   defaultColormap: string;
 };
 type ChangeConfig = {
   kind: "change";
-  bandCount: 4; // [beforeA, beforeB, afterA, afterB]
+  bandCount: 4 | 6 | 8; // 2x the underlying index's bandCount — [...beforeBands, ...afterBands]
   label: string;
-  formula: (a: number, b: number) => number;
+  /** Same per-index formula, evaluated once for the "before" bands and once for "after". */
+  formula: (...values: number[]) => number;
   /** label shown for a positive (increase) change — e.g. "Vegetation Gain" */
   gainLabel: string;
   /** label shown for a negative (decrease) change — e.g. "Vegetation Loss" */
@@ -190,6 +206,36 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     formula: (nir, swir1) => (nir - swir1) / (nir + swir1 || 1e-6),
     defaultColormap: "greens",
   },
+  ndbi: {
+    kind: "index", bandCount: 2, label: "NDBI (SWIR1,NIR — e.g. B11,B08)",
+    formula: (swir1, nir) => (swir1 - nir) / (swir1 + nir || 1e-6),
+    defaultColormap: "oranges",
+  },
+  savi: {
+    // Soil-Adjusted Vegetation Index — same shape as NDVI but with a soil-brightness
+    // correction factor L (0.5 is the standard default for intermediate vegetation
+    // cover) so bare/sparse-canopy areas don't get over-read as high vegetation.
+    kind: "index", bandCount: 2, label: "SAVI (NIR,Red — e.g. B08,B04)",
+    formula: (nir, red) => ((nir - red) / (nir + red + 0.5 || 1e-6)) * 1.5,
+    defaultColormap: "rdylgn",
+  },
+  evi: {
+    // Enhanced Vegetation Index — standard MODIS/Sentinel coefficients
+    // (G=2.5, C1=6, C2=7.5, L=1). Needs Blue in addition to NIR/Red to correct
+    // for atmospheric scattering and canopy background, which is why it needs
+    // 3 bands instead of NDVI's 2.
+    kind: "index", bandCount: 3, label: "EVI (NIR,Red,Blue — e.g. B08,B04,B02)",
+    formula: (nir, red, blue) => (2.5 * (nir - red)) / (nir + 6 * red - 7.5 * blue + 1 || 1e-6),
+    defaultColormap: "rdylgn",
+  },
+  bsi: {
+    // Bare Soil Index — combines SWIR+Red (soil-responsive) vs NIR+Blue
+    // (vegetation/water-responsive) into one normalized-difference-style ratio.
+    kind: "index", bandCount: 4, label: "BSI (SWIR1,Red,NIR,Blue — e.g. B11,B04,B08,B02)",
+    formula: (swir1, red, nir, blue) =>
+      ((swir1 + red) - (nir + blue)) / ((swir1 + red) + (nir + blue) || 1e-6),
+    defaultColormap: "oranges",
+  },
   change_ndvi: {
     kind: "change", bandCount: 4, label: "Change NDVI (beforeNIR,beforeRed,afterNIR,afterRed — e.g. B08,B04,B08,B04)",
     formula: (nir, red) => (nir - red) / (nir + red || 1e-6),
@@ -204,6 +250,28 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     kind: "change", bandCount: 4, label: "Change NDBI (beforeSWIR,beforeNIR,afterSWIR,afterNIR — e.g. B11,B08,B11,B08)",
     formula: (swir, nir) => (swir - nir) / (swir + nir || 1e-6),
     gainLabel: "Built-up Gain", lossLabel: "Built-up Loss",
+  },
+  change_ndmi: {
+    kind: "change", bandCount: 4, label: "Change NDMI (beforeNIR,beforeSWIR1,afterNIR,afterSWIR1 — e.g. B08,B11,B08,B11)",
+    formula: (nir, swir1) => (nir - swir1) / (nir + swir1 || 1e-6),
+    gainLabel: "Moisture Gain", lossLabel: "Moisture Loss",
+  },
+  change_savi: {
+    kind: "change", bandCount: 4, label: "Change SAVI (beforeNIR,beforeRed,afterNIR,afterRed — e.g. B08,B04,B08,B04)",
+    formula: (nir, red) => ((nir - red) / (nir + red + 0.5 || 1e-6)) * 1.5,
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_evi: {
+    kind: "change", bandCount: 6,
+    label: "Change EVI (beforeNIR,beforeRed,beforeBlue,afterNIR,afterRed,afterBlue — e.g. B08,B04,B02,B08,B04,B02)",
+    formula: (nir, red, blue) => (2.5 * (nir - red)) / (nir + 6 * red - 7.5 * blue + 1 || 1e-6),
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_bsi: {
+    kind: "change", bandCount: 8,
+    label: "Change BSI (beforeSWIR1,beforeRed,beforeNIR,beforeBlue,afterSWIR1,afterRed,afterNIR,afterBlue — e.g. B11,B04,B08,B02,B11,B04,B08,B02)",
+    formula: (swir1, red, nir, blue) => ((swir1 + red) - (nir + blue)) / ((swir1 + red) + (nir + blue) || 1e-6),
+    gainLabel: "Bare Soil Gain", lossLabel: "Bare Soil Loss",
   },
 };
 
@@ -420,6 +488,26 @@ function checkSameGrid(bands: BandRaster[]) {
   return rest.every((b) => b.width === first.width && b.height === first.height);
 }
 
+// Evaluates a per-pixel band-math formula against 2, 3, or 4 bands without
+// allocating a temporary array every pixel (this runs once per pixel per
+// band count, so for a ~1000x1000 AOI that's ~1M calls — allocation here
+// would show up as real GC pressure).
+function evalFormula(formula: (...values: number[]) => number, bands: BandRaster[], i: number): number {
+  switch (bands.length) {
+    case 2: return formula(bands[0].data[i], bands[1].data[i]);
+    case 3: return formula(bands[0].data[i], bands[1].data[i], bands[2].data[i]);
+    case 4: return formula(bands[0].data[i], bands[1].data[i], bands[2].data[i], bands[3].data[i]);
+    default: return formula(...bands.map((b) => b.data[i]));
+  }
+}
+
+// True if every band is 0 at pixel i — used as the "no data" signal (Sentinel-2
+// L2A masks nodata pixels to 0 across bands).
+function allZero(bands: BandRaster[], i: number): boolean {
+  for (const b of bands) if (b.data[i] !== 0) return false;
+  return true;
+}
+
 // ── Composite path (rgb / swir) ─────────────────────────────────────────────
 function computePercentiles(data: ArrayLike<number>, low: number, high: number, sampleStep = 4) {
   const sample: number[] = [];
@@ -476,11 +564,10 @@ async function renderComposite(bands: BandRaster[], gamma: number, doSharpen: bo
   return { pngBuffer, stats };
 }
 
-// ── Index path (ndvi / ndwi / ndmi) ─────────────────────────────────────────
+// ── Index path (ndvi / ndwi / ndmi / ndbi / savi / evi / bsi) ───────────────
 async function renderIndex(
-  bandA: BandRaster,
-  bandB: BandRaster,
-  formula: (a: number, b: number) => number,
+  bands: BandRaster[],
+  formula: (...values: number[]) => number,
   colormap: string,
   rMin: number,
   rMax: number,
@@ -489,11 +576,11 @@ async function renderIndex(
   alphaHigh: number,
   transparent: boolean
 ) {
-  const { width, height } = bandA;
+  const { width, height } = bands[0];
   const n = width * height;
   const indexValues = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    indexValues[i] = formula(bandA.data[i], bandB.data[i]);
+    indexValues[i] = evalFormula(formula, bands, i);
   }
 
   const range = rMax - rMin || 0.001;
@@ -551,7 +638,7 @@ async function renderIndex(
   return { pngBuffer, stats };
 }
 
-// ── Change Detection path (change_ndvi / change_ndwi / change_ndbi) ────────
+// ── Change Detection path (change_ndvi / change_ndwi / change_ndbi / change_ndmi) ────────
 // Classifies each pixel into one of 5 clear, distinct classes instead of a
 // continuous diverging ramp — matches the "No Change / Gain / Loss / Other
 // Change / No Data" legend style used by reference change-detection products.
@@ -566,30 +653,25 @@ const CHANGE_COLORS: Record<ChangeClass, [number, number, number]> = {
 };
 
 async function renderChange(
-  beforeA: BandRaster,
-  beforeB: BandRaster,
-  afterA: BandRaster,
-  afterB: BandRaster,
-  formula: (a: number, b: number) => number,
+  beforeBands: BandRaster[],
+  afterBands: BandRaster[],
+  formula: (...values: number[]) => number,
   threshold: number,
   classThreshold: number,
 ) {
-  const { width, height } = beforeA;
+  const { width, height } = beforeBands[0];
   const n = width * height;
   const rgbaData = Buffer.alloc(n * 4);
 
   const counts: Record<ChangeClass, number> = { noData: 0, noChange: 0, gain: 0, loss: 0, other: 0 };
 
   for (let i = 0; i < n; i++) {
-    const bA = beforeA.data[i], bB = beforeB.data[i];
-    const aA = afterA.data[i], aB = afterB.data[i];
-
     let cls: ChangeClass;
-    if ((bA === 0 && bB === 0) || (aA === 0 && aB === 0)) {
+    if (allZero(beforeBands, i) || allZero(afterBands, i)) {
       cls = "noData";
     } else {
-      const beforeVal = formula(bA, bB);
-      const afterVal = formula(aA, aB);
+      const beforeVal = evalFormula(formula, beforeBands, i);
+      const afterVal = evalFormula(formula, afterBands, i);
       const delta = afterVal - beforeVal;
 
       if (Math.abs(delta) < threshold) {
@@ -720,16 +802,19 @@ export async function GET(req: NextRequest) {
     const alphaHigh = parseFloat(searchParams.get("alphaHigh") ?? "0.45");
     const transparent = (searchParams.get("transparent") ?? "1") !== "0";
     const result = await renderIndex(
-      bands[0], bands[1], config.formula, colormap, rMin, rMax, zeroVal, alphaLow, alphaHigh, transparent
+      bands, config.formula, colormap, rMin, rMax, zeroVal, alphaLow, alphaHigh, transparent
     );
     pngBuffer = result.pngBuffer;
     stats = result.stats;
   } else {
-    // change_ndvi / change_ndwi / change_ndbi
+    // change_ndvi / change_ndwi / change_ndbi / change_ndmi / change_savi / change_evi / change_bsi
     const threshold = parseFloat(searchParams.get("threshold") ?? "0.08");
     const classThreshold = parseFloat(searchParams.get("classThreshold") ?? "0.25");
+    const half = config.bandCount / 2;
+    const beforeBands = bands.slice(0, half);
+    const afterBands = bands.slice(half);
     const result = await renderChange(
-      bands[0], bands[1], bands[2], bands[3], config.formula, threshold, classThreshold
+      beforeBands, afterBands, config.formula, threshold, classThreshold
     );
     pngBuffer = result.pngBuffer;
     stats = result.stats;

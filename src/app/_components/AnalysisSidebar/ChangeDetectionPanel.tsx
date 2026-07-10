@@ -3,12 +3,24 @@ import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
 import { clipImageToPolygon, getPolygonRing } from "./geoClipUtils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-type ChangeIndexKey = "NDVI" | "NDWI" | "NDBI";
+// PreviewKey = every entry that shows up in the "Index to compare" list.
+// Two kinds:
+//  - "index"     -> a real normalized-difference band index (a-b)/(a+b). These
+//                   can run the full server-side change classification
+//                   (Gain/No Change/Loss/Other/No Data) via /api/raster-proxy/analyze.
+//  - "composite" -> a plain multi-band color composite (true color / false color).
+//                   These are great for the visual Before/After swipe & side-by-side
+//                   compare, but there's no single scalar index to classify a
+//                   pixel-level "change map" from, so Run Change Detection is
+//                   disabled for these and the UI explains why.
+type PreviewKey = "RGB" | "NDVI" | "NDWI" | "NDMI" | "NDBI" | "SAVI" | "EVI" | "BSI" | "SWIR";
+// Subset that supports real server-side change classification.
+type ChangeIndexKey = "NDVI" | "NDWI" | "NDMI" | "NDBI" | "SAVI" | "EVI" | "BSI";
 type ChangeDirection = "increase" | "decrease" | "both";
 
 export interface ChangeDetectionPreviewConfig {
   name: string;
-  indexKey: ChangeIndexKey;
+  indexKey: PreviewKey;
   expression: string;
   date: string;
   coords: { lat: number; lng: number };
@@ -49,28 +61,98 @@ interface SatelliteScene {
   bbox?: number[];
 }
 
-const CHANGE_INDEX_DEFS: Record<ChangeIndexKey, {
+interface PreviewDef {
   label: string;
   desc: string;
-  assets: [string, string]; // [a, b] -> (a-b)/(a+b)
+  kind: "index" | "composite";
   color: string;
+  /** Band asset keys, in the exact order the formula/expression expects. 2 for most
+   *  indices, 3 for EVI, 4 for BSI. 3 for composite kind (R,G,B). */
+  assets: string[];
   // tighter rescale than the raw [-1,1] index range = much more vivid, less washed-out preview colors
-  rescale: string;
-}> = {
-  NDVI: { label: "NDVI", desc: "Vegetation change (NIR, Red)", assets: ["B08", "B04"], color: "#22c55e", rescale: "-0.2,0.75" },
-  NDWI: { label: "NDWI", desc: "Water extent change (Green, NIR)", assets: ["B03", "B08"], color: "#38bdf8", rescale: "-0.3,0.5" },
-  NDBI: { label: "NDBI", desc: "Built-up / urban change (SWIR, NIR)", assets: ["B11", "B08"], color: "#f97316", rescale: "-0.35,0.35" },
+  // (index kind only)
+  rescale?: string;
+  // colormap used for the single-band index preview (index kind only)
+  colormap?: string;
+  /** Builds the TiTiler band-math expression from `assets`, in order (index kind only).
+   *  Defaults to the standard normalized difference (a-b)/(a+b) for 2-band indices. */
+  expression?: (assets: string[]) => string;
+}
+
+const PREVIEW_DEFS: Record<PreviewKey, PreviewDef> = {
+  RGB: {
+    label: "RGB", desc: "True color (Red, Green, Blue)", kind: "composite",
+    assets: ["B04", "B03", "B02"], color: "#e2e8f0",
+  },
+  NDVI: {
+    label: "NDVI", desc: "Vegetation vigor (NIR, Red)", kind: "index",
+    assets: ["B08", "B04"], color: "#22c55e", rescale: "-0.2,0.75", colormap: "rdylgn",
+  },
+  NDWI: {
+    label: "NDWI", desc: "Water signal (Green, NIR)", kind: "index",
+    assets: ["B03", "B08"], color: "#38bdf8", rescale: "-0.3,0.5", colormap: "rdbu_r",
+  },
+  NDMI: {
+    label: "NDMI", desc: "Moisture stress (NIR, SWIR)", kind: "index",
+    assets: ["B08", "B11"], color: "#a78bfa", rescale: "-0.3,0.5", colormap: "brbg",
+  },
+  NDBI: {
+    label: "NDBI", desc: "Built-up / urban areas (SWIR, NIR)", kind: "index",
+    assets: ["B11", "B08"], color: "#f59e0b", rescale: "-0.35,0.35", colormap: "oranges",
+  },
+  SAVI: {
+    // Soil-Adjusted Vegetation Index — like NDVI but corrected for soil brightness (L=0.5).
+    label: "SAVI", desc: "Soil-adjusted vegetation (NIR, Red)", kind: "index",
+    assets: ["B08", "B04"], color: "#84cc16", rescale: "-0.2,0.9", colormap: "rdylgn",
+    expression: ([nir, red]) => `((${nir}-${red})/(${nir}+${red}+0.5))*1.5`,
+  },
+  EVI: {
+    // Enhanced Vegetation Index — needs Blue too, to correct for atmosphere/canopy background.
+    label: "EVI", desc: "Enhanced vegetation (NIR, Red, Blue)", kind: "index",
+    assets: ["B08", "B04", "B02"], color: "#16a34a", rescale: "-0.2,1", colormap: "rdylgn",
+    expression: ([nir, red, blue]) => `2.5*(${nir}-${red})/(${nir}+6*${red}-7.5*${blue}+1)`,
+  },
+  BSI: {
+    // Bare Soil Index — (SWIR+Red) vs (NIR+Blue), normalized.
+    label: "BSI", desc: "Bare soil index (SWIR, Red, NIR, Blue)", kind: "index",
+    assets: ["B11", "B04", "B08", "B02"], color: "#d97706", rescale: "-0.3,0.3", colormap: "oranges",
+    expression: ([swir, red, nir, blue]) => `((${swir}+${red})-(${nir}+${blue}))/((${swir}+${red})+(${nir}+${blue}))`,
+  },
+  SWIR: {
+    label: "SWIR", desc: "False color (SWIR, NIR, Red)", kind: "composite",
+    assets: ["B11", "B08", "B04"], color: "#f97316",
+  },
+};
+
+// Kept for any old prop plumbing that still expects the pure-index map.
+const CHANGE_INDEX_DEFS: Record<ChangeIndexKey, PreviewDef> = {
+  NDVI: PREVIEW_DEFS.NDVI,
+  NDWI: PREVIEW_DEFS.NDWI,
+  NDMI: PREVIEW_DEFS.NDMI,
+  NDBI: PREVIEW_DEFS.NDBI,
+  SAVI: PREVIEW_DEFS.SAVI,
+  EVI: PREVIEW_DEFS.EVI,
+  BSI: PREVIEW_DEFS.BSI,
 };
 
 // Maps the panel's index selector to the server-side change-detection analysis
 // type exposed by /api/raster-proxy/analyze — the actual classification (5
 // clear classes, computed from real band math, not colorized-PNG guessing)
-// happens server-side in that route.
+// happens server-side in that route. Only real normalized-difference indices
+// support this — RGB/SWIR are composites, not a single scalar to classify.
 const CHANGE_API_TYPE: Record<ChangeIndexKey, string> = {
   NDVI: "change_ndvi",
   NDWI: "change_ndwi",
+  NDMI: "change_ndmi",
   NDBI: "change_ndbi",
+  SAVI: "change_savi",
+  EVI: "change_evi",
+  BSI: "change_bsi",
 };
+
+function isClassifiable(key: PreviewKey): key is ChangeIndexKey {
+  return PREVIEW_DEFS[key].kind === "index";
+}
 
 interface ChangeLegendItem { key: string; label: string; color: string }
 interface ChangeStats {
@@ -87,7 +169,11 @@ function defaultChangeLegend(indexKey: ChangeIndexKey): ChangeLegendItem[] {
   const GAIN_LOSS_LABELS: Record<ChangeIndexKey, [string, string]> = {
     NDVI: ["Vegetation Gain", "Vegetation Loss"],
     NDWI: ["Water Gain", "Water Loss"],
+    NDMI: ["Moisture Gain", "Moisture Loss"],
     NDBI: ["Built-up Gain", "Built-up Loss"],
+    SAVI: ["Vegetation Gain", "Vegetation Loss"],
+    EVI: ["Vegetation Gain", "Vegetation Loss"],
+    BSI: ["Bare Soil Gain", "Bare Soil Loss"],
   };
   const [gainLabel, lossLabel] = GAIN_LOSS_LABELS[indexKey];
   return [
@@ -144,14 +230,15 @@ function getSceneAssetUrl(scene: SatelliteScene, assetKey: string) {
 
 function makePreviewUrl(
   scene: SatelliteScene,
-  indexKey: ChangeIndexKey,
+  indexKey: PreviewKey,
   bbox: [number, number, number, number], // [west, south, east, north] — the AOI, not the scene tile
 ) {
-  const { assets, rescale } = CHANGE_INDEX_DEFS[indexKey];
+  const def = PREVIEW_DEFS[indexKey];
+  const { assets } = def;
   if (!scene.id || !scene.collection) return scene.thumbnail;
-  const aHref = getSceneAssetUrl(scene, assets[0]);
-  const bHref = getSceneAssetUrl(scene, assets[1]);
-  if (!aHref || !bHref) return scene.thumbnail;
+
+  const hrefs = assets.map((asset) => getSceneAssetUrl(scene, asset));
+  if (hrefs.some((h) => !h)) return scene.thumbnail;
 
   const [west, south, east, north] = bbox;
   // Keep the rendered image's pixel aspect ratio matched to the AOI's geographic
@@ -177,11 +264,24 @@ function makePreviewUrl(
     url.searchParams.append("asset_bidx", `${asset}|1`);
   });
   url.searchParams.set("asset_as_band", "true");
-  url.searchParams.set("expression", `(${assets[0]}-${assets[1]})/(${assets[0]}+${assets[1]})`);
-  // tighter rescale per index = the colormap uses its full range where pixel values actually
-  // cluster, instead of stretching across the theoretical [-1,1] and looking pale/washed out
-  url.searchParams.set("rescale", rescale);
-  url.searchParams.set("colormap_name", "rdylgn");
+
+  if (def.kind === "composite") {
+    // True/false color composite: render the raw bands directly as R,G,B — no
+    // expression, no colormap. TiTiler maps them in the order they're listed
+    // in `assets` (already [R, G, B] per PREVIEW_DEFS above).
+    // A mild rescale (Sentinel-2 L2A surface reflectance is ~0–3000ish for
+    // most scenes) keeps it from looking near-black/near-white.
+    url.searchParams.set("rescale", "0,2500");
+  } else {
+    const expr = def.expression
+      ? def.expression(assets)
+      : `(${assets[0]}-${assets[1]})/(${assets[0]}+${assets[1]})`;
+    url.searchParams.set("expression", expr);
+    // tighter rescale per index = the colormap uses its full range where pixel values actually
+    // cluster, instead of stretching across the theoretical [-1,1] and looking pale/washed out
+    url.searchParams.set("rescale", def.rescale ?? "-0.3,0.5");
+    url.searchParams.set("colormap_name", def.colormap ?? "rdylgn");
+  }
   return url.toString();
 }
 
@@ -340,7 +440,7 @@ function ChangeCompareModal({
   changeUrl?: string | null;
   beforeDate?: string;
   afterDate?: string;
-  indexKey: ChangeIndexKey;
+  indexKey: PreviewKey;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -554,7 +654,8 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   const [[south, west], [north, east]] = bounds;
 
   const [source] = useState<"sentinel-2">("sentinel-2");
-  const [indexKey, setIndexKey] = useState<ChangeIndexKey>("NDVI");
+  const [indexKey, setIndexKey] = useState<PreviewKey>("NDVI");
+  const [indexPickerOpen, setIndexPickerOpen] = useState(false);
   const [threshold, setThreshold] = useState(0.08);
   const [direction, setDirection] = useState<ChangeDirection>("both");
 
@@ -589,8 +690,26 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   const [diffDataUrl, setDiffDataUrl] = useState<string | null>(null);
   const [compareModalOpen, setCompareModalOpen] = useState(false);
 
-  const indexDef = CHANGE_INDEX_DEFS[indexKey];
+  const previewDef = PREVIEW_DEFS[indexKey];
+  const canClassify = isClassifiable(indexKey);
   const collection = source === "sentinel-2" ? "sentinel-2-l2a" : "landsat-c2-l2";
+
+  const indexPickerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!indexPickerOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (indexPickerRef.current && !indexPickerRef.current.contains(e.target as Node)) {
+        setIndexPickerOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIndexPickerOpen(false); };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [indexPickerOpen]);
 
   const searchScenes = useCallback(async (
     dateFrom: string,
@@ -769,15 +888,16 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const canRun = !!beforeScene && !!afterScene;
+  const canRun = !!beforeScene && !!afterScene && canClassify;
 
   const runButtonLabel = useMemo(() => {
+    if (!canClassify) return `${previewDef.label} is visual-only — pick an index (NDVI/NDWI/NDMI/NDBI/SAVI/EVI/BSI) to run classification`;
     if (computing) return "Computing change map...";
     if (!beforeScene && !afterScene) return "Search & select Before + After scenes";
     if (!beforeScene) return "Select a Before scene ↑";
     if (!afterScene) return "Select an After scene ↑";
     return "Run Change Detection";
-  }, [computing, beforeScene, afterScene]);
+  }, [computing, beforeScene, afterScene, canClassify, previewDef]);
 
   // Runs the real change-detection computation server-side via
   // /api/raster-proxy/analyze (type=change_ndvi|change_ndwi|change_ndbi):
@@ -787,25 +907,29 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   // already-colorized preview PNGs.
   const runChangeDetection = useCallback(async () => {
     if (!beforeScene || !afterScene) return;
+    if (!isClassifiable(indexKey)) {
+      setComputeError(`${previewDef.label} is a visual composite, not a single index — there's no scalar change to classify. Pick NDVI, NDWI, NDMI, NDBI, SAVI, EVI, or BSI to run classification.`);
+      return;
+    }
     setComputing(true);
     setComputeError(null);
     setChangeResult(null);
     setDiffDataUrl(null);
 
     try {
-      const [assetAKey, assetBKey] = indexDef.assets;
-      const beforeAHref = getSceneAssetUrl(beforeScene, assetAKey);
-      const beforeBHref = getSceneAssetUrl(beforeScene, assetBKey);
-      const afterAHref = getSceneAssetUrl(afterScene, assetAKey);
-      const afterBHref = getSceneAssetUrl(afterScene, assetBKey);
+      const beforeHrefs = previewDef.assets.map((key) => getSceneAssetUrl(beforeScene, key));
+      const afterHrefs = previewDef.assets.map((key) => getSceneAssetUrl(afterScene, key));
 
-      if (!beforeAHref || !beforeBHref || !afterAHref || !afterBHref) {
+      if (beforeHrefs.some((h) => !h) || afterHrefs.some((h) => !h)) {
         throw new Error("Could not resolve the required band URLs for the selected scenes.");
       }
 
+      const classifiableKey: ChangeIndexKey = indexKey as ChangeIndexKey;
       const params = new URLSearchParams({
-        type: CHANGE_API_TYPE[indexKey],
-        urls: [beforeAHref, beforeBHref, afterAHref, afterBHref].join(","),
+        type: CHANGE_API_TYPE[classifiableKey],
+        // Order matters: backend splits this list in half — first half = Before
+        // bands (in the same order as `previewDef.assets`), second half = After.
+        urls: [...beforeHrefs, ...afterHrefs].join(","),
         bbox: `${west},${south},${east},${north}`,
         threshold: String(threshold),
       });
@@ -818,7 +942,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
 
       const legendHeader = res.headers.get("X-Change-Legend");
       const statsHeader = res.headers.get("X-Raster-Stats");
-      const legend: ChangeLegendItem[] = legendHeader ? JSON.parse(legendHeader) : defaultChangeLegend(indexKey);
+      const legend: ChangeLegendItem[] = legendHeader ? JSON.parse(legendHeader) : defaultChangeLegend(classifiableKey);
       const stats: ChangeStats | null = statsHeader ? JSON.parse(statsHeader) : null;
 
       const blob = await res.blob();
@@ -848,7 +972,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     } finally {
       setComputing(false);
     }
-  }, [beforeScene, afterScene, indexKey, indexDef, threshold, west, south, east, north]);
+  }, [beforeScene, afterScene, indexKey, previewDef, threshold, west, south, east, north]);
 
   const downloadDiff = useCallback(() => {
     if (!diffDataUrl) return;
@@ -865,7 +989,8 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
           <div>
             <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Change Detection</p>
             <p className="mt-1 text-xs leading-relaxed text-slate-300">
-              Compare two satellite scenes from different dates and visualize vegetation, water, or built-up change.
+              Compare two satellite scenes from different dates: true color, vegetation vigor, water signal,
+              moisture stress, or SWIR false color.
             </p>
           </div>
           <span className="rounded-md border border-orange-400/20 bg-orange-400/10 px-2 py-1 text-[0.56rem] font-bold text-orange-300">
@@ -874,27 +999,79 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
         </div>
       </div>
 
-      {/* Index selector */}
-      <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
+      {/* Index selector — click to open a dropdown list of the available analyses */}
+      <div ref={indexPickerRef} className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3 relative">
         <p className="text-[0.62rem] uppercase tracking-wider text-slate-500 mb-2.5">Index to compare</p>
-        <div className="grid grid-cols-3 gap-2">
-          {(Object.keys(CHANGE_INDEX_DEFS) as ChangeIndexKey[]).map((key) => {
-            const def = CHANGE_INDEX_DEFS[key];
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => { setIndexKey(key); setChangeResult(null); setDiffDataUrl(null); }}
-                className={`rounded-lg border p-2.5 text-left transition-all cursor-pointer ${
-                  indexKey === key ? "border-cyan-400/40 bg-cyan-400/[0.08]" : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.14]"
-                }`}
-              >
-                <span className="text-[0.68rem] font-bold" style={{ color: def.color }}>{def.label}</span>
-                <span className="block text-[0.52rem] text-slate-500 mt-0.5 leading-tight">{def.desc}</span>
-              </button>
-            );
-          })}
-        </div>
+
+        <button
+          type="button"
+          onClick={() => setIndexPickerOpen((p) => !p)}
+          className={`w-full flex items-center justify-between gap-2 rounded-lg border px-3 py-2.5 text-left transition-all cursor-pointer ${
+            indexPickerOpen ? "border-cyan-400/40 bg-cyan-400/[0.08]" : "border-white/[0.08] bg-white/[0.02] hover:border-white/[0.14]"
+          }`}
+          aria-haspopup="listbox"
+          aria-expanded={indexPickerOpen}
+        >
+          <span className="flex items-center gap-2 min-w-0">
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: previewDef.color, boxShadow: `0 0 6px ${previewDef.color}` }} />
+            <span className="min-w-0">
+              <span className="block text-[0.68rem] font-bold" style={{ color: previewDef.color }}>{previewDef.label}</span>
+              <span className="block text-[0.52rem] text-slate-500 leading-tight truncate">{previewDef.desc}</span>
+            </span>
+          </span>
+          <svg
+            width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+            className={`shrink-0 text-slate-400 transition-transform ${indexPickerOpen ? "rotate-180" : ""}`}
+          >
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
+
+        {indexPickerOpen && (
+          <div
+            role="listbox"
+            className="absolute left-3 right-3 top-[calc(100%-4px)] z-20 rounded-lg border border-white/[0.1] bg-[#060d1b] shadow-[0_16px_40px_rgba(0,0,0,0.6)] overflow-hidden"
+          >
+            {(Object.keys(PREVIEW_DEFS) as PreviewKey[]).map((key) => {
+              const def = PREVIEW_DEFS[key];
+              const active = indexKey === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => {
+                    setIndexKey(key);
+                    setChangeResult(null);
+                    setDiffDataUrl(null);
+                    setComputeError(null);
+                    setIndexPickerOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors cursor-pointer border-b border-white/[0.05] last:border-b-0 ${
+                    active ? "bg-cyan-400/[0.1]" : "hover:bg-white/[0.04]"
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: def.color, boxShadow: `0 0 6px ${def.color}` }} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[0.66rem] font-bold" style={{ color: def.color }}>{def.label}</span>
+                    <span className="block text-[0.52rem] text-slate-500 leading-tight">{def.desc}</span>
+                  </span>
+                  {def.kind === "composite" && (
+                    <span className="shrink-0 text-[0.5rem] uppercase tracking-wider text-slate-500 border border-white/[0.08] rounded-full px-1.5 py-0.5">
+                      visual only
+                    </span>
+                  )}
+                  {active && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0 text-cyan-300">
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* AOI info */}
@@ -984,7 +1161,17 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
       </div>
 
       {/* Run */}
-      {!canRun && (
+      {!canClassify && (
+        <div className="rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2">
+          <p className="text-[0.58rem] text-slate-400 leading-relaxed">
+            <span className="font-semibold" style={{ color: previewDef.color }}>{previewDef.label}</span> is a color
+            composite, not a single index — it's great for the Before/After swipe and side-by-side compare above,
+            but there's no scalar pixel value to classify into Gain/Loss. Pick NDVI, NDWI, NDMI, NDBI, SAVI, EVI, or
+            BSI to run the change classification.
+          </p>
+        </div>
+      )}
+      {canClassify && !canRun && (
         <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 space-y-1">
           <p className="text-[0.58rem] text-amber-200 font-medium">Required before running:</p>
           <div className="flex flex-wrap gap-1.5">

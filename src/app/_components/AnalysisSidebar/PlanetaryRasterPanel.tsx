@@ -1247,8 +1247,29 @@ const histPct = displayHist.map((h) => (h / maxH) * 100);
               <div className="space-y-1">
                 <div className="flex items-end gap-[1px] h-16">
                   {histPct.map((pct, i) => {
-                    // colour each bar by which zone it falls in
-                    const zoneIdx = Math.min(numZones - 1, Math.floor((i / histPct.length) * numZones));
+                    // colour each bar by the REAL zone its value range falls in
+                    // (zones from the backend aren't necessarily equal-width, e.g.
+                    // natural-breaks/quantile classification) — matching against
+                    // z.lo/z.hi is correct; assuming equal division isn't.
+                    const binLo = stats.min + (range * i) / histPct.length;
+                    const binHi = stats.min + (range * (i + 1)) / histPct.length;
+                    const binMid = (binLo + binHi) / 2;
+
+                    let zoneIdx: number;
+                    if (classifiedZoneStats && classifiedZoneStats.length > 0) {
+                      const found = classifiedZoneStats.findIndex(
+                        (z) => binMid >= z.lo && binMid < z.hi
+                      );
+                      zoneIdx =
+                        found !== -1
+                          ? found
+                          : binMid < classifiedZoneStats[0].lo
+                          ? 0
+                          : classifiedZoneStats.length - 1;
+                    } else {
+                      // fallback only when we don't have real zone boundaries at all
+                      zoneIdx = Math.min(numZones - 1, Math.floor((i / histPct.length) * numZones));
+                    }
                     return (
                       <div
                         key={i}
@@ -1256,7 +1277,6 @@ const histPct = displayHist.map((h) => (h / maxH) * 100);
                         style={{
                           height: `${Math.max(pct, 2)}%`,
                           background: zoneColors[zoneIdx],
-                          opacity: 0.75 + (pct / 100) * 0.25,
                         }}
                       />
                     );
