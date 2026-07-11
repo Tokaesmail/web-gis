@@ -10,7 +10,6 @@ import { panels, type PanelId } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
-import SavedAnalysesPanel from "./SavedAnalysesPanel";
 import VolumeCalculationPanel from "./VolumeCalculationPanel";
 import { OPEN_RASTER_CALCULATOR_EVENT } from "./sharedSceneSelection";
 
