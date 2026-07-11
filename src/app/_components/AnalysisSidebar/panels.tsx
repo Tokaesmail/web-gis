@@ -13,6 +13,7 @@ export type PanelId =
   | "crops"
   | "template-match"
   | "volume"
+  | "super-resolution";
   // | "saved-analyses";
 
 interface PanelItem {
@@ -80,6 +81,18 @@ export const panels: PanelItem[] = [
       </svg>
     ),
     badge: "NEW",
+  },
+  {
+    id: "super-resolution",
+    labelEn: "Super Resolution",
+    labelAr: "تحسين الدقة",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M3 3h6v6H3zM15 15h6v6h-6z" />
+        <path d="M9 9l6-6M9 15l6 6" />
+      </svg>
+    ),
+    badge: "SR",
   },
 
   {
@@ -178,15 +191,5 @@ export const panels: PanelItem[] = [
     ),
     badge: "VOL",
   },
-//   {
-//   id: "saved-analyses",
-//   labelEn: "Saved Analyses",
-//   labelAr: "التحليلات المحفوظة",
-//   icon: (
-//     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-//       <path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v5M14 11v5" />
-//     </svg>
-//   ),
-//   badge: "DB",
-// },
+  
 ];

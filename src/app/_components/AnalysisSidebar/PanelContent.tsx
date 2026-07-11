@@ -6,6 +6,7 @@ import ExportButton from "../../map/ExportButton";
 import { CapturesPanel } from "./CapturesPanel";
 import { NDVILivePanel, OverviewLivePanel, WeatherLivePanel } from "./LivePanels";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
+import { SuperResolutionPanel } from "./SuperResolutionPanel";
 import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { ChangeDetectionPanel, type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
 import { getMidCoords } from "./geoFeatureUtils";
@@ -91,6 +92,10 @@ export function PanelContent({
 
   if (id === "raster") {
     return <PlanetaryRasterPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />;
+  }
+
+  if (id === "super-resolution") {
+    return <SuperResolutionPanel selectedFeature={selectedFeature} />;
   }
 
   if (id === "change-detection") {
