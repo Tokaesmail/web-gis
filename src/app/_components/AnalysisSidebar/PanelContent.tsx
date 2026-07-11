@@ -13,7 +13,6 @@ import { PanelId } from "./panels";
 import { CropsPanel } from "./CropsPanel";
 import VolumeCalculationPanel from "./VolumeCalculationPanel";
 import ElevationContourPanel from "./ElevationContourPanel";
-import SavedAnalysesPanel from "./SavedAnalysesPanel";
 
 export function PanelContent({
   id,
@@ -221,9 +220,9 @@ export function PanelContent({
       />
     );
   }
-  if (id === "saved-analyses") {
-  return <SavedAnalysesPanel />;
-}
+//   if (id === "saved-analyses") {
+//   return <SavedAnalysesPanel />;
+// }
 
   if (id === "layers") {
     return (
