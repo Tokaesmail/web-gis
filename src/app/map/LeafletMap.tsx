@@ -69,6 +69,14 @@ interface Props {
     beforeLabel?: string;
     afterLabel?: string;
   } | null) => void) => void;
+  /** register a georeferenced Super Resolution result overlay directly on the map
+   *  (upscaled image placed exactly over its AOI, on top of the base tiles).
+   *  Call the registered handler with `null` to remove it. */
+  onSuperResOverlayRegister?: (handler: (config: {
+    dataUrl: string;
+    bounds: [[number, number], [number, number]];
+    coords: { lat: number; lng: number };
+  } | null) => void) => void;
   onCapture?:     (capture: CaptureResult) => void;
   /** callback لما يضغط على GeoJSON feature */
   onFeatureClick?: (feature: GeoJSON.Feature) => void;
@@ -155,6 +163,7 @@ export default function LeafletMap({
   onImagePlacerRegister,
   onRasterOverlayRegister,
   onSwipeOverlayRegister,
+  onSuperResOverlayRegister,
   extrusionGeoJson,
   extrusionConfig,
   initialFeatures,
@@ -201,6 +210,7 @@ export default function LeafletMap({
   const imagePaneReadyRef = useRef(false);
   const imageOverlaysRef = useRef<{ id: string; name: string; src: string; bounds: [[number, number], [number, number]]; layer: any }[]>([]);
   const rasterOverlayRef = useRef<Map<string, any>>(new Map());
+  const superResOverlayRef = useRef<{ layer: any; marker: any } | null>(null);
   const swipeOverlayRef = useRef<{ cleanup: () => void } | null>(null);
   const placingImageRef = useRef<{
     file: File;
@@ -471,6 +481,45 @@ useEffect(() => {
       });
     });
   }, [onRasterOverlayRegister, mapReady]);
+
+  // ── Super Resolution: نتيجة الـ SR بتتحط كـ imageOverlay حقيقي فوق التايلز
+  // بنفس bbox الطلب — بالظبط زي الـ raster overlay، فرق واحد إن ده overlay
+  // واحد بس (مفيش تعدد analyses زي raster)، فكل نتيجة جديدة بتستبدل القديمة ──
+  useEffect(() => {
+    if (!onSuperResOverlayRegister) return;
+    onSuperResOverlayRegister((config) => {
+      const map = mapInstanceRef.current;
+      const L = LRef.current;
+      if (!map || !L) return;
+
+      // امسحي أي overlay/marker قديم قبل ما تحطي الجديد (أو لو config جايه null)
+      const existing = superResOverlayRef.current;
+      if (existing) {
+        try { map.removeLayer(existing.layer); } catch (_) {}
+        try { map.removeLayer(existing.marker); } catch (_) {}
+        superResOverlayRef.current = null;
+      }
+      if (!config || !config.dataUrl) return;
+
+      const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
+      const layer = L.imageOverlay(config.dataUrl, bounds, {
+        opacity: 1,
+        pane: "imagePane",
+        className: "change-detection-raster-overlay",
+      }).addTo(map);
+
+      const marker = L.circleMarker([config.coords.lat, config.coords.lng], {
+        radius: 6,
+        color: "#f97316",
+        fillColor: "#f97316",
+        fillOpacity: 0.75,
+        weight: 2,
+      }).addTo(map).bindPopup("Super Resolution result");
+
+      superResOverlayRef.current = { layer, marker };
+      map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 16, duration: 0.8 });
+    });
+  }, [onSuperResOverlayRegister, mapReady]);
 
   // ── Change Detection: real, georeferenced Before/After swipe directly on the map ──
   // Two stacked L.imageOverlay layers (before + after) covering the exact same AOI
@@ -1585,6 +1634,12 @@ if (!restoredRef.current) {
           try { map.removeLayer(layer); } catch (_) {}
         });
         rasterOverlayRef.current.clear();
+        // امسح overlay السوبر ريزوليوشن لو موجود
+        if (superResOverlayRef.current) {
+          try { map.removeLayer(superResOverlayRef.current.layer); } catch (_) {}
+          try { map.removeLayer(superResOverlayRef.current.marker); } catch (_) {}
+          superResOverlayRef.current = null;
+        }
         try { localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY); } catch (_) {}
         refreshOverlaysUi();
         stopImagePlacement();

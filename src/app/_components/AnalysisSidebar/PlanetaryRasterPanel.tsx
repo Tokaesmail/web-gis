@@ -76,6 +76,14 @@ const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
 
 const BACKEND_RASTER_URL = "https://webgiss.duckdns.org/gis/raster-calc";
 
+// ── Saved analyses — الحفظ بقى يدوي بالكامل (زرار "Save Analysis" بعد
+// راستر-كالك أو تايم-سيريز)، مفيش أي حفظ أوتوماتيك من الباكند. نفس الـ
+// endpoints دول بتتستخدم في AnalysesManagerPanel.tsx (تبويب "Saved" في
+// السايد بار) عشان تعرض/تمسح كل اللي اتحفظ ──────────────────────────────
+const BACKEND_ANALYSES_LIST_URL = "https://webgiss.duckdns.org/gis/analyses";
+const BACKEND_ANALYSES_DELETE_URL = (id: string) =>
+  `https://webgiss.duckdns.org/gis/analyses/${encodeURIComponent(id)}`;
+
 // Matches the RasterPreviewConfig type already used by onRasterPreview
 // (see AnalysisSidebar.tsx / MapClient.tsx) so this panel is a drop-in
 // alternative to the existing RasterCalculatorPanel — same callback shape.
@@ -351,6 +359,68 @@ const [classification, setClassification] = useState<string>("");
 // واختار تلقائي جوه الـ date range) ──────────────────────────────────
 const [sceneMeta, setSceneMeta] = useState<{ usedSceneId: string; method: string } | null>(null);
 
+// ── Saved analyses بقت تبويب لوحدها في السايد بار (AnalysesManagerPanel) —
+// شيلنا المودال من هنا، مش محتاجينه جوه Raster Calculator تاني ────────────
+
+// ── Save Analysis (يدوي) — لازم نحتفظ بنفس الـ request body اللي اتبعت
+// للعملية (raster-calc / time-series) + الـ result اللي رجع منها، عشان
+// لما اليوزر يدوس "Save Analysis" نبعتهم سوا لـ POST /gis/analyses.
+// الحفظ بقى منفصل تمامًا عن تشغيل العملية نفسها (مفيش أي حفظ أوتوماتيك) ──
+const [lastRenderParams, setLastRenderParams] = useState<any>(null);
+const [lastRenderResult, setLastRenderResult] = useState<any>(null);
+const [renderSaveStatus, setRenderSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+const [renderSaveError, setRenderSaveError] = useState<string | null>(null);
+
+const [lastChartParams, setLastChartParams] = useState<any>(null);
+const [lastChartResult, setLastChartResult] = useState<any>(null);
+const [chartSaveStatus, setChartSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+const [chartSaveError, setChartSaveError] = useState<string | null>(null);
+
+// POST /gis/analyses — نفس الـ URL بتاع الـ GET، بس بـ method مختلف
+const BACKEND_ANALYSES_SAVE_URL = BACKEND_ANALYSES_LIST_URL;
+
+async function saveAnalysis(type: string, parameters: any, result: any) {
+  const res = await fetch(BACKEND_ANALYSES_SAVE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify({ type, parameters, result }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || data?.success === false) {
+    throw new Error(data?.message ?? `Failed to save analysis (${res.status})`);
+  }
+  return data;
+}
+
+const handleSaveRenderAnalysis = async () => {
+  if (!lastRenderParams || !lastRenderResult) return;
+  setRenderSaveStatus("saving");
+  setRenderSaveError(null);
+  try {
+    await saveAnalysis("raster-calc", lastRenderParams, lastRenderResult);
+    setRenderSaveStatus("saved");
+  } catch (err) {
+    setRenderSaveStatus("error");
+    setRenderSaveError(err instanceof Error ? err.message : "Failed to save analysis");
+  }
+};
+
+const handleSaveChartAnalysis = async () => {
+  if (!lastChartParams || !lastChartResult) return;
+  setChartSaveStatus("saving");
+  setChartSaveError(null);
+  try {
+    await saveAnalysis("time-series", lastChartParams, lastChartResult);
+    setChartSaveStatus("saved");
+  } catch (err) {
+    setChartSaveStatus("error");
+    setChartSaveError(err instanceof Error ? err.message : "Failed to save analysis");
+  }
+};
+
 // ── Create chart — بيحسب المؤشر على كل الـ scenes المتاحة في الـ date range
 // (مش بس أحسن سين زي Render & preview)، ويرجّع time-series نعرضها كخط بياني
 const [chartStatus, setChartStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
@@ -415,6 +485,11 @@ const runPreview = async () => {
   setStats(null);
   setClassification("");
   setSceneMeta(null);
+  // ── تشغيل جديد = نتيجة الحفظ اليدوي القديمة بقت مش مرتبطة بيه، فبنصفّرها ──
+  setLastRenderParams(null);
+  setLastRenderResult(null);
+  setRenderSaveStatus("idle");
+  setRenderSaveError(null);
 
   try {
     // ── 1. Build date range string ────────────────────────────────────────
@@ -427,21 +502,22 @@ console.log("Polygon vertices:", polygonVertices);
 if (!requestGeometry) {
   throw new Error("No polygon selected");
 }
+    const renderRequestBody = {
+      geometry: requestGeometry,
+      date: dateRange,
+      expression,
+      collection: pickedScene?.collection ?? "sentinel-2-l2a",
+      // When set, the backend fetches this exact scene by ID and skips its
+      // own date/cloud-cover search entirely (picked from Satellite Data).
+      ...(pickedScene ? { scene_id: pickedScene.id } : {}),
+    };
     const res = await fetch(BACKEND_RASTER_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
-      body: JSON.stringify({
-  geometry: requestGeometry,
-  date: dateRange,
-  expression,
-  collection: pickedScene?.collection ?? "sentinel-2-l2a",
-  // When set, the backend fetches this exact scene by ID and skips its
-  // own date/cloud-cover search entirely (picked from Satellite Data).
-  ...(pickedScene ? { scene_id: pickedScene.id } : {}),
-})
+      body: JSON.stringify(renderRequestBody)
     });
 
     if (!res.ok) {
@@ -455,21 +531,27 @@ if (!requestGeometry) {
 
     if (!rawPayload?.success) throw new Error(rawPayload?.message ?? "Render failed");
 
-    // ── الباكند أحيانًا بيرجّع الشكل القديم المسطّح:
-    //      { success, data: { url, scene_id_used, display_range } }
-    //    وأحيانًا بيرجّع نسخة متلغّمة (double-nested):
-    //      { success, data: { success, data: { url, ... } } }
-    //    عشان مانتكسرش لو الباكند رجع لأي شكل من الاتنين، بنفكّ الطبقة
-    //    الزيادة هنا لو موجودة، وبعد كده كل الكود تحت شغال زي ما هو من
+    // ── الباكند رجع بأشكال مختلفة على حسب النسخة:
+    //      1) الشكل المسطّح:            { success, data: { url, ... } }
+    //      2) نسخة متلغّمة (double):    { success, data: { success, data: { url, ... } } }
+    //      3) نسخة ملفوفة بـ result:    { success, data: { result: { success, data: { url, ... } }, savePayload: {...} } }
+    //    (الشكل التالت ده هو اللي بيرجعه الباكند دلوقتي — بيحط الناتج
+    //    الفعلي جوه "result" وجنبه "savePayload" اللي مالهوش دعوة بالـ render).
+    //    عشان مانتكسرش لو الباكند رجع لأي شكل من التلاتة، بندوّر على أول
+    //    "url" موجود بالترتيب ده وبعد كده كل الكود تحت شغال زي ما هو من
     //    غير أي تعديل تاني (payload?.data?.url، payload?.data?.scene_id_used، إلخ).
+    const candidates = [
+      rawPayload?.data?.result?.data, // (3) result-wrapped
+      rawPayload?.data?.data,         // (2) double-nested
+      rawPayload?.data,               // (1) flat
+    ];
     const innerData =
-      rawPayload?.data?.data && typeof rawPayload.data.data === "object"
-        ? rawPayload.data.data
-        : rawPayload?.data;
+      candidates.find((c) => c && typeof c === "object" && c.url) ?? rawPayload?.data;
     const payload = { ...rawPayload, data: innerData };
 
     const tifUrl: string = payload?.data?.url ?? "";
     if (!tifUrl) throw new Error("Backend returned no output URL");
+
 
     // ── الـ scene id اللي فعليًا اتحسب عليها الناتج، جاي من الباكند ──
     // ملحوظة: الباكند بيرجّعه باسم "scene_id_used" (مش "used_scene_id")،
@@ -578,6 +660,12 @@ if (!requestGeometry) {
     setPreviewImg(dataUrl);
     setPreviewStatus("success");
 
+    // ── نخزّن الـ request body اللي اتبعت فعلاً + رد الباكند الخام، عشان
+    // زرار "Save Analysis" يقدر يبعتهم لـ POST /gis/analyses لو اليوزر قرر
+    // يحفظ — الحفظ نفسه بقى منفصل عن التشغيل، مش بيحصل أوتوماتيك ──────────
+    setLastRenderParams(renderRequestBody);
+    setLastRenderResult(rawPayload);
+
     onPreview?.({
       name:      `${activePreset || "Expression"} · ${dateFrom}→${dateTo}`,
       indexKey:  activePreset || "CUSTOM",
@@ -617,22 +705,28 @@ const runChart = async () => {
   setChartStatus("loading");
   setChartError(null);
   setChartSeries(null);
+  // ── تشغيل جديد للشارت = بنصفّر أي حالة حفظ قديمة مش مرتبطة بالنتيجة الجديدة ──
+  setLastChartParams(null);
+  setLastChartResult(null);
+  setChartSaveStatus("idle");
+  setChartSaveError(null);
 
   try {
     const dateRange = `${dateFrom}/${dateTo}`;
+    const chartRequestBody = {
+      bbox: renderBbox,
+      date: dateRange,
+      expression,
+      collection: pickedScene?.collection ?? "sentinel-2-l2a",
+      cloud_cover_max: cloudCover,
+    };
     const res = await fetch(BACKEND_TIME_SERIES_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
-      body: JSON.stringify({
-        bbox: renderBbox,
-        date: dateRange,
-        expression,
-        collection: pickedScene?.collection ?? "sentinel-2-l2a",
-        cloud_cover_max: cloudCover,
-      }),
+      body: JSON.stringify(chartRequestBody),
     });
 
     if (!res.ok) {
@@ -641,19 +735,31 @@ const runChart = async () => {
     }
 
     const rawPayload = await res.json();
-    // ── مؤقت للتشخيص: شيليه بعد ما تتأكدي من شكل الـ response ──
+    // ── مؤقت للتشخيص: افتحي الـ Console وشوفي الـ raw response لو طلعت
+    // "Backend returned no chart data" تاني — كده تقدري تشوفي شكله بالظبط
+    // بدل ما تخميني ──────────────────────────────────────────────────────
+    console.log("time-series response:", JSON.stringify(rawPayload, null, 2));
+    console.log("time-series request body:", { bbox: renderBbox, date: dateRange, expression, collection: pickedScene?.collection ?? "sentinel-2-l2a", cloud_cover_max: cloudCover });
 
     if (rawPayload?.success === false) throw new Error(rawPayload?.message ?? "Chart failed");
 
-    // ── زي مشكلة raster-calc بالظبط: أحيانًا الباكند بيرجّع نسخة متلغّمة
-    // (double-nested) { success, data: { success, data: {...} } } — بنفكها هنا
+    // ── زي راستر-كالك بالظبط: الباكند بيرجّع الناتج ملفوف جوه "result"
+    // (شكل { success, data: { result: { success, data: { points, ... } },
+    // savePayload: {...} } })، مش بس double-nested العادي. بندوّر على أول
+    // object فيه array فعلي (series/points) بالترتيب ده ───────────────────
+    const innerCandidates = [
+      rawPayload?.data?.result?.data, // result-wrapped (الشكل الحالي)
+      rawPayload?.data?.data,         // double-nested
+      rawPayload?.data,               // flat
+      rawPayload,
+    ];
     const innerData: any =
-      rawPayload?.data?.data && typeof rawPayload.data.data === "object"
-        ? rawPayload.data.data
-        : rawPayload?.data ?? rawPayload;
+      innerCandidates.find(
+        (c) => c && (Array.isArray(c.series) || Array.isArray(c.points) || Array.isArray(c))
+      ) ?? rawPayload?.data ?? rawPayload;
 
     // بنقبل أكتر من شكل ممكن يرجعه الباكند:
-    //  - { series: [{date, value}, ...] } أو { points: [...] }
+    //  - { series: [{date, value}, ...] } أو { points: [{date, mean, min, max, ...}] }
     //  - array مباشرة من الـ objects
     //  - { dates: [...], values: [...] } (arrays منفصلة بدل array of objects)
     let rawSeries: any[] = [];
@@ -696,6 +802,10 @@ const runChart = async () => {
 
     setChartSeries(series);
     setChartStatus("success");
+
+    // ── نخزّن الـ request body + رد الباكند الخام لزرار "Save Analysis" ──
+    setLastChartParams(chartRequestBody);
+    setLastChartResult(rawPayload);
   } catch (err) {
     setChartStatus("error");
     setChartError(err instanceof Error ? err.message : "Chart request failed.");
@@ -717,7 +827,6 @@ const runChart = async () => {
           </span>
         </div>
       </div>
-
 
       {/* AOI info */}
       <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
@@ -1155,6 +1264,23 @@ const runChart = async () => {
             </div>
           </div>
           <TimeSeriesChart series={chartSeries} color={activeColorRamp.gradient} />
+
+          {/* Save Analysis — بيبعت POST /gis/analyses يدوي بالـ type +
+              parameters (نفس الـ request اللي اتبعت لـ /gis/time-series)
+              + result (رد الباكند). مفيش حفظ أوتوماتيك خالص دلوقتي ────── */}
+          <button
+            type="button"
+            onClick={handleSaveChartAnalysis}
+            disabled={!lastChartParams || !lastChartResult || chartSaveStatus === "saving"}
+            className="w-full rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-[0.65rem] font-bold text-emerald-200 transition-colors hover:bg-emerald-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {chartSaveStatus === "saving" ? "Saving…" : chartSaveStatus === "saved" ? "Saved ✓" : "Save Analysis"}
+          </button>
+          {chartSaveStatus === "error" && chartSaveError && (
+            <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-[0.6rem] text-red-300">
+              {chartSaveError}
+            </div>
+          )}
         </div>
       )}
 
@@ -1460,6 +1586,23 @@ const runChart = async () => {
             <span className="text-[0.55rem] text-slate-600">{rescaleMax}</span>
           </div>
           <p className="break-all font-mono text-[0.52rem] leading-relaxed text-slate-600">{expression}</p>
+
+          {/* Save Analysis — بيبعت POST /gis/analyses يدوي بالـ type +
+              parameters (نفس الـ request اللي اتبعت لـ /gis/raster-calc)
+              + result (رد الباكند). مفيش حفظ أوتوماتيك خالص دلوقتي ────── */}
+          <button
+            type="button"
+            onClick={handleSaveRenderAnalysis}
+            disabled={!lastRenderParams || !lastRenderResult || renderSaveStatus === "saving"}
+            className="w-full rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-[0.65rem] font-bold text-emerald-200 transition-colors hover:bg-emerald-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {renderSaveStatus === "saving" ? "Saving…" : renderSaveStatus === "saved" ? "Saved ✓" : "Save Analysis"}
+          </button>
+          {renderSaveStatus === "error" && renderSaveError && (
+            <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-[0.6rem] text-red-300">
+              {renderSaveError}
+            </div>
+          )}
 
           {/* Scene used — used_scene_id + method جايين من الباكند ── */}
           {sceneMeta && (
@@ -1933,3 +2076,5 @@ function TimeSeriesChartModal({
   // في الصفحة، بالظبط زي فتح صورة PNG عادية مستقلة ────────────────────
   return createPortal(modal, document.body);
 }
+
+// (end of file — dead SavedAnalysesModal code removed)

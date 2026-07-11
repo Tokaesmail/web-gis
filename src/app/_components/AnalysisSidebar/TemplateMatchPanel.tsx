@@ -90,6 +90,15 @@ export default function TemplateMatchPanel({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
 
+  // ── Save Analysis (يدوي) — بنحتفظ بنفس البارامترات اللي اتبعتت لـ
+  // /gis/template-match (bounds + environment_mode؛ من غير الصور نفسها)
+  // + النتيجة الخام اللي رجعت، عشان زرار "Save Analysis" يقدر يبعتهم
+  // لـ POST /gis/analyses. الحفظ بقى منفصل تمامًا عن تشغيل العملية ────────
+  const [lastMatchParams, setLastMatchParams] = useState<any>(null);
+  const [lastMatchResult, setLastMatchResult] = useState<any>(null);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   const step = !pendingTemplateCapture ? 1 : !pendingMapCapture ? 2 : 3;
   const canSubmit = !!pendingTemplateCapture && !!pendingMapCapture;
 
@@ -98,6 +107,11 @@ export default function TemplateMatchPanel({
     setLoading(true);
     setError(null);
     setResult(null);
+    // ── تشغيل جديد = بنصفّر أي حالة حفظ قديمة مش مرتبطة بالنتيجة الجديدة ──
+    setLastMatchParams(null);
+    setLastMatchResult(null);
+    setSaveStatus("idle");
+    setSaveError(null);
 
     try {
       const token = (session?.user as any)?.accessToken as string | undefined;
@@ -159,8 +173,18 @@ export default function TemplateMatchPanel({
         throw new Error(data?.message ?? `Template match request failed (${res.status})${backendStatus}`);
       }
 
-      const geojson = data?.data ?? data;
+      const geojson = data?.data?.result ?? data?.data ?? data;
       setResult(geojson);
+
+      // ── بارامترات العملية اللي فعليًا اتبعتت (من غير الصور الثنائية
+      // نفسها — دي بتتبعت كـ FormData ومش JSON-safe) عشان زرار
+      // "Save Analysis" يبعتها مع النتيجة لـ POST /gis/analyses ──────────
+      setLastMatchParams({
+        environment_mode: envMode,
+        template_bounds: pendingTemplateCapture.bounds,
+        map_bounds: pendingMapCapture.bounds,
+      });
+      setLastMatchResult(data);
 
       if (onResult && geojson?.features) {
         const fileName = `template-match-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.geojson`;
@@ -172,6 +196,37 @@ export default function TemplateMatchPanel({
       setLoading(false);
     }
   }, [loading, canSubmit, pendingTemplateCapture, pendingMapCapture, envMode, session, onResult]);
+
+  // ── Save Analysis (يدوي) — بيبعت type + parameters + result لـ
+  // POST /gis/analyses. مفيش أي حفظ أوتوماتيك بيحصل من العملية نفسها ──────
+  const handleSaveAnalysis = useCallback(async () => {
+    if (!lastMatchParams || !lastMatchResult) return;
+    setSaveStatus("saving");
+    setSaveError(null);
+    try {
+      const token = (session?.user as any)?.accessToken as string | undefined;
+      const res = await fetch("/api/gis/analyses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          type: "template-match",
+          parameters: lastMatchParams,
+          result: lastMatchResult,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.success === false) {
+        throw new Error(data?.message ?? `Failed to save analysis (${res.status})`);
+      }
+      setSaveStatus("saved");
+    } catch (err: any) {
+      setSaveStatus("error");
+      setSaveError(err?.message ?? "Failed to save analysis");
+    }
+  }, [lastMatchParams, lastMatchResult, session]);
 
   /* ── shared capture card ── */
   const CaptureCard = ({
@@ -396,6 +451,22 @@ export default function TemplateMatchPanel({
           <p className="text-[0.58rem] text-slate-600 text-center">
             Results added as a layer on the map
           </p>
+
+          {/* Save Analysis — بيبعت POST /gis/analyses يدوي، مفيش حفظ
+              أوتوماتيك خالص دلوقتي ─────────────────────────────────────── */}
+          <button
+            type="button"
+            onClick={handleSaveAnalysis}
+            disabled={!lastMatchParams || !lastMatchResult || saveStatus === "saving"}
+            className="w-full rounded-xl border border-emerald-400/25 bg-emerald-400/10 py-2.5 text-xs font-bold text-emerald-200 transition-colors hover:bg-emerald-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {saveStatus === "saving" ? "Saving…" : saveStatus === "saved" ? "Saved ✓" : "Save Analysis"}
+          </button>
+          {saveStatus === "error" && saveError && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-2.5 text-[0.6rem] text-red-400">
+              {saveError}
+            </div>
+          )}
         </div>
       )}
     </div>

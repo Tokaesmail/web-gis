@@ -9,6 +9,7 @@ import { PanelContent } from "./PanelContent";
 import { panels, type PanelId } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
+import { type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
 import VolumeCalculationPanel from "./VolumeCalculationPanel";
 import { OPEN_RASTER_CALCULATOR_EVENT } from "./sharedSceneSelection";
@@ -48,6 +49,7 @@ export default function AnalysisSidebar(
   onRasterPreview,
   onChangeDetectionPreview,
   onChangeDetectionSwipe,
+  onSuperResolutionPreview,
   onOpenElevationFloat,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
@@ -84,6 +86,8 @@ export default function AnalysisSidebar(
   onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
   /** Real, georeferenced Before/After swipe on the actual map (Change Detection only). Pass null to hide it. */
   onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
+  /** Puts the Super Resolution result on the actual map as a georeferenced overlay. Pass null to remove it. */
+  onSuperResolutionPreview?: (config: SuperResolutionPreviewConfig | null) => void;
   onOpenElevationFloat?: () => void;
 }) {
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
@@ -226,6 +230,7 @@ export default function AnalysisSidebar(
                   onRasterPreview={onRasterPreview}
                   onChangeDetectionPreview={onChangeDetectionPreview}
                   onChangeDetectionSwipe={onChangeDetectionSwipe}
+                  onSuperResolutionPreview={onSuperResolutionPreview}
                   onOpenElevationFloat={onOpenElevationFloat}
                 />
               )}

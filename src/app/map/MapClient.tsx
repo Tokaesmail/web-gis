@@ -22,6 +22,7 @@ import ProjectStartDialog from "./projects/ProjectStartDialog";
 import { updateProject } from "./projects/projectStorage";
 import type { ProjectSnapshot, UserProject } from "./projects/projectTypes";
 import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from "../_components/AnalysisSidebar/ChangeDetectionPanel";
+import type { SuperResolutionPreviewConfig } from "../_components/AnalysisSidebar/SuperResolutionPanel";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
@@ -142,6 +143,7 @@ export default function MapPage() {
   const changeOpacityRef       = useRef<((o: number) => void) | null>(null);
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
   const rasterOverlayRef       = useRef<((config: RasterPreviewConfig) => void) | null>(null);
+  const superResOverlayRef     = useRef<((config: SuperResolutionPreviewConfig | null) => void) | null>(null);
   const swipeCompareRef        = useRef<((config: ChangeDetectionSwipeConfig | null) => void) | null>(null);
   const lastCoordsRef          = useRef<{ lat: number; lng: number }>({ lat: 30.0, lng: 31.0 });
   const lastActivePanelRef     = useRef<string>("overview");
@@ -862,6 +864,10 @@ useEffect(() => {
     });
   }, []);
 
+  const handleSuperResolutionPreview = useCallback((config: SuperResolutionPreviewConfig | null) => {
+    superResOverlayRef.current?.(config);
+  }, []);
+
   const handleChangeDetectionPreview = useCallback((config: ChangeDetectionPreviewConfig) => {
   rasterOverlayRef.current?.({
     name: config.name,
@@ -1145,6 +1151,7 @@ useEffect(() => {
       onRasterPreview={handleRasterPreview}
       onChangeDetectionPreview={handleChangeDetectionPreview}
       onChangeDetectionSwipe={handleSwipeCompare}
+      onSuperResolutionPreview={handleSuperResolutionPreview}
       onOpenElevationFloat={() => setElevationFloatOpen(true)}
     />
   ), [
@@ -1177,6 +1184,7 @@ useEffect(() => {
     handleRasterPreview,
     handleChangeDetectionPreview,
     handleSwipeCompare,
+    handleSuperResolutionPreview,
   ]);
 
   const toggle2DButton = useMemo(() => (
@@ -1248,6 +1256,7 @@ useEffect(() => {
             onImagePlacerRegister={(h) => { startImagePlacementRef.current = h; }}
             onRasterOverlayRegister={(h) => { rasterOverlayRef.current = h as any; }}
             onSwipeOverlayRegister={(h) => { swipeCompareRef.current = h as any; }}
+            onSuperResOverlayRegister={(h) => { superResOverlayRef.current = h as any; }}
             geoJsonData={contourLayer?.visible ? geoJsonData : null}
             extraGeoJsonData={combinedGeoJson}
             latestGeoJson={latestGeoJson}

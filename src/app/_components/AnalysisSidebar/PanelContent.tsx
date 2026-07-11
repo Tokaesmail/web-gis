@@ -6,7 +6,7 @@ import ExportButton from "../../map/ExportButton";
 import { CapturesPanel } from "./CapturesPanel";
 import { NDVILivePanel, OverviewLivePanel, WeatherLivePanel } from "./LivePanels";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
-import { SuperResolutionPanel } from "./SuperResolutionPanel";
+import { SuperResolutionPanel, type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
 import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { ChangeDetectionPanel, type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
 import { getMidCoords } from "./geoFeatureUtils";
@@ -14,6 +14,7 @@ import { PanelId } from "./panels";
 import { CropsPanel } from "./CropsPanel";
 import VolumeCalculationPanel from "./VolumeCalculationPanel";
 import ElevationContourPanel from "./ElevationContourPanel";
+import { AnalysesManagerPanel } from "./AnalysesManagerPanel";
 
 export function PanelContent({
   id,
@@ -45,6 +46,7 @@ export function PanelContent({
   onRasterPreview,
   onChangeDetectionPreview,
   onChangeDetectionSwipe,
+  onSuperResolutionPreview,
   onOpenElevationFloat,
 }: {
   id: PanelId;
@@ -78,6 +80,8 @@ export function PanelContent({
   onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
   /** Real, georeferenced Before/After swipe on the actual map (Change Detection only). Pass null to hide it. */
   onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
+  /** Puts the Super Resolution result on the actual map as a georeferenced overlay. Pass null to remove it. */
+  onSuperResolutionPreview?: (config: SuperResolutionPreviewConfig | null) => void;
 }) {
   const [ndviExportData, setNdviExportData] = useState<any>(null);
   const ndviPanelRef = useRef<HTMLDivElement>(null);
@@ -95,7 +99,7 @@ export function PanelContent({
   }
 
   if (id === "super-resolution") {
-    return <SuperResolutionPanel selectedFeature={selectedFeature} />;
+    return <SuperResolutionPanel selectedFeature={selectedFeature} onPreview={onSuperResolutionPreview} />;
   }
 
   if (id === "change-detection") {
@@ -225,9 +229,9 @@ export function PanelContent({
       />
     );
   }
-//   if (id === "saved-analyses") {
-//   return <SavedAnalysesPanel />;
-// }
+  if (id === "saved-analyses") {
+    return <AnalysesManagerPanel />;
+  }
 
   if (id === "layers") {
     return (
