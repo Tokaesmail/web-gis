@@ -592,6 +592,8 @@ export function SatelliteDataPanel({
   const [band, setBand] = useState<IdxKey>("RGB");
   const [viewerMode, setViewerMode] = useState<SatelliteViewerMode>("multispectral");
   const [falseColorEnabled, setFalseColorEnabled] = useState(false);
+  const [bandMenuOpen, setBandMenuOpen] = useState(false);
+  const bandMenuRef = useRef<HTMLDivElement | null>(null);
   const [opacity, setOpacity] = useState(86);
   const [isLoading, setIsLoading] = useState(false);
   const [previewReady, setPreviewReady] = useState(false);
@@ -641,8 +643,29 @@ const displayVertices = useMemo(() => {
     { key: "NDVI", label: "NDVI", desc: "Vegetation vigor", color: "#22c55e" },
     { key: "NDWI", label: "NDWI", desc: "Water signal", color: "#38bdf8" },
     { key: "NDMI", label: "NDMI", desc: "Moisture stress", color: "#a78bfa" },
-    { key: "SWIR", label: "SWIR", desc: "Dryness view", color: "#fb923c" },
+    { key: "NDBI", label: "NDBI", desc: "Built-up / urban areas", color: "#ed6925" },
+    { key: "SAVI", label: "SAVI", desc: "Soil-adjusted vegetation", color: "#14b8a6" },
+    { key: "EVI", label: "EVI", desc: "Enhanced vegetation", color: "#ec4899" },
+    { key: "BSI", label: "BSI", desc: "Bare soil index", color: "#9333ea" },
   ];
+
+  useEffect(() => {
+    if (!bandMenuOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (bandMenuRef.current && !bandMenuRef.current.contains(e.target as Node)) {
+        setBandMenuOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setBandMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [bandMenuOpen]);
 
   const fallbackScenes = useMemo<SatelliteScene[]>(() => {
   return [
@@ -668,6 +691,7 @@ const scenes = useMemo(
 
   type AnalysisType = SatelliteAnalysisType;
   const activeAnalysis = (falseColorEnabled ? "SWIR" : band) as AnalysisType;
+  const activeBandOption =bandOptions.find((item) => item.key === activeAnalysis) ?? bandOptions[0];
 
   const getVisualization = (analysis: AnalysisType, collection = source === "landsat" ? "landsat-c2-l2" : "sentinel-2-l2a") => {
     const isLandsat = collection.includes("landsat");
@@ -697,11 +721,33 @@ const scenes = useMemo(
             assets: ["nir08", "swir16"],
             expression: "(nir08-swir16)/(nir08+swir16)",
           };
-
-        case "SWIR":
           return {
             assets: ["swir16", "nir08", "red"],
             expression: null,
+          };
+
+        case "NDBI":
+          return {
+            assets: ["swir16", "nir08"],
+            expression: "(swir16-nir08)/(swir16+nir08)",
+          };
+
+        case "SAVI":
+          return {
+            assets: ["nir08", "red"],
+            expression: "((nir08-red)/(nir08+red+0.5))*1.5",
+          };
+
+        case "EVI":
+          return {
+            assets: ["nir08", "red", "blue"],
+            expression: "2.5*(nir08-red)/(nir08+6*red-7.5*blue+1)",
+          };
+
+        case "BSI":
+          return {
+            assets: ["swir16", "red", "nir08", "blue"],
+            expression: "((swir16+red)-(nir08+blue))/((swir16+red)+(nir08+blue))",
           };
 
         default:
@@ -736,11 +782,33 @@ const scenes = useMemo(
           assets: ["B08", "B11"],
           expression: "(B08-B11)/(B08+B11)",
         };
-
-      case "SWIR":
         return {
           assets: ["B11", "B08", "B04"],
           expression: null,
+        };
+
+      case "NDBI":
+        return {
+          assets: ["B11", "B08"],
+          expression: "(B11-B08)/(B11+B08)",
+        };
+
+      case "SAVI":
+        return {
+          assets: ["B08", "B04"],
+          expression: "((B08-B04)/(B08+B04+0.5))*1.5",
+        };
+
+      case "EVI":
+        return {
+          assets: ["B08", "B04", "B02"],
+          expression: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)",
+        };
+
+      case "BSI":
+        return {
+          assets: ["B11", "B04", "B08", "B02"],
+          expression: "((B11+B04)-(B08+B02))/((B11+B04)+(B08+B02))",
         };
 
       default:
@@ -845,30 +913,59 @@ useEffect(() => {
   };
 
   const getIndexPreviewStyle = (analysis: AnalysisType) => {
+    // alphaLow/alphaHigh بيتحكموا في "منطقة الشفافية" حوالين الصفر (قيمة
+    // محايدة = تربة عارية عادية/مفيش مبنى واضح... إلخ). الافتراضي في الـ route
+    // (0.12 / 0.45) كان بيعمل منطقة شفافة واسعة حوالين نقطة الصفر — لو الـ AOI
+    // مفيهوش تباين قوي (زي أرض زراعية/صحراء من غير مباني واضحة لـ NDBI، أو رطوبة
+    // متقاربة لـ NDMI)، أغلب البكسلات كانت بتقع جوه المنطقة الشفافة دي فتبان
+    // الصورة "من غير أي لون" خالص. هنا بنضيّق منطقة الشفافية ونسرّع الوصول
+    // للـ opacity الكامل، عشان أي إشارة (حتى الضعيفة) تتلون بدل ما تختفي.
     switch (analysis) {
       case "NDVI":
         // -0.2 (صحراء/رمل) → 0.9 (نخل/غابة كثيفة)
-        return { rescale: "-0.2,0.9", colormap: "rdylgn" };
+        return { rescale: "-0.2,0.9", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.22" };
       case "NDWI":
         // -0.3 (جاف) → 0.8 (مياه مفتوحة)
-        return { rescale: "-0.3,0.8", colormap: "rdbu" };
+        return { rescale: "-0.3,0.8", colormap: "rdbu", alphaLow: "0.03", alphaHigh: "0.22" };
       case "NDMI":
         // -0.6 (إجهاد مائي شديد) → 0.6 (رطوبة عالية)
-        return { rescale: "-0.6,0.6", colormap: "rdbu_r" };
-      case "SWIR":
-        return { rescale: "0,3000", colormap: "" };
+        return { rescale: "-0.6,0.6", colormap: "greens", alphaLow: "0.02", alphaHigh: "0.18" };
+        return { rescale: "0,3000", colormap: "", alphaLow: "", alphaHigh: "" };
+      case "NDBI":
+        // -0.5 (مية/نبات) → 0.4 (مباني/أسفلت)
+        return { rescale: "-0.5,0.4", colormap: "inferno", alphaLow: "0.02", alphaHigh: "0.18" };
+      case "SAVI":
+        // زي NDVI بس مصحح لتأثير التربة
+        return { rescale: "-0.2,0.9", colormap: "spectral", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "EVI":
+        // مدى أضيق من NDVI، أدق مع الغطاء الكثيف
+        return { rescale: "-0.2,0.8", colormap: "magma", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "BSI":
+        // -0.3 (نبات كثيف) → 0.4 (تربة عارية)
+        return { rescale: "-0.3,0.4", colormap: "rdbu_r", alphaLow: "0.02", alphaHigh: "0.18" };
       default:
-        return { rescale: "0,3000", colormap: "" };
+        return { rescale: "0,3000", colormap: "", alphaLow: "", alphaHigh: "" };
     }
   };
 
   // Analysis type (Panel) → "type" param اللي الـ /api/raster-proxy/analyze route عايزه
-  const RASTER_PROXY_TYPE: Record<AnalysisType, "rgb" | "swir" | "ndvi" | "ndwi" | "ndmi"> = {
+  // ⚠️ لسه محتاجين نضيف الدعم الفعلي لـ ndbi/savi/evi/bsi جوه route.ts بتاع
+  // /api/raster-proxy/analyze (اللي بيحسب الـ expression فعليًا من الـ bands) —
+  // الفرونت هنا جاهز يبعتهم، بس النسخة اللي عندي من الـ route كانت لملف
+  // /api/raster-proxy (color-ramp proxy) مش /api/raster-proxy/analyze، فمحتاجين
+  // الملف ده تاني عشان نضيف فيه الحسابات دي.
+  const RASTER_PROXY_TYPE: Record<
+    AnalysisType,
+    "rgb"  | "ndvi" | "ndwi" | "ndmi" | "ndbi" | "savi" | "evi" | "bsi"
+  > = {
     RGB: "rgb",
-    SWIR: "swir",
     NDVI: "ndvi",
     NDWI: "ndwi",
     NDMI: "ndmi",
+    NDBI: "ndbi",
+    SAVI: "savi",
+    EVI: "evi",
+    BSI: "bsi",
   };
 
   // بديل makePlanetaryComputerPreviewUrl — بيبني رابط الـ backend الجديد
@@ -908,15 +1005,17 @@ useEffect(() => {
     params.set("bbox", `${west},${south},${east},${north}`);
 
     if (visualization.expression) {
-      // index (ndvi/ndwi/ndmi): نبعت الـ rescale المخصص للـ analysis
-      // الـ colormap بنسيبه على default الـ route نفسه (rdylgn/rdbu/greens)
+      // index (ndvi/ndwi/ndmi/ndbi/savi/evi/bsi): نبعت الـ rescale + منطقة
+      // الشفافية المخصصة للـ analysis. الـ colormap بنسيبه على default الـ
+      // route نفسه (كل analysis له لون مختلف دلوقتي في ANALYSIS_CONFIG).
       const style = getIndexPreviewStyle(analysis);
       const [minVal, maxVal] = style.rescale.split(",");
       params.set("min", minVal);
       params.set("max", maxVal);
+      if (style.alphaLow) params.set("alphaLow", style.alphaLow);
+      if (style.alphaHigh) params.set("alphaHigh", style.alphaHigh);
     } else {
       // composite (rgb/swir)
-      params.set("gamma", analysis === "SWIR" ? "1.2" : "1.35");
       params.set("sharpen", "1");
     }
 
@@ -1280,23 +1379,76 @@ function openImageUrlSafely(url: string) {
     {showMultispectralControls && (
       <div className="space-y-2">
         <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Band selector</p>
-        <div className="grid grid-cols-2 gap-2">
-          {bandOptions.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => {
-                setBand(item.key);
-                setFalseColorEnabled(false);
-              }}
-              className={`rounded-lg border px-3 py-2 text-left transition-all cursor-pointer ${
-                !falseColorEnabled && activeAnalysis === item.key ? "bg-cyan-400/10 border-cyan-400/35" : "bg-white/[0.025] border-white/[0.06] hover:border-white/[0.14]"
-              }`}
+
+        <div ref={bandMenuRef}>
+          <button
+            type="button"
+            onClick={() => setBandMenuOpen((open) => !open)}
+            aria-haspopup="listbox"
+            aria-expanded={bandMenuOpen}
+            className={`flex w-full items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all cursor-pointer ${
+              bandMenuOpen ? "border-cyan-400/40 bg-[#151c28]" : "border-white/[0.08] bg-[#020817]/60 hover:border-white/[0.16]"
+            }`}
+          >
+            <span
+              className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+              style={{ background: activeBandOption.color, boxShadow: `0 0 8px ${activeBandOption.color}` }}
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs font-bold" style={{ color: activeBandOption.color }}>
+                {activeBandOption.label}
+              </span>
+              <span className="block truncate text-[0.55rem] text-slate-500">{activeBandOption.desc}</span>
+            </span>
+            <svg
+              viewBox="0 0 20 20"
+              className={`h-3.5 w-3.5 flex-shrink-0 text-slate-500 transition-transform duration-150 ${bandMenuOpen ? "rotate-180" : ""}`}
+              fill="currentColor"
             >
-              <span className="text-xs font-bold" style={{ color: item.color }}>{item.label}</span>
-              <span className="block text-[0.55rem] text-slate-500 mt-0.5 truncate">{item.desc}</span>
-            </button>
-          ))}
+              <path d="M5.5 7.5l4.5 4.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+
+          {bandMenuOpen && (
+            <div
+              role="listbox"
+              className="relative z-10 mt-1.5 max-h-72 w-full overflow-y-auto rounded-lg border border-white/[0.1] bg-[#151c28] p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.45)]"
+            >
+              {bandOptions.map((item) => {
+                const isActive = !falseColorEnabled && activeAnalysis === item.key;
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    role="option"
+                    aria-selected={isActive}
+                    onClick={() => {
+                      setBand(item.key);
+                      setFalseColorEnabled(false);
+                      setBandMenuOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors cursor-pointer ${
+                      isActive ? "bg-cyan-400/10" : "hover:bg-white/[0.05]"
+                    }`}
+                  >
+                    <span
+                      className="h-2 w-2 flex-shrink-0 rounded-full"
+                      style={{ background: item.color, boxShadow: `0 0 6px ${item.color}` }}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs font-bold" style={{ color: item.color }}>{item.label}</span>
+                      <span className="block truncate text-[0.55rem] text-slate-500">{item.desc}</span>
+                    </span>
+                    {isActive && (
+                      <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 flex-shrink-0 text-cyan-300" fill="currentColor">
+                        <path d="M16 6l-8 8-4-4" stroke="currentColor" strokeWidth="1.75" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">
@@ -1311,6 +1463,20 @@ function openImageUrlSafely(url: string) {
             </span>
           </div>
         </div>
+
+        {legendConfig && (
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">{legendConfig.label}</span>
+            </div>
+            <div className="mt-2 h-2 w-full rounded-full" style={{ background: legendConfig.gradient }} />
+            <div className="mt-1 flex items-center justify-between text-[0.55rem] text-slate-500">
+              <span>{legendConfig.min}</span>
+              <span>{legendConfig.mid}</span>
+              <span>{legendConfig.max}</span>
+            </div>
+          </div>
+        )}
       </div>
     )}
 

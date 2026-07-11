@@ -13,7 +13,7 @@
 //
 // Usage:
 //   GET /api/raster-proxy/analyze
-//       ?type=rgb|swir|ndvi|ndwi|ndmi|ndbi|savi|evi|bsi|change_ndvi|change_ndwi|change_ndbi|change_ndmi|change_savi|change_evi|change_bsi
+//       ?type=rgb|swir|ndvi|ndwi|ndmi|ndbi|savi|evi|bsi|change_rgb|change_swir|change_ndvi|change_ndwi|change_ndbi|change_ndmi|change_savi|change_evi|change_bsi
 //       &urls=<url1>,<url2>[,...]      ← بالترتيب المطلوب لكل نوع (تحت)
 //       &bbox=west,south,east,north     ← إلزامي (WGS84) — بيحدد الـ pixel window
 //                                          المطلوب قراءته بدل تحميل الـ scene كاملة
@@ -31,6 +31,8 @@
 //
 //   change_<index> → urls = [...نفس بانداتات الـ index بتاعته لـ Before, ...نفس البانداتات لـ After]
 //     مثال change_evi → urls = beforeB08,beforeB04,beforeB02,afterB08,afterB04,afterB02
+//     change_rgb  → urls = beforeB04,beforeB03,beforeB02,afterB04,afterB03,afterB02  (R,G,B × before/after)
+//     change_swir → urls = beforeB12,beforeB8A,beforeB04,afterB12,afterB8A,afterB04 (SWIR,NIR,Red × before/after)
 //
 // اختياري لـ composite: gamma (افتراضي 1.1), sharpen (0/1), low/high (2/98)
 // اختياري لـ index: colormap, min/max (افتراضي -1/1), zero, alphaLow/alphaHigh, transparent
@@ -164,6 +166,7 @@ async function signPlanetaryComputerUrl(url: string): Promise<string> {
 type AnalysisType =
   | "rgb" | "swir"
   | "ndvi" | "ndwi" | "ndmi" | "ndbi" | "savi" | "evi" | "bsi"
+  | "change_rgb" | "change_swir"
   | "change_ndvi" | "change_ndwi" | "change_ndbi" | "change_ndmi"
   | "change_savi" | "change_evi" | "change_bsi";
 
@@ -209,7 +212,7 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
   ndbi: {
     kind: "index", bandCount: 2, label: "NDBI (SWIR1,NIR — e.g. B11,B08)",
     formula: (swir1, nir) => (swir1 - nir) / (swir1 + nir || 1e-6),
-    defaultColormap: "oranges",
+    defaultColormap: "inferno",
   },
   savi: {
     // Soil-Adjusted Vegetation Index — same shape as NDVI but with a soil-brightness
@@ -217,7 +220,7 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     // cover) so bare/sparse-canopy areas don't get over-read as high vegetation.
     kind: "index", bandCount: 2, label: "SAVI (NIR,Red — e.g. B08,B04)",
     formula: (nir, red) => ((nir - red) / (nir + red + 0.5 || 1e-6)) * 1.5,
-    defaultColormap: "rdylgn",
+    defaultColormap: "spectral",
   },
   evi: {
     // Enhanced Vegetation Index — standard MODIS/Sentinel coefficients
@@ -226,7 +229,7 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     // 3 bands instead of NDVI's 2.
     kind: "index", bandCount: 3, label: "EVI (NIR,Red,Blue — e.g. B08,B04,B02)",
     formula: (nir, red, blue) => (2.5 * (nir - red)) / (nir + 6 * red - 7.5 * blue + 1 || 1e-6),
-    defaultColormap: "rdylgn",
+    defaultColormap: "magma",
   },
   bsi: {
     // Bare Soil Index — combines SWIR+Red (soil-responsive) vs NIR+Blue
@@ -234,7 +237,25 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     kind: "index", bandCount: 4, label: "BSI (SWIR1,Red,NIR,Blue — e.g. B11,B04,B08,B02)",
     formula: (swir1, red, nir, blue) =>
       ((swir1 + red) - (nir + blue)) / ((swir1 + red) + (nir + blue) || 1e-6),
-    defaultColormap: "oranges",
+    defaultColormap: "rdbu_r",
+  },
+  change_rgb: {
+    // True-color composite has no normalized index, so "before"/"after" are
+    // reduced to standard perceptual luminance (Rec. 709 weights) and compared
+    // like any other index — same threshold/classThreshold pipeline as below.
+    kind: "change", bandCount: 6,
+    label: "Change RGB (beforeRed,beforeGreen,beforeBlue,afterRed,afterGreen,afterBlue — e.g. B04,B03,B02,B04,B03,B02)",
+    formula: (red, green, blue) => (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 10000,
+    gainLabel: "Brightness Gain", lossLabel: "Brightness Loss",
+  },
+  change_swir: {
+    // Same luminance-based reduction as change_rgb, applied to the SWIR false-color
+    // combination — surfaces things like burn scars or moisture shifts that show up
+    // as brightness swings in the SWIR/NIR/Red composite even without a named index.
+    kind: "change", bandCount: 6,
+    label: "Change SWIR (beforeSWIR,beforeNIR,beforeRed,afterSWIR,afterNIR,afterRed — e.g. B12,B8A,B04,B12,B8A,B04)",
+    formula: (swir, nir, red) => (0.2126 * swir + 0.7152 * nir + 0.0722 * red) / 10000,
+    gainLabel: "SWIR Signal Gain", lossLabel: "SWIR Signal Loss",
   },
   change_ndvi: {
     kind: "change", bandCount: 4, label: "Change NDVI (beforeNIR,beforeRed,afterNIR,afterRed — e.g. B08,B04,B08,B04)",
@@ -488,6 +509,51 @@ function checkSameGrid(bands: BandRaster[]) {
   return rest.every((b) => b.width === first.width && b.height === first.height);
 }
 
+// ── Align mixed-resolution bands onto one common pixel grid ────────────────
+// Sentinel-2 L2A stores B02/B03/B04/B08 at 10m but B11/B12 (SWIR) at 20m —
+// each band's native GeoTIFF window is computed independently in readBand(),
+// so even for the exact same AOI the SWIR band comes back with roughly half
+// the width/height of the 10m bands (plus independent floor/ceil rounding on
+// top of that). Any index mixing a SWIR band with a 10m band (NDMI, SWIR
+// composite, NDBI, BSI) was failing checkSameGrid because of this, while
+// indices built only from 10m bands (NDVI, NDWI, SAVI, EVI) never hit it.
+// Fix: resample every band up/down to match the highest-resolution band in
+// the set (nearest-neighbor — cheap, and band math doesn't need interpolation
+// quality here, just aligned pixels) before compositing/index math runs.
+function resampleNearest(band: BandRaster, targetWidth: number, targetHeight: number): BandRaster {
+  if (band.width === targetWidth && band.height === targetHeight) return band;
+
+  const ctor = band.data.constructor as new (len: number) => BandRaster["data"];
+  const out = new ctor(targetWidth * targetHeight);
+  const xRatio = band.width / targetWidth;
+  const yRatio = band.height / targetHeight;
+
+  for (let y = 0; y < targetHeight; y++) {
+    const srcY = Math.min(band.height - 1, Math.floor(y * yRatio));
+    const srcRowOffset = srcY * band.width;
+    const dstRowOffset = y * targetWidth;
+    for (let x = 0; x < targetWidth; x++) {
+      const srcX = Math.min(band.width - 1, Math.floor(x * xRatio));
+      out[dstRowOffset + x] = band.data[srcRowOffset + srcX];
+    }
+  }
+
+  return { ...band, data: out, width: targetWidth, height: targetHeight };
+}
+
+function alignBandsToCommonGrid(bands: BandRaster[]): BandRaster[] {
+  if (bands.length <= 1) return bands;
+
+  let refIdx = 0;
+  for (let i = 1; i < bands.length; i++) {
+    if (bands[i].width * bands[i].height > bands[refIdx].width * bands[refIdx].height) refIdx = i;
+  }
+  const targetWidth = bands[refIdx].width;
+  const targetHeight = bands[refIdx].height;
+
+  return bands.map((b) => resampleNearest(b, targetWidth, targetHeight));
+}
+
 // Evaluates a per-pixel band-math formula against 2, 3, or 4 bands without
 // allocating a temporary array every pixel (this runs once per pixel per
 // band count, so for a ~1000x1000 AOI that's ~1M calls — allocation here
@@ -565,6 +631,35 @@ async function renderComposite(bands: BandRaster[], gamma: number, doSharpen: bo
 }
 
 // ── Index path (ndvi / ndwi / ndmi / ndbi / savi / evi / bsi) ───────────────
+
+// Same idea as computePercentiles() for composites, but over the *computed
+// index values* (not raw band DNs), and only over pixels where the bands
+// aren't all-zero (nodata). Needed because a fixed, "typical" rescale like
+// NDWI's -0.3..0.8 assumes the AOI actually contains both dry land AND open
+// water. Point the same rescale at a desert AOI with no water bodies at all
+// and every real value clusters in a narrow low sub-band (e.g. -0.3..-0.05) —
+// the whole tile then maps to one end of the colormap and renders as one flat
+// color with no visible contrast between features, even though the bands
+// themselves are fine. Stretching to the AOI's own 2nd/98th percentile makes
+// whatever range is actually present fill the whole colormap instead.
+function computeIndexPercentiles(
+  values: Float32Array,
+  validMask: Uint8Array,
+  low: number,
+  high: number,
+  sampleStep = 4
+): { lo: number; hi: number } | null {
+  const sample: number[] = [];
+  for (let i = 0; i < values.length; i += sampleStep) {
+    if (validMask[i]) sample.push(values[i]);
+  }
+  if (sample.length < 8) return null;
+  sample.sort((a, b) => a - b);
+  const idx = (p: number) =>
+    sample[Math.min(sample.length - 1, Math.max(0, Math.floor((p / 100) * sample.length)))];
+  return { lo: idx(low), hi: idx(high) };
+}
+
 async function renderIndex(
   bands: BandRaster[],
   formula: (...values: number[]) => number,
@@ -579,15 +674,29 @@ async function renderIndex(
   const { width, height } = bands[0];
   const n = width * height;
   const indexValues = new Float32Array(n);
+  const validMask = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     indexValues[i] = evalFormula(formula, bands, i);
+    validMask[i] = allZero(bands, i) ? 0 : 1;
   }
 
-  const range = rMax - rMin || 0.001;
+  // Auto-stretch to what's actually in this AOI (see comment above). Falls
+  // back to the caller's rMin/rMax if there's too little valid data or the
+  // AOI genuinely has almost no spread (near-uniform surface) — stretching a
+  // near-zero range would just amplify sensor noise into fake contrast.
+  let effMin = rMin;
+  let effMax = rMax;
+  const pct = computeIndexPercentiles(indexValues, validMask, 2, 98);
+  if (pct && pct.hi - pct.lo > (rMax - rMin) * 0.03) {
+    effMin = pct.lo;
+    effMax = pct.hi;
+  }
+
+  const range = effMax - effMin || 0.001;
   const stops = RAMPS[colormap] ?? RAMPS["rdylgn"];
   const lut = buildLUT(stops);
 
-  const t0 = Math.max(0, Math.min(1, (zeroVal - rMin) / range));
+  const t0 = Math.max(0, Math.min(1, (zeroVal - effMin) / range));
   const maxDist = Math.max(t0, 1 - t0) || 1;
   const zeroByte = Math.max(0, Math.min(255, Math.round(t0 * 255)));
 
@@ -606,7 +715,7 @@ async function renderIndex(
   let validPixels = 0, sum = 0, minV = Infinity, maxV = -Infinity;
   for (let i = 0; i < n; i++) {
     const v = indexValues[i];
-    let t = (v - rMin) / range;
+    let t = (v - effMin) / range;
     t = Math.max(0, Math.min(1, t));
     const byte = Math.round(t * 255);
     const alpha = alphaLUT[byte];
@@ -623,8 +732,8 @@ async function renderIndex(
   }
 
   const stats = validPixels > 0
-    ? { min: minV, max: maxV, mean: sum / validPixels, validPixels }
-    : { min: rMin, max: rMax, mean: 0, validPixels: 0 };
+    ? { min: minV, max: maxV, mean: sum / validPixels, validPixels, appliedRange: [effMin, effMax] }
+    : { min: rMin, max: rMax, mean: 0, validPixels: 0, appliedRange: [effMin, effMax] };
 
   const scale = Math.min(32, Math.max(1, TARGET_MAX_DIM / Math.max(width, height)));
   const outW = Math.round(width * scale);
@@ -771,6 +880,18 @@ export async function GET(req: NextRequest) {
   }
   const bandsMs = performance.now() - tBandsStart;
 
+  // بعض الـ bands (زي SWIR في Sentinel-2) دقتها مختلفة عن الباقي (20م بدل 10م)،
+  // فبيرجعوا بعرض/طول مختلفين حتى لو نفس الـ AOI بالظبط — نصلّحها هنا قبل أي
+  // فحص/حساب عشان NDMI/SWIR/NDBI/BSI تشتغل زي أي index تاني.
+  let referenceBandIdx = 0;
+  for (let i = 1; i < bands.length; i++) {
+    if (bands[i].width * bands[i].height > bands[referenceBandIdx].width * bands[referenceBandIdx].height) {
+      referenceBandIdx = i;
+    }
+  }
+  const referenceBbox = bands[referenceBandIdx].bbox;
+  bands = alignBandsToCommonGrid(bands);
+
   if (!checkSameGrid(bands)) {
     return NextResponse.json(
       { error: "Bands have mismatched dimensions — align/reproject to the same grid before compositing" },
@@ -778,7 +899,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const realBbox = bands[0].bbox;
+  const realBbox = referenceBbox;
   let pngBuffer: Buffer;
   let stats: unknown;
   const tRenderStart = performance.now();
@@ -807,7 +928,7 @@ export async function GET(req: NextRequest) {
     pngBuffer = result.pngBuffer;
     stats = result.stats;
   } else {
-    // change_ndvi / change_ndwi / change_ndbi / change_ndmi / change_savi / change_evi / change_bsi
+    // change_rgb / change_swir / change_ndvi / change_ndwi / change_ndbi / change_ndmi / change_savi / change_evi / change_bsi
     const threshold = parseFloat(searchParams.get("threshold") ?? "0.08");
     const classThreshold = parseFloat(searchParams.get("classThreshold") ?? "0.25");
     const half = config.bandCount / 2;

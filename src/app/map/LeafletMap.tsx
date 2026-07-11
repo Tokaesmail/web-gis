@@ -17,7 +17,6 @@ import {
   DrawTool, SAT_LAYERS,
   SatKey, LatLngPoint, CaptureMetadata, CaptureResult, CaptureTarget,
 } from "./mapTypes_proxy";
-import { AOIEditor } from "./AOIEditor";
 import { validateAOI, MAX_AOI_SIZE_HA } from "./aoiValidation";
 
 type ExtrusionConfig = {
@@ -211,15 +210,22 @@ export default function LeafletMap({
     hintEl?: HTMLDivElement | null;
   } | null>(null);
   const overlaysUiRef = useRef<HTMLDivElement | null>(null);
-  // ── AOI Editor ref (move vertices / resize / validate) ──────────────────────
-  const aoiEditorRef = useRef<AOIEditor | null>(null);
 
   const {
     drawPolygon, drawRect, drawCircle, drawMeasure, drawMarker,
     clearCanvas, capture, captureCircle, sendToBackend,
   } = useMapCanvas();
 
-  useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
+  // ⚠️ لو المستخدم بادئ يرسم شكل ولسه مخلصوش (نقطة أو أكتر) وبدّل الأداة من التولبار
+  // (يبدأ يرسم دايرة أو مربع تاني وهو لسه في نص بولوجن) — كنا بنسيب الرسمة الناقصة
+  // معلقة على الماب (نقط/temp layers) وبعدين الشكل الجديد يترسم فوقها. دلوقتي أي
+  // تغيير للأداة يمسح الرسم الناقص الحالي أولاً.
+  useEffect(() => {
+    if (activeToolRef.current !== activeTool) {
+      if (drawPointsRef.current.length > 0) cancelCurrentDrawing();
+    }
+    activeToolRef.current = activeTool;
+  }, [activeTool]);
 
   const clearImagePlacementHint = () => {
     const st = placingImageRef.current;
@@ -252,6 +258,31 @@ export default function LeafletMap({
     }
     drawPointsRef.current = [];
     if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
+  };
+
+  /** يمسح شكل واحد بس من على الماب (مش كل الرسومات زي زرار Delete All) */
+  const deleteSingleShape = (layer: any) => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    try { map.closePopup(); } catch (_) {}
+    try { map.removeLayer(layer); } catch (_) {}
+    drawLayersRef.current = drawLayersRef.current.filter((l) => l !== layer);
+    draftLayersRef.current = draftLayersRef.current.filter((l) => l !== layer);
+    initialFeaturesLayerRef.current = initialFeaturesLayerRef.current.filter((l) => l !== layer);
+  };
+
+  /** صف الأزرار اللي بتتحط جوه popup أي شكل مرسوم — Delete بس (Edit AOI اتشالت لأنها كانت مش شغالة). */
+  const buildShapePopupActions = (layer: any, kind: "polygon" | "rectangle" | "circle" | "marker" | "measure") => {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:6px;margin-top:6px;";
+
+    const delBtn = document.createElement("button");
+    delBtn.textContent = isRTL ? "🗑️ حذف" : "🗑️ Delete";
+    delBtn.style.cssText = "background:#ef444422;border:1px solid #ef444455;color:#f87171;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
+    delBtn.onclick = () => deleteSingleShape(layer);
+    row.appendChild(delBtn);
+
+    return row;
   };
 
   const persistImageOverlays = () => {
@@ -584,11 +615,6 @@ useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
-
-      if (aoiEditorRef.current?.isActive) {
-        aoiEditorRef.current.stopEditing(false);
-        return;
-      }
 
       if (placingImageRef.current) {
         stopImagePlacement();
@@ -963,15 +989,9 @@ useEffect(() => {
           poly.bindPopup(() => {
             const div = document.createElement("div");
             div.innerHTML = `🔵 ${name}${area ? ` · ≈ ${area} ha` : ""}`;
-            const editBtn = document.createElement("button");
-            editBtn.textContent = "✏️ Edit AOI";
-            editBtn.style.cssText = "margin-top:6px;display:block;background:#00d4ff22;border:1px solid #00d4ff55;color:#00d4ff;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
-            editBtn.onclick = () => startAOIEdit(poly, "polygon");
-            div.appendChild(editBtn);
+            div.appendChild(buildShapePopupActions(poly, "polygon"));
             return div;
           });
-
-          poly.on("click", () => startAOIEdit(poly, "polygon"));
 
           drawLayersRef.current.push(poly);
           initialFeaturesLayerRef.current.push(poly);
@@ -989,7 +1009,12 @@ useEffect(() => {
             fillOpacity: 0.85,
             weight: 2,
           }).addTo(map);
-          marker.bindPopup(`📍 ${name}`);
+          marker.bindPopup(() => {
+            const div = document.createElement("div");
+            div.innerHTML = `📍 ${name}`;
+            div.appendChild(buildShapePopupActions(marker, "marker"));
+            return div;
+          });
           drawLayersRef.current.push(marker);
           initialFeaturesLayerRef.current.push(marker);
         }
@@ -1000,7 +1025,12 @@ useEffect(() => {
           const line = L.polyline(latlngs, {
             color: TOOL_COLORS.measure.stroke, weight: 2.5,
           }).addTo(map);
-          line.bindPopup(`📏 ${name}`);
+          line.bindPopup(() => {
+            const div = document.createElement("div");
+            div.innerHTML = `📏 ${name}`;
+            div.appendChild(buildShapePopupActions(line, "measure"));
+            return div;
+          });
           drawLayersRef.current.push(line);
           initialFeaturesLayerRef.current.push(line);
           try { bounds.push(line.getBounds()); } catch (_) {}
@@ -1120,20 +1150,6 @@ useEffect(() => {
   };
 
   // ── Start editing an existing finished AOI layer (move vertices / resize) ──
-  const startAOIEdit = (layer: any, kind: "polygon" | "rectangle") => {
-    const map = mapObjRef.current;
-    if (!map || !aoiEditorRef.current) return;
-
-    map.closePopup();
-    // Remove from drawLayers while editing (editor hides the layer)
-    drawLayersRef.current = drawLayersRef.current.filter((l) => l !== layer);
-
-    // Temporarily disable click on the layer while editing
-    layer.off("click");
-
-    aoiEditorRef.current.startEditing(layer, kind);
-  };
-
   const finishPolygon = async (map: any, L: any) => {
     const pts = drawPointsRef.current;
 
@@ -1160,18 +1176,9 @@ const area = parseFloat(
       const label = document.createElement("div");
       label.innerHTML = `🔵 ${t.polygon} · ≈ ${area} ${t.ha}`;
       div.appendChild(label);
-
-      const editBtn = document.createElement("button");
-      editBtn.textContent = isRTL ? "✏️ تعديل المنطقة" : "✏️ Edit AOI";
-      editBtn.style.cssText = "margin-top:6px;background:#00d4ff22;border:1px solid #00d4ff55;color:#00d4ff;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
-      editBtn.onclick = () => { map.closePopup(); startAOIEdit(poly, "polygon"); };
-      div.appendChild(editBtn);
-
+      div.appendChild(buildShapePopupActions(poly, "polygon"));
       return div;
     }).openPopup();
-
-    // Allow re-editing by clicking the polygon
-    poly.on("click", () => startAOIEdit(poly, "polygon"));
 
     const feature = makePolygonFeature("Drawn Polygon", pts, area);
     onAreaSelected("Drawn Polygon", area, feature);
@@ -1205,7 +1212,12 @@ const area = parseFloat(
     drawLayersRef.current.push(line);
     let dist = 0;
     for (let i = 1; i < pts.length; i++) dist += map.distance(pts[i - 1], pts[i]);
-    line.bindPopup(`📏 ${(dist / 1000).toFixed(3)} ${t.km}`).openPopup();
+    line.bindPopup(() => {
+      const div = document.createElement("div");
+      div.innerHTML = `📏 ${(dist / 1000).toFixed(3)} ${t.km}`;
+      div.appendChild(buildShapePopupActions(line, "measure"));
+      return div;
+    }).openPopup();
 
     const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
     lastCoordsRef.current = coordinates;
@@ -1348,60 +1360,16 @@ if (!restoredRef.current) {
 
     drawLayersRef.current.push(poly);
 
-    poly.on("click", () => {
-      startAOIEdit(poly, "polygon");
+    poly.bindPopup(() => {
+      const div = document.createElement("div");
+      div.innerHTML = `🔵 ${isRTL ? "منطقة محفوظة" : "Saved AOI"}`;
+      div.appendChild(buildShapePopupActions(poly, "polygon"));
+      return div;
     });
   });
 
   restoredRef.current = true;
 }
-
-      // ── AOI Editor instance (move vertices / resize / validate) ────────────
-      aoiEditorRef.current = new AOIEditor(map, L, {
-        onChange: () => {
-          // live drag feedback is handled inside AOIEditor's own status pill
-        },
-        onSave: (points, isValid, areaHa) => {
-          if (!isValid) return;
-          const c = TOOL_COLORS.polygon;
-          const poly = L.polygon(points, { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
-          drawLayersRef.current.push(poly);
-
-          const roundedArea = parseFloat(areaHa.toFixed(1));
-          poly.bindPopup(() => {
-            const div = document.createElement("div");
-            const label = document.createElement("div");
-            label.innerHTML = `🔵 ${isRTL ? "منطقة مُعدَّلة" : "Edited AOI"} · ≈ ${roundedArea} ${t.ha}`;
-            div.appendChild(label);
-            const editBtn = document.createElement("button");
-            editBtn.textContent = isRTL ? "✏️ تعديل المنطقة" : "✏️ Edit AOI";
-            editBtn.style.cssText = "margin-top:6px;background:#00d4ff22;border:1px solid #00d4ff55;color:#00d4ff;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
-            editBtn.onclick = () => { map.closePopup(); startAOIEdit(poly, "polygon"); };
-            div.appendChild(editBtn);
-            return div;
-          }).openPopup();
-
-          // ← Critical: allow re-editing by clicking the polygon again
-          poly.on("click", () => startAOIEdit(poly, "polygon"));
-
-          const feature = makePolygonFeature("Edited AOI", points, roundedArea);
-          onAreaSelected("Edited AOI", roundedArea, feature);
-          onFeatureClick?.(feature);
-
-          lastCoordsRef.current = points.map(([lat, lng]) => ({ lat, lng }));
-          lastToolRef.current = "polygon";
-
-          toast.success(
-            isRTL
-              ? `تم حفظ المنطقة · ${roundedArea} هكتار`
-              : `AOI saved · ${roundedArea} ha`
-          );
-        },
-        onCancel: () => {
-          // The original layer was removed by AOIEditor.startEditing; nothing to restore
-          // since we don't keep a reference here. User can re-draw if needed.
-        },
-      });
 
       // ① Esri WorldImagery — مباشر بدون proxy (Esri بيبعت CORS headers أصلًا،
       // فمفيش داعي إننا نمرر كل تايل عبر السيرفر بتاعنا ونستهلك Fast Origin Transfer)
@@ -1607,9 +1575,6 @@ if (!restoredRef.current) {
         if (canvasRef.current) clearCanvas(canvasRef.current);
         if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
 
-        // cancel any in-progress AOI edit
-        if (aoiEditorRef.current?.isActive) aoiEditorRef.current.stopEditing(false);
-
         // clear image overlays
         imageOverlaysRef.current.forEach((ov) => {
           try { map.removeLayer(ov.layer); } catch (_) {}
@@ -1631,10 +1596,6 @@ if (!restoredRef.current) {
         const { lat, lng } = e.latlng;
         // throttle setState to avoid React re-renders on every click
         requestAnimationFrame(() => onCoordsUpdate(lat, lng));
-
-        // While editing an AOI, ignore normal drawing-tool clicks so the user
-        // can finish the edit via the Save/Cancel controls instead.
-        if (aoiEditorRef.current?.isActive) return;
 
         // Trigger onFeatureClick with a virtual feature to update panels (Weather/NDVI) for any click
         // ── Threshold: نتجاهل الكليكات اللي قريبة جداً (مكان) أو سريعة جداً (وقت) من آخر كليك ──
@@ -1727,7 +1688,12 @@ if (!restoredRef.current) {
         if (tool === "marker") {
           const c  = TOOL_COLORS.marker;
           const mk = L.circleMarker([lat, lng], { radius: 7, color: c.stroke, fillColor: c.stroke, fillOpacity: 0.85, weight: 2 }).addTo(map);
-          mk.bindPopup(`📍 ${lat.toFixed(6)}°N<br/>${lng.toFixed(6)}°E`).openPopup();
+          mk.bindPopup(() => {
+            const div = document.createElement("div");
+            div.innerHTML = `📍 ${lat.toFixed(6)}°N<br/>${lng.toFixed(6)}°E`;
+            div.appendChild(buildShapePopupActions(mk, "marker"));
+            return div;
+          }).openPopup();
           drawLayersRef.current.push(mk);
           if (canvasRef.current) {
             const px = map.latLngToContainerPoint(L.latLng(lat, lng));
@@ -1793,6 +1759,10 @@ if (!restoredRef.current) {
         if (tool === "rectangle") {
           const c = TOOL_COLORS.rectangle;
           if (!drawPointsRef.current.length) {
+            toast(isRTL ? "اضغط Esc لإلغاء الرسم الحالي" : "Press Esc to cancel the current drawing", {
+              icon: "⌨️",
+              duration: 5000,
+            });
             drawPointsRef.current.push([lat, lng]);
             const marker = L.circleMarker([lat, lng], { radius: 4, color: c.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map);
             drawLayersRef.current.push(marker);
@@ -1818,19 +1788,13 @@ console.log("Area m²:", turf.area(polygon));
 
 
 
-            // ── Popup with "Edit AOI" button ─────────────────────────────────
+            // ── Popup with "Edit" + "Delete" buttons ─────────────────────────
             rect.bindPopup(() => {
               const div = document.createElement("div");
               const label = document.createElement("div");
               label.innerHTML = `📐 ${t.rectangle} · ≈ ${area} ${t.ha}`;
               div.appendChild(label);
-
-              const editBtn = document.createElement("button");
-              editBtn.textContent = isRTL ? "✏️ تعديل المنطقة" : "✏️ Edit AOI";
-              editBtn.style.cssText = "margin-top:6px;background:#a78bfa22;border:1px solid #a78bfa55;color:#a78bfa;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
-              editBtn.onclick = () => startAOIEdit(rect, "rectangle");
-              div.appendChild(editBtn);
-
+              div.appendChild(buildShapePopupActions(rect, "rectangle"));
               return div;
             }).openPopup();
 
@@ -1859,13 +1823,24 @@ console.log("Area m²:", turf.area(polygon));
         if (tool === "circle") {
           const c = TOOL_COLORS.circle;
           if (!drawPointsRef.current.length) {
+            toast(isRTL ? "اضغط Esc لإلغاء الرسم الحالي" : "Press Esc to cancel the current drawing", {
+              icon: "⌨️",
+              duration: 5000,
+            });
             drawPointsRef.current.push([lat, lng]);
           } else {
             const center = drawPointsRef.current[0];
             const radius = map.distance(center, [lat, lng]);
             const circ   = L.circle(center, { radius, color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
             const area   = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
-            circ.bindPopup(`🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`).openPopup();
+            circ.bindPopup(() => {
+              const div = document.createElement("div");
+              const label = document.createElement("div");
+              label.innerHTML = `🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`;
+              div.appendChild(label);
+              div.appendChild(buildShapePopupActions(circ, "circle"));
+              return div;
+            }).openPopup();
             drawLayersRef.current.push(circ);
             
             // التعديل الجديد باستخدام الدالة الحقيقية بدل المربع
@@ -1934,10 +1909,6 @@ console.log("Area m²:", turf.area(polygon));
       if (overlaysUiRef.current) {
         overlaysUiRef.current.remove();
         overlaysUiRef.current = null;
-      }
-      if (aoiEditorRef.current) {
-        if (aoiEditorRef.current.isActive) aoiEditorRef.current.stopEditing(false);
-        aoiEditorRef.current = null;
       }
       if (swipeOverlayRef.current) {
         swipeOverlayRef.current.cleanup();
