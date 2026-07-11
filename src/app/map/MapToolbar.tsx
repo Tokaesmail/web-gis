@@ -132,7 +132,15 @@ export default function MapToolbar({
         {/* Clear button */}
         <div className="relative group">
           <button
-            onClick={onClear}
+            onClick={() => {
+              onClear();
+              // اي بانل تاني (زي السوبر ريزوليوشن) بيسمع للايفنت ده عشان
+              // يمسح النتيجة بتاعته بس لما المستخدم يدوس على زرار الديليت
+              // ده فعليًا — مش أي حاجة تانية زي تبديل التاب
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent("aoi:clear"));
+              }
+            }}
             className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer">
             <svg
               width="14"

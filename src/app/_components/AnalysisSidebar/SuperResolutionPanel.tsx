@@ -41,17 +41,35 @@ function toImageSrc(base64: string) {
   return base64.startsWith("data:image") ? base64 : `data:image/png;base64,${base64}`;
 }
 
-// ── الخريطة overlay بتعمل decode/render تاني لنفس الصورة فوق التايلز —
-// لو الناتج صغير (زوم قليل / bbox صغير)، ده تقيل من غير فايدة حقيقية،
-// فبنحطها بس لو عدد بكسلات الناتج (width × height) أكبر من كده.
-// عدّليها براحتك حسب الأداء اللي شايفاه ────────────────────────────────────
-const SR_MAP_OVERLAY_MIN_PIXELS = 2_000_000; // ≈ 1414×1414 أو أكبر
-
 export type SuperResolutionPreviewConfig = {
   dataUrl: string;
   bounds: [[number, number], [number, number]]; // [[south, west], [north, east]]
   coords: { lat: number; lng: number };
 };
+
+type SRResultMeta = {
+  processingTimeS?: number;
+  lrWidth?: number;
+  lrHeight?: number;
+  srWidth?: number;
+  srHeight?: number;
+  timestampsUsed?: string[];
+};
+
+// كاش خارج الكومبوننت — بيفضل موجود حتى لو البانل اتعمله unmount/remount
+// (زي لما تسيبي التاب وترجعيلها تاني). النتيجة بتتمسح بس لما:
+//  1) الـ AOI تتغير فعلًا (bbox مختلفة)، أو
+//  2) المستخدم يدوس على زرار الديليت بتاع الـ AOI (event: "aoi:clear")
+type SRCache = {
+  bboxKey: string;
+  savePayload: any;
+  resultMeta: SRResultMeta | null;
+  imageSrc: string | null;
+  placedOnMap: boolean;
+  saved: boolean;
+};
+let srCache: SRCache | null = null;
+const bboxKeyOf = (b: [number, number, number, number]) => b.join(",");
 
 export function SuperResolutionPanel({
   selectedFeature,
@@ -77,14 +95,7 @@ export function SuperResolutionPanel({
   const [savePayload, setSavePayload] = useState<any>(null);
   // بيانات إضافية للعرض بس (مش للحفظ) — وقت المعالجة، أبعاد الصورة، السينز
   // المستخدمة في التركيب
-  const [resultMeta, setResultMeta] = useState<{
-    processingTimeS?: number;
-    lrWidth?: number;
-    lrHeight?: number;
-    srWidth?: number;
-    srHeight?: number;
-    timestampsUsed?: string[];
-  } | null>(null);
+  const [resultMeta, setResultMeta] = useState<SRResultMeta | null>(null);
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [placedOnMap, setPlacedOnMap] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -96,21 +107,64 @@ export function SuperResolutionPanel({
 
   useEffect(() => {
     setBbox([west, south, east, north]);
+    const key = bboxKeyOf([west, south, east, north]);
+
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false;
+      // أول فتحة للبانل (أو رجوع ليها بعد ما اتعمله unmount زي تبديل التاب) —
+      // لو عندنا نتيجة متخزّنة لنفس الـ AOI بالظبط، رجّعيها زي ما هي بدل ما
+      // تتمسح. والـ overlay على الماب أصلاً لسه موجود زي ما هو، سيبيه.
+      if (srCache && srCache.bboxKey === key) {
+        setSavePayload(srCache.savePayload);
+        setResultMeta(srCache.resultMeta);
+        setImageSrc(srCache.imageSrc);
+        setPlacedOnMap(srCache.placedOnMap);
+        setSaved(srCache.saved);
+        return;
+      }
+      // مفيش كاش يطابق الـ AOI الحالية — امسحي المحلي بس من غير ما تلمسي
+      // overlay قديم على الماب ممكن يكون تابع لرسمة تانية
+      setSavePayload(null);
+      setResultMeta(null);
+      setImageSrc(null);
+      setPlacedOnMap(false);
+      setSaved(false);
+      srCache = null;
+      return;
+    }
+
+    // البانل مفتوح والـ AOI اتغيرت فعلاً (رسمة جديدة) — دلوقتي فعلاً
+    // النتيجة القديمة بقت مش مرتبطة بمكانها، امسحيها من على الماب والمحلي
     setSavePayload(null);
     setResultMeta(null);
     setImageSrc(null);
     setPlacedOnMap(false);
     setSaved(false);
-    if (isInitialMountRef.current) {
-      // أول فتحة للبانل — سيبي أي overlay قديم موجود على الماب زي ما هو
-      isInitialMountRef.current = false;
-    } else {
-      // البانل مفتوح والـ AOI اتغيرت فعلاً (رسمة جديدة) — دلوقتي فعلاً
-      // النتيجة القديمة بقت مش مرتبطة بمكانها، امسحيها من على الماب
-      onPreview?.(null);
-    }
+    setError(null);
+    srCache = null;
+    onPreview?.(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [west, south, east, north]);
+
+  // الحذف الفعلي والوحيد بتاع النتيجة/الأناليسز بيحصل هنا — لما المستخدم
+  // يدوس على زرار الديليت اللي في الـ AOI toolbar (مش أي حاجة تانية زي
+  // تبديل التاب أو الـ remount)
+  const clearAnalysis = useCallback(() => {
+    setSavePayload(null);
+    setResultMeta(null);
+    setImageSrc(null);
+    setPlacedOnMap(false);
+    setSaved(false);
+    setError(null);
+    srCache = null;
+    onPreview?.(null);
+  }, [onPreview]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.addEventListener("aoi:clear", clearAnalysis);
+    return () => window.removeEventListener("aoi:clear", clearAnalysis);
+  }, [clearAnalysis]);
 
   const runSuperResolution = useCallback(async () => {
     setLoading(true);
@@ -154,8 +208,7 @@ export function SuperResolutionPanel({
           result: innerResult,
         };
 
-      setSavePayload(readySavePayload);
-      setResultMeta(
+      const metaForCache: SRResultMeta | null =
         innerResult && typeof innerResult === "object"
           ? {
               processingTimeS: innerResult.processing_time_s,
@@ -165,8 +218,10 @@ export function SuperResolutionPanel({
               srHeight: innerResult.sr_height_px,
               timestampsUsed: innerResult.timestamps_used,
             }
-          : null
-      );
+          : null;
+
+      setSavePayload(readySavePayload);
+      setResultMeta(metaForCache);
 
       // Decoding happens entirely in the browser, just to preview the image —
       // nothing gets re-uploaded anywhere as a result of this step.
@@ -174,14 +229,9 @@ export function SuperResolutionPanel({
       const src = base64 ? toImageSrc(base64) : null;
       setImageSrc(src);
 
-      // ── الـ sidebar preview فوق ده بيفضل زي ما هو دايمًا (default) —
-      // بس overlay الخريطة (اللي بيعمل decode/render تاني للصورة نفسها فوق
-      // التايلز) بنحطه بس لو الصورة فعلاً كبيرة بما يكفي إنها تستاهل — تحت
-      // كده أي مقاس كبير هيبقى double-decode من غير داعي وهيتقل بلاش ────────
-      const srPixels = (innerResult?.sr_width_px ?? 0) * (innerResult?.sr_height_px ?? 0);
-      const worthMapOverlay = srPixels >= SR_MAP_OVERLAY_MIN_PIXELS;
-
-      if (src && worthMapOverlay) {
+      // النتيجة دايمًا بتتحط كـ overlay فوق التايلز على الخريطة نفسها
+      // (مش بس في السايد بار) — زي باقي البانلز (raster calc..) بالظبط
+      if (src) {
         const [reqWest, reqSouth, reqEast, reqNorth] = bbox;
         onPreview?.({
           dataUrl: src,
@@ -189,9 +239,20 @@ export function SuperResolutionPanel({
           coords: { lat: (reqSouth + reqNorth) / 2, lng: (reqWest + reqEast) / 2 },
         });
         setPlacedOnMap(true);
+        // خزّني النتيجة عشان لو البانل اتعمله remount (تبديل تاب مثلاً)
+        // ترجع تظهر لوحدها بدل ما تتمسح
+        srCache = {
+          bboxKey: bboxKeyOf(bbox),
+          savePayload: readySavePayload,
+          resultMeta: metaForCache,
+          imageSrc: src,
+          placedOnMap: true,
+          saved: false,
+        };
       } else {
         onPreview?.(null);
         setPlacedOnMap(false);
+        srCache = null;
       }
     } catch (err: any) {
       setError(err?.message ?? "Super resolution request failed");
@@ -199,6 +260,7 @@ export function SuperResolutionPanel({
       setResultMeta(null);
       setImageSrc(null);
       setPlacedOnMap(false);
+      srCache = null;
       onPreview?.(null);
     } finally {
       setLoading(false);
@@ -223,6 +285,7 @@ export function SuperResolutionPanel({
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.success === false) throw new Error(data?.message ?? "Failed to save analysis");
       setSaved(true);
+      if (srCache) srCache = { ...srCache, saved: true };
     } catch (err: any) {
       setError(err?.message ?? "Failed to save analysis");
     } finally {
@@ -277,17 +340,16 @@ export function SuperResolutionPanel({
       {imageSrc && (
         <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3 space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <p className="text-[0.6rem] uppercase tracking-wider text-slate-500">Result Preview</p>
-            {placedOnMap ? (
-              <span className="text-[0.55rem] text-cyan-300/80">Also placed on the map ↗</span>
-            ) : (
-              <span className="text-[0.55rem] text-slate-600" title="Small results only show here to avoid double-rendering the image">
-                Not shown on map (small result)
-              </span>
-            )}
+            <p className="text-[0.6rem] uppercase tracking-wider text-slate-500">Result</p>
+            <button
+              type="button"
+              onClick={clearAnalysis}
+              className="text-[0.6rem] text-slate-500 hover:text-red-400 transition-colors cursor-pointer"
+              title="Remove this analysis result"
+            >
+              ✕ Remove
+            </button>
           </div>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={imageSrc} alt="Super resolution result" className="w-full rounded-lg border border-white/[0.06]" />
 
           {resultMeta && (
             <div className="grid grid-cols-2 gap-1.5 pt-1">
@@ -327,7 +389,7 @@ export function SuperResolutionPanel({
         </div>
       )}
 
-      {savePayload && (
+      {/* {savePayload && (
         <button
           type="button"
           onClick={handleSaveAnalysis}
@@ -336,7 +398,7 @@ export function SuperResolutionPanel({
         >
           {saving ? "Saving…" : saved ? "Saved ✓" : "Save Analysis"}
         </button>
-      )}
+      )} */}
     </div>
   );
 }
