@@ -71,7 +71,7 @@ export const SAT_LAYERS = {
     layers:         "",
     attribution:    "Sentinel-2 cloudless 2021 © EOX",
     maxZoom:        22,
-    maxNativeZoom:  16,
+    maxNativeZoom:  14,
   },
   "Street Map": {
     url:            "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
