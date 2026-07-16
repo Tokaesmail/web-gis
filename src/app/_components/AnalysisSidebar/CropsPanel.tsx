@@ -23,6 +23,7 @@ export function CropsPanel({ selectedFeature }: { selectedFeature?: GeoJSON.Feat
       .then(r => r.json())
       .then(d => {
         if (cancelled) return;
+        console.log("[CropsPanel] raw API response:", d);
         setData(d);
       })
       .finally(() => setLoading(false));
@@ -91,6 +92,19 @@ export function CropsPanel({ selectedFeature }: { selectedFeature?: GeoJSON.Feat
       : stressIndex < 0.6
       ? "Moderate"
       : "High Stress";
+
+  console.log("[CropsPanel] processed data:", {
+    coords,
+    ndviSeries,
+    ndvi,
+    soilAvg,
+    rainSum,
+    vegetationScore,
+    moistureScore,
+    rainfallScore,
+    stressIndex,
+    status,
+  });
 
   const color =
     status === "Optimal"

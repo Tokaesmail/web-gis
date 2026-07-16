@@ -25,6 +25,7 @@ export function NDVILivePanel({ feature, onExport }: { feature?: GeoJSON.Feature
     )
       .then(r => r.json())
       .then(d => {
+        console.log("[NDVILivePanel] raw API response:", d);
         const et    = d.daily?.et0_fao_evapotranspiration ?? [];
         const rad   = d.daily?.shortwave_radiation_sum    ?? [];
         const prec  = d.daily?.precipitation_sum          ?? [];
@@ -43,12 +44,14 @@ export function NDVILivePanel({ feature, onExport }: { feature?: GeoJSON.Feature
         const prev   = series[series.length - 4]?.value ?? latest;
         
         const data = { series, latest, prev, avgSM, avgST };
+        console.log("[NDVILivePanel] processed data:", data);
         setNdviData(data);
         
         if (onExport) {
             const ndviDataMap: Record<string, any> = {
                 "NDVI": { value: latest, min: Math.min(...series.map((s:any)=>s.value)), max: Math.max(...series.map((s:any)=>s.value)), mean: series.reduce((a:any,b:any)=>a+b.value,0)/series.length, trend: latest >= prev ? "up" : "down" }
             };
+            console.log("[NDVILivePanel] onExport data:", ndviDataMap);
             onExport(ndviDataMap);
         }
       })
@@ -260,7 +263,6 @@ export function NDVILivePanel({ feature, onExport }: { feature?: GeoJSON.Feature
   );
 }
 
-// â”€â”€â”€ Overview Live Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | null }) {
   const coords = getMidCoords(feature);
   const p      = feature?.properties ?? {};
@@ -285,6 +287,7 @@ export function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | nul
       .then((d) => {
         if (cancelled) return;
 
+        console.log("[OverviewLivePanel] raw API response:", d);
         const et = (d.daily?.et0_fao_evapotranspiration ?? []) as number[];
         const rad = (d.daily?.shortwave_radiation_sum ?? []) as number[];
         const precip = (d.daily?.precipitation_sum ?? []) as number[];
@@ -304,13 +307,15 @@ export function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | nul
         const avgSoil = soil.length ? soil.reduce((sum, value) => sum + value, 0) / soil.length : null;
         const recentPrecip = precip.slice(-7).reduce((sum, value) => sum + (Number(value) || 0), 0);
 
-        setAnalysisData({
+        const analysisResult = {
           meanNdvi,
           vegetationCoverage: latestNdvi == null ? null : clampPercent(latestNdvi * 100),
           waterCoverage: avgSoil == null ? clampPercent(Math.min(18, recentPrecip * 1.8)) : clampPercent(avgSoil * 100),
           acquisitionDate: times.at(-1) ?? d.current?.time ?? new Date().toISOString(),
           cloudCover: d.current?.cloud_cover ?? null,
-        });
+        };
+        console.log("[OverviewLivePanel] processed analysisData:", analysisResult);
+        setAnalysisData(analysisResult);
       })
       .catch(() => {
         if (!cancelled) setAnalysisData(null);
@@ -339,6 +344,8 @@ export function OverviewLivePanel({ feature }: { feature?: GeoJSON.Feature | nul
       </div>
     );
   }
+
+  console.log("[OverviewLivePanel] feature properties:", p, "coords:", coords, "areaKm2:", areaKm2);
 
   const contourColor =
     (p.Contour ?? 0) < 100 ? "#22d3ee" :
@@ -459,7 +466,10 @@ export function WeatherLivePanel({ feature }: { feature?: GeoJSON.Feature | null
       `uv_index_max,wind_speed_10m_max&timezone=auto&forecast_days=7`
     )
       .then(r => r.json())
-      .then(d => setData(d))
+      .then(d => {
+        console.log("[WeatherLivePanel] raw API response:", d);
+        setData(d);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [coords?.[0], coords?.[1]]);
@@ -616,4 +626,3 @@ export function WeatherLivePanel({ feature }: { feature?: GeoJSON.Feature | null
     </div>
   );
 }
-
