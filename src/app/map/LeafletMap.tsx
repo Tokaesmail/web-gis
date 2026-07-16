@@ -1426,7 +1426,7 @@ if (!restoredRef.current) {
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
         attribution: "Tiles © Esri",
         maxZoom: 22,
-        maxNativeZoom: 23,
+        maxNativeZoom: 18,
         pane: "satellitePane", crossOrigin: "anonymous",
       }).addTo(map);
       attachTileErrorGuard(baseTileRef.current);
