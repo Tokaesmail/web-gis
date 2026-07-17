@@ -201,4 +201,4 @@ export function CropsPanel({ selectedFeature }: { selectedFeature?: GeoJSON.Feat
 
     </div>
   );
-}
+} 

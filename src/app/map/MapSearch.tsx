@@ -63,7 +63,7 @@ export default function MapSearch({
   return (
     <div className="absolute top-16 xl:top-4 left-2 right-16 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-1000 w-auto sm:w-[460px] pointer-events-auto">
       <div
-        className={`flex items-center gap-2.5 bg-[#0a1628]/95 backdrop-blur-md border rounded-xl px-3.5 py-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.5)] transition-all
+        className={`flex items-center gap-2.5 bg-[#0a1628]  border rounded-xl px-3.5 py-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.5)] transition-all
           ${focused ? "border-cyan-400/50 shadow-[0_0_0_3px_rgba(0,212,255,0.08)]" : "border-white/10"}`}
       >
         {loading ? (
@@ -109,7 +109,7 @@ export default function MapSearch({
       </div>
 
       {open && (
-        <div className="mt-1.5 bg-[#0a1628]/98 backdrop-blur-md border border-white/10 rounded-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)] overflow-hidden max-h-[280px] overflow-y-auto app-scroll">
+        <div className="mt-1.5 bg-[#0a1628]  border border-white/10 rounded-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)] overflow-hidden max-h-[280px] overflow-y-auto app-scroll">
           {results.map((r, i) => (
             <button
               key={i}

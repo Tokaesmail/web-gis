@@ -54,8 +54,8 @@ export const SAT_LAYERS = {
     type:           "xyz" as const,
     layers:         "",
     attribution:    "Tiles © Esri",
-    maxZoom:        22,
-    maxNativeZoom:  23,
+    maxZoom:        18,
+    maxNativeZoom:  18,
   },
   "Google": {
     url:            "/api/tile/{z}/{x}/{y}?source=google_sat",
@@ -70,15 +70,15 @@ export const SAT_LAYERS = {
     type:           "xyz" as const,
     layers:         "",
     attribution:    "Sentinel-2 cloudless 2021 © EOX",
-    maxZoom:        22,
-    maxNativeZoom:  14,
+    maxZoom:        16,
+    maxNativeZoom:  16,
   },
   "Street Map": {
     url:            "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     type:           "xyz" as const,
     layers:         "",
     attribution:    "© OpenStreetMap contributors",
-    maxZoom:        22,
+    maxZoom:        19,
     maxNativeZoom:  19,
   },
   "Terrain": {
@@ -86,7 +86,7 @@ export const SAT_LAYERS = {
     type:           "xyz" as const,
     layers:         "",
     attribution:    "Shaded Relief © Esri",
-    maxZoom:        22,
+    maxZoom:        13,
     maxNativeZoom:  13,
   },
 };

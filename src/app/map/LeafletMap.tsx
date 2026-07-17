@@ -1433,8 +1433,8 @@ if (!restoredRef.current) {
 
       labelsLayerRef.current = L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        { attribution: "", maxZoom: 22, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: "anonymous" }
-      ).addTo(map);
+        { attribution: "", maxZoom: 19, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: "anonymous" }
+      );
 
 
       // ── Canvas Layer ──────────────────────────────────────────────────────

@@ -205,12 +205,11 @@ function ExportMenuPortal({
           left: menuPos.left,
           zIndex: 100001,
           width: MENU_WIDTH,
-          background: "rgba(7,15,30,0.98)",
+          background: "rgba(7,15,30,1)",
           border: "1px solid rgba(0,212,255,0.2)",
           borderRadius: 12,
           padding: 6,
           boxShadow: "0 16px 48px rgba(0,0,0,0.65), 0 0 0 1px rgba(0,212,255,0.08)",
-          backdropFilter: "blur(20px)",
           fontFamily: ff,
         }}
         onClick={(e) => e.stopPropagation()}

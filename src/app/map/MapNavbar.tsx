@@ -13,7 +13,7 @@ export default function MapNavbar({
   const { t, toggleLang, lang } = useLang();
 
   return (
-    <nav className="h-12 flex items-center justify-between gap-2 px-3 sm:px-4 bg-[#040d1a]/95 backdrop-blur-xl border-b border-white/[0.07] shrink-0 z-1100 relative">
+    <nav className="h-12 flex items-center justify-between gap-2 px-3 sm:px-4 bg-[#040d1a]  border-b border-white/[0.07] shrink-0 z-1100 relative">
       <Link href="/" className="flex min-w-0 items-center gap-2 no-underline">
         <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_#22d3ee] animate-pulse" />
         <span className="truncate text-cyan-400 font-semibold tracking-wide text-[0.78rem] sm:text-[0.85rem]">
