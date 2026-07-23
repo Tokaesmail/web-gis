@@ -331,8 +331,7 @@ export async function GET(req: NextRequest) {
       Math.abs(bbox[1]) <= 90  && Math.abs(bbox[3]) <= 90;
 
     if (!looksLikeDegrees && geoKeys) {
-      const { proj4: srcProj4 } = toProj4(geoKeys);
-      if (srcProj4) {
+      const { proj4: srcProj4 } = toProj4(geoKeys as Parameters<typeof toProj4>[0]);      if (srcProj4) {
         const [w, s] = proj4(srcProj4, "EPSG:4326", [bbox[0], bbox[1]]);
         const [e, n] = proj4(srcProj4, "EPSG:4326", [bbox[2], bbox[3]]);
         bbox = [w, s, e, n];
