@@ -55,6 +55,7 @@ interface Props {
     expression: string;
     date: string;
     dataUrl: string;
+    tileUrl?: string;
     bounds: [[number, number], [number, number]];
     opacity: number;
     colorRamp: string;
@@ -437,7 +438,7 @@ useEffect(() => {
     onRasterOverlayRegister((config) => {
       const map = mapInstanceRef.current;
       const L = LRef.current;
-      if (!map || !L || !config.dataUrl) return;
+      if (!map || !L || (!config.dataUrl && !config.tileUrl)) return;
 
       // كل analysis ليه key فريد — name + date عشان نعرض نفس الـ analysis مع update
       const overlayKey = `${config.indexKey}_${config.date}`;
@@ -450,16 +451,23 @@ useEffect(() => {
       }
 
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
-      const layer = L.imageOverlay(config.dataUrl, bounds, {
-        opacity: config.opacity,
-        pane: "imagePane",
+      const layer = config.tileUrl
+        ? L.tileLayer(config.tileUrl, {
+            opacity: config.opacity,
+            pane: "imagePane",
+            crossOrigin: "anonymous",
+            maxZoom: 22,
+          }).addTo(map)
+        : L.imageOverlay(config.dataUrl, bounds, {
+            opacity: config.opacity,
+            pane: "imagePane",
         // الصورة الأصلية low-res (كلاسات مصنّفة، مش صورة عادية)، فلو المتصفح
         // كبّرها بـ smooth/bilinear scaling الافتراضي، البقع/النقط الحمرا
         // والخضرا الصغيرة بتتمسح وتتحول لبقعة ضبابية (زي اللي كان بيبان أخضر
         // "شايل" فوق الخريطة). pixelated بيخلي كل بكسل مصنّف يبان بحدوده
         // واضحة زي في صورة السايد بار بالظبط.
-        className: "change-detection-raster-overlay",
-      }).addTo(map);
+            className: "change-detection-raster-overlay",
+          }).addTo(map);
       rasterOverlayRef.current.set(overlayKey, layer);
 
       // map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 14, duration: 0.8 });

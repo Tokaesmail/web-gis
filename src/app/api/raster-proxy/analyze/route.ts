@@ -34,13 +34,17 @@
 //     change_rgb  → urls = beforeB04,beforeB03,beforeB02,afterB04,afterB03,afterB02  (R,G,B × before/after)
 //     change_swir → urls = beforeB12,beforeB8A,beforeB04,afterB12,afterB8A,afterB04 (SWIR,NIR,Red × before/after)
 //
+//   vv_vh_ratio → urls = vv,vh   (VV, VH amplitude assets) — dB difference: 20·log10(VV) − 20·log10(VH)
+//   sar_rgb     → urls = vv,vh   (VV, VH amplitude assets) — composite: R=VV dB, G=VH dB, B=VV/VH ratio dB
+//     (كل قناة بتتحسب dB لوحدها وبعدين تتعمللها 2%-98% stretch مستقلة، زي composite العادي)
+//
 // اختياري لـ composite: gamma (افتراضي 1.1), sharpen (0/1), low/high (2/98)
 // اختياري لـ index: colormap, min/max (افتراضي -1/1), zero, alphaLow/alphaHigh, transparent
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
-import { fromUrl } from "geotiff";
+import { fromUrl, fromArrayBuffer } from "geotiff";
 import proj4 from "proj4";
 import { toProj4 } from "geotiff-geokeys-to-proj4";
 import { RAMPS, buildLUT } from "@/lib/rasterColor"; 
@@ -142,7 +146,14 @@ async function signPlanetaryComputerUrl(url: string): Promise<string> {
     const res = await fetch(
       `https://planetarycomputer.microsoft.com/api/sas/v1/sign?href=${encodeURIComponent(url)}`
     );
-    if (!res.ok) return url;
+    if (!res.ok) {
+      // ⚠️ كان بيرجع الرابط الأصلي (الغير موقّع) بصمت هنا، فأي فشل حقيقي في
+      // التوقيع كان بيظهر بعدين كـ "Request failed" مبهمة من geotiff.js لما
+      // Azure يرفض الرابط الغير موقّع (403) — بدل ما نعرف السبب الحقيقي فورًا.
+      const bodyText = await res.text().catch(() => "");
+      console.error(`[sign] PC sign API returned ${res.status} for ${url}: ${bodyText.slice(0, 300)}`);
+      throw new Error(`PC SAS sign failed (${res.status}) for ${url}`);
+    }
     const data = await res.json();
     const href = typeof data?.href === "string" ? data.href : url;
 
@@ -158,7 +169,12 @@ async function signPlanetaryComputerUrl(url: string): Promise<string> {
 
     signCache.set(url, { href, expiresAt });
     return href;
-  } catch {
+  } catch (err) {
+    // ⚠️ فشل الشبكة (DNS/فايروول/timeout) بيوصل هنا. كان بيترجع url من غير
+    // توقيع بصمت — دلوقتي بنسجّل السبب الحقيقي في اللوج قبل ما نكمل، عشان
+    // تقدري تفرّقي بين "فشل توقيع" و"فشل شبكة" من اللوج مباشرة بدل ما تلفّي
+    // على fromUrl() تاني كل مرة.
+    console.error(`[sign] Failed to sign ${url}:`, err instanceof Error ? err.message : err);
     return url;
   }
 }
@@ -168,12 +184,20 @@ type AnalysisType =
   | "ndvi" | "ndwi" | "ndmi" | "ndbi" | "savi" | "evi" | "bsi"
   | "change_rgb" | "change_swir"
   | "change_ndvi" | "change_ndwi" | "change_ndbi" | "change_ndmi"
-  | "change_savi" | "change_evi" | "change_bsi";
+  | "change_savi" | "change_evi" | "change_bsi"
+  // Sentinel-1 (Radar / SAR)
+  | "vv" | "vh"  | "change_vv" | "change_vh"
+  | "vv_vh_ratio" | "sar_rgb"
+  // Copernicus DEM
+  | "elevation" | "slope" | "hillshade" | "aspect" 
+  // Sentinel-5P (Atmosphere) — ⚠️ مش متاحين فعليًا لسه، بيرجعوا 501، شوفي الكومنت
+  // فوق renderDemProduct/GET تحت
+  | "no2" | "so2" | "co" | "ozone";
 
 type CompositeConfig = { kind: "composite"; bandCount: 3; label: string };
 type IndexConfig = {
   kind: "index";
-  bandCount: 2 | 3 | 4;
+  bandCount: 1 | 2 | 3 | 4;
   label: string;
   /** Applied per-pixel with each band's value as one arg, in the order listed in the type's `urls` doc. */
   formula: (...values: number[]) => number;
@@ -181,7 +205,7 @@ type IndexConfig = {
 };
 type ChangeConfig = {
   kind: "change";
-  bandCount: 4 | 6 | 8; // 2x the underlying index's bandCount — [...beforeBands, ...afterBands]
+  bandCount: 2 | 4 | 6 | 8; // 2x the underlying index's bandCount — [...beforeBands, ...afterBands]
   label: string;
   /** Same per-index formula, evaluated once for the "before" bands and once for "after". */
   formula: (...values: number[]) => number;
@@ -190,8 +214,34 @@ type ChangeConfig = {
   /** label shown for a negative (decrease) change — e.g. "Vegetation Loss" */
   lossLabel: string;
 };
+// ── DEM (Copernicus) derivative products ────────────────────────────────────
+// مختلفين معماريًا عن composite/index/change: دول محتاجين قيم البكسلات
+// المجاورة (3x3 neighborhood) مش بس قيمة البكسل نفسه، عشان يحسبوا التدرّج
+// (gradient) — فمش ممكن نعبّر عنهم بـ per-pixel formula زي باقي الأنواع.
+// شوفي renderDemProduct تحت.
+type DemConfig = {
+  kind: "dem";
+  bandCount: 1;
+  label: string;
+  product: "elevation" | "slope" | "hillshade" | "aspect";
+  defaultColormap: string;
+};
+// ── Sentinel-5P (Atmosphere) — placeholder ──────────────────────────────────
+// ⚠️ مش شغالة فعليًا لسه: الـ collection الحقيقي (sentinel-5p-l2-netcdf) بيانه
+// NetCDF مش GeoTIFF، وgeotiff.js (اللي كل الملف ده مبني عليه عن طريق fromUrl)
+// مبيقراش NetCDF أصلًا. محتاجة إما endpoint تاني في الباك بايثون بتاعك يحول
+// الـ NetCDF لـ COG/PNG، أو نستخدم preview rendered من Planetary Computer API
+// مباشرة بدل ما نحسب البكسلات إحنا. الأنواع دي بترجع 501 دلوقتي بدل ما تفشل
+// بصمت أو تدّي نتيجة غلط.
+type UnsupportedConfig = { kind: "unsupported"; label: string; reason: string };
+// ── SAR RGB composite (Sentinel-1) ──────────────────────────────────────────
+// مختلف عن CompositeConfig العادي: بياخد بس 2 assets (vv, vh) مش 3 — القناة
+// التالتة (الـ ratio) بتتحسب داخليًا من نفس الاتنين دول، مش asset تالت منفصل.
+// كل قناة (VV dB / VH dB / ratio dB) بتاخد dB conversion الأول وبعدين
+// percentile stretch مستقلة، بنفس فكرة renderComposite العادي.
+type SarCompositeConfig = { kind: "sar_composite"; bandCount: 2; label: string };
 
-const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | ChangeConfig> = {
+const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | ChangeConfig | DemConfig | UnsupportedConfig | SarCompositeConfig> = {
   rgb:  { kind: "composite", bandCount: 3, label: "True color (e.g. B04,B03,B02 → R,G,B)" },
   swir: { kind: "composite", bandCount: 3, label: "SWIR false color (e.g. B12,B8A,B04 → R,G,B)" },
   ndvi: {
@@ -294,6 +344,84 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     formula: (swir1, red, nir, blue) => ((swir1 + red) - (nir + blue)) / ((swir1 + red) + (nir + blue) || 1e-6),
     gainLabel: "Bare Soil Gain", lossLabel: "Bare Soil Loss",
   },
+
+  // ── Sentinel-1 (Radar / SAR) ──────────────────────────────────────────────
+  // VV/VH بيجوا كـ band واحد جاهز (قيم dB) من الـ STAC item — formula هنا
+  // identity (v => v) لأن مفيش حساب index، بس بنستفيد من نفس pipeline الـ
+  // rescale/colormap/alpha بتاع renderIndex.
+  vv: {
+    kind: "index", bandCount: 1, label: "VV backscatter, dB (single band)",
+    // Planetary Computer GRD pixels are detected amplitudes, while this
+    // viewer's scale is in dB. Without this conversion almost every pixel is
+    // clipped to one colour and the overlay appears missing.
+    formula: (v) => v > 0 ? 20 * Math.log10(v) : -40,
+    defaultColormap: "spectral_r",
+  },
+  vh: {
+    kind: "index", bandCount: 1, label: "VH backscatter, dB (single band)",
+    formula: (v) => v > 0 ? 20 * Math.log10(v) : -40,
+    defaultColormap: "spectral",
+  },
+  // ⚠️ ده approximation: مفيش threshold classifier حقيقي هنا لسه، بنعتمد على
+  // rescale ضيق حوالين قيمة الـ dB اللي بيميز المية (VV منخفضة = سطح أملس)
+  // عشان يديلك إحساس بصري بمناطق الفيضان، مش تصنيف binary مضبوط. للتصنيف
+  // الحقيقي محتاجين threshold value يتحدد من بيانات حقيقية (histogram) مش رقم
+  // ثابت.
+  change_vv: {
+    kind: "change", bandCount: 2, label: "Surface Change — VV (beforeVV,afterVV)",
+    formula: (v) => v > 0 ? 20 * Math.log10(v) : -40,
+    gainLabel: "Backscatter Gain", lossLabel: "Backscatter Loss",
+  },
+  change_vh: {
+    kind: "change", bandCount: 2, label: "Surface Change — VH (beforeVH,afterVH)",
+    formula: (v) => v > 0 ? 20 * Math.log10(v) : -40,
+    gainLabel: "Backscatter Gain", lossLabel: "Backscatter Loss",
+  },
+  vv_vh_ratio: {
+    // Same dB conversion as vv/vh above, applied to both bands, then subtracted
+    // (dB subtraction = ratio of the underlying amplitudes: 20log10(VV/VH)).
+    // Separates smooth/specular surfaces (water, roads — low ratio spread)
+    // from rough/volume-scattering ones (vegetation, urban — higher spread).
+    kind: "index", bandCount: 2, label: "VV/VH Ratio, dB (VV,VH)",
+    formula: (vv, vh) => {
+      const vvDb = vv > 0 ? 20 * Math.log10(vv) : -40;
+      const vhDb = vh > 0 ? 20 * Math.log10(vh) : -40;
+      return vvDb - vhDb;
+    },
+    defaultColormap: "spectral",
+  },
+  sar_rgb: {
+    // R=VV dB, G=VH dB, B=VV/VH ratio dB — classic SAR false-color composite:
+    // water/roads read dark, vegetation greenish, urban/built-up brighter with
+    // a distinct hue from the ratio channel. See renderSarComposite.
+    kind: "sar_composite", bandCount: 2, label: "SAR RGB Composite (VV,VH → R=VV, G=VH, B=VV/VH ratio, dB)",
+  },
+
+  // ── Copernicus DEM ─────────────────────────────────────────────────────────
+  // كلهم مبنيين على نفس elevation band ("data") — الفرق في المعالجة مش
+  // الـ input، شوفي renderDemProduct.
+  elevation: {
+    kind: "dem", bandCount: 1, label: "Elevation (single DEM band)",
+    product: "elevation", defaultColormap: "spectral_r",
+  },
+  slope: {
+    kind: "dem", bandCount: 1, label: "Slope steepness in degrees (from DEM)",
+    product: "slope", defaultColormap: "inferno",
+  },
+  hillshade: {
+    kind: "dem", bandCount: 1, label: "Shaded relief (from DEM)",
+    product: "hillshade", defaultColormap: "",
+  },
+  aspect: {
+    kind: "dem", bandCount: 1, label: "Slope direction / compass aspect (from DEM)",
+    product: "aspect", defaultColormap: "rdylbu_r",
+  },
+
+  // ── Sentinel-5P (Atmosphere) — لسه مش متاحين ────────────────────────────────
+  no2: { kind: "unsupported", label: "NO2 tropospheric column", reason: "sentinel-5p-l2-netcdf assets are NetCDF, not GeoTIFF — needs a separate conversion/rendering step before this route can read them." },
+  so2: { kind: "unsupported", label: "SO2 column density", reason: "sentinel-5p-l2-netcdf assets are NetCDF, not GeoTIFF — needs a separate conversion/rendering step before this route can read them." },
+  co:  { kind: "unsupported", label: "CO column density", reason: "sentinel-5p-l2-netcdf assets are NetCDF, not GeoTIFF — needs a separate conversion/rendering step before this route can read them." },
+  ozone: { kind: "unsupported", label: "Total column ozone", reason: "sentinel-5p-l2-netcdf assets are NetCDF, not GeoTIFF — needs a separate conversion/rendering step before this route can read them." },
 };
 
 // ── reproject a native-CRS bbox into WGS84 (lon/lat), reused by full & windowed reads ──
@@ -351,6 +479,53 @@ function wgs84ToNative(
 // geotiff.js على COGs) وقراءة الـ pixel window المطابق للـ AOI بس — مش الصورة
 // كلها. ده أساسي: Sentinel-2 scene كامل ~11000×11000 بكسل/باند، وتحميل/فك تشفير
 // الملف كامل هو اللي كان بيخلي الـ request يعلّق أو يقعد "loading" لمدة طويلة جدًا.
+// ── Sentinel-1 GRD raw measurement URLs use Ground Control Points (GCPs)
+// instead of a plain affine geotransform. geotiff.js/fromUrl has no GCP
+// resolution, so opening these directly and windowing by bbox (the normal
+// readBand path below) reads whichever "unsolved" raw row/col block happens
+// to land at those pixel indices — the same wrong patch every time,
+// regardless of the actual AOI. That's why vv_vh_ratio/sar_rgb always
+// rendered one flat color no matter what was selected (water, land, mixed —
+// didn't matter, same broken window). Planetary Computer's own Data API
+// resolves the GCPs server-side and hands back a normal, correctly
+// georeferenced crop for exactly the requested bbox, so for this one URL
+// shape we swap the raw blob URL for that crop endpoint instead of reading
+// it directly. (VV/VH standalone previews never hit this bug because they
+// go through TiTiler's own tilejson/bbox endpoint, not this route.)
+const S1_GRD_MEASUREMENT_RE =
+  /\/s1-grd\/GRD\/\d+\/\d+\/\d+\/IW\/[A-Z]{2}\/([^/]+)\/measurement\/iw\d?-(vv|vh|hh|hv)\.tiff$/i;
+
+function sentinel1CropUrl(
+  rawUrl: string,
+  bboxWGS84: [number, number, number, number]
+): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(rawUrl).pathname;
+  } catch {
+    return null;
+  }
+  const match = pathname.match(S1_GRD_MEASUREMENT_RE);
+  if (!match) return null;
+  const [, folderName, pol] = match;
+  // ⚠️ اسم الفولدر في الـ blob (SAFE naming) بينتهي بـ "Product Unique ID"
+  // (4 حروف/أرقام hex، مثلاً "_5A28") — الجزء ده مش موجود في الـ item id
+  // المسجل فعليًا في Planetary Computer's STAC catalog، فلازم نشيله قبل ما
+  // نبعته لـ crop endpoint، وإلا PC هترجع 404 على item مش موجود بالاسم ده
+  // (وده كان بيطلع 502 "Failed to read bands" في الفرونت).
+  const itemId = folderName.replace(/_[0-9A-F]{4}$/i, "");
+  const [w, s, e, n] = bboxWGS84;
+  // ⚠️ PC's public Data API (مبني على titiler-pgstac) بيسمي عملية الـ
+  // cropping-by-bounding-box endpoint بتاعتها "bbox" مش "crop" — استخدام
+  // "item/crop/..." كان بيضرب route مش موجود أصلًا، فـ PC كانت بترجع
+  // FastAPI's generic 404 ({"detail":"Not Found"}) حتى لو الـ item نفسه
+  // موجود فعلًا في الكتالوج (اتأكد إنه موجود عن طريق /stac/v1/search).
+  return (
+    `https://planetarycomputer.microsoft.com/api/data/v1/item/bbox/${w},${s},${e},${n}.tif` +
+    `?collection=sentinel-1-grd&item=${encodeURIComponent(itemId)}&assets=${pol.toLowerCase()}`
+  );
+}
+
 async function readBand(
   url: string,
   token: string | null | undefined,
@@ -359,9 +534,16 @@ async function readBand(
   const t: Record<string, number> = { sign: 0, headerOpen: 0, overviewList: 0, pixelRead: 0, cacheHit: 0 };
   const tStart = performance.now();
 
+  // لو الرابط ده raw Sentinel-1 measurement (GCP-referenced) وعندنا bbox،
+  // بنستبدله بـ crop endpoint بتاع Planetary Computer Data API (شوفي الكومنت
+  // فوق sentinel1CropUrl) — الكاش لازم يبقى keyed على الرابط الفعلي المستخدم
+  // (اللي بيتغير مع كل bbox جديد) مش على الرابط الخام الثابت.
+  const cropUrl = queryBboxWGS84 ? sentinel1CropUrl(url, queryBboxWGS84) : null;
+  const effectiveUrl = cropUrl ?? url;
+
   // الكاش متعامل على الـ raw url (قبل التوقيع) عشان مفتاح ثابت حتى لو
   // التوكن اتجدد؛ التوقيع نفسه ليه cache منفصل جوه signPlanetaryComputerUrl.
-  const cacheKey = url;
+  const cacheKey = effectiveUrl;
   const cached = imageCache.get(cacheKey);
 
   let levels: OverviewLevel[];
@@ -376,7 +558,9 @@ async function readBand(
     t.cacheHit = 1;
   } else {
     let tp = performance.now();
-    const signedUrl = await signPlanetaryComputerUrl(url);
+    // الـ crop endpoint عام (public) — مش محتاج SAS signing زيه زي الـ raw
+    // blob urls، فبنتخطى signPlanetaryComputerUrl تمامًا في الحالة دي.
+    const signedUrl = cropUrl ?? (await signPlanetaryComputerUrl(url));
     t.sign = performance.now() - tp;
 
     const headers: Record<string, string> = {};
@@ -385,9 +569,35 @@ async function readBand(
     let tiff;
     tp = performance.now();
     try {
-      tiff = await fromUrl(signedUrl, { headers });
+      if (cropUrl) {
+        // Crop responses are already limited to the AOI (small) — fetch the
+        // whole thing with a plain fetch() instead of geotiff.js's own
+        // range-request fetcher, so a rejected/malformed request surfaces
+        // the real HTTP status + response body instead of geotiff.js's
+        // generic, undiagnosable "Error fetching data."
+        const cropRes = await fetch(cropUrl, { headers });
+        if (!cropRes.ok) {
+          const bodyText = await cropRes.text().catch(() => "");
+          throw new Error(
+            `Planetary Computer crop endpoint returned ${cropRes.status}: ${bodyText.slice(0, 500)}`
+          );
+        }
+        const buf = await cropRes.arrayBuffer();
+        tiff = await fromArrayBuffer(buf);
+      } else {
+        tiff = await fromUrl(signedUrl, { headers });
+      }
     } catch (err) {
-      throw new Error(`Upstream fetch failed: ${url} (${(err as Error).message})`);
+      // ⚠️ بنضيف هنا هل الرابط كان اتوقّع فعليًا (sig= موجودة) ولا لأ —
+      // ده بيفرّق فورًا بين "التوقيع فشل والسيرفر رفض 403" و"مشكلة شبكة/DNS
+      // حتى مع رابط موقّع صح" من غير ما تحتاجي تبصي على لوجات الـ sign تانية.
+      // ⚠️ بنطبع effectiveUrl (الرابط اللي اتحاول فعليًا — crop أو الخام)
+      // مش url الخام دايمًا، عشان لو المشكلة في الـ crop endpoint بالذات
+      // تبان في الرسالة نفسها بدل ما تفضل مخفية وراء الرابط الخام.
+      const wasSigned = isAlreadySigned(signedUrl);
+      throw new Error(
+        `Upstream fetch failed: ${effectiveUrl} (${(err as Error).message}) [signed=${wasSigned}]`
+      );
     }
 
     const baseImage = await tiff.getImage(0);
@@ -630,6 +840,81 @@ async function renderComposite(bands: BandRaster[], gamma: number, doSharpen: bo
   return { pngBuffer, stats };
 }
 
+// ── SAR RGB composite path (sar_rgb) ────────────────────────────────────────
+// زي computePercentiles العادية بالظبط، إلا إنها بتاخد كل القيم المنتهية
+// (finite) مش بس الموجبة — قيم الـ dB هنا سالبة غالبًا (VV ~ -15..0, VH ~
+// -25..-5, والفرق بينهم ممكن يبقى سالب أو موجب)، ففلتر "v > 0" العادي كان
+// هيشيل كل حاجة تقريبًا.
+function computePercentilesSigned(data: ArrayLike<number>, low: number, high: number, sampleStep = 4) {
+  const sample: number[] = [];
+  for (let i = 0; i < data.length; i += sampleStep) {
+    const v = data[i];
+    if (Number.isFinite(v)) sample.push(v);
+  }
+  if (sample.length === 0) return { p2: 0, p98: 1 };
+  sample.sort((a, b) => a - b);
+  const idx = (p: number) =>
+    sample[Math.min(sample.length - 1, Math.max(0, Math.floor((p / 100) * sample.length)))];
+  return { p2: idx(low), p98: idx(high) };
+}
+
+async function renderSarComposite(
+  bands: BandRaster[], // [vv, vh] raw amplitude
+  gamma: number,
+  doSharpen: boolean,
+  low: number,
+  high: number
+) {
+  const { width, height } = bands[0];
+  const n = width * height;
+  const vv = bands[0].data;
+  const vh = bands[1].data;
+
+  const vvDb = new Float32Array(n);
+  const vhDb = new Float32Array(n);
+  const ratioDb = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const v = vv[i];
+    const h = vh[i];
+    const vDb = v > 0 ? 20 * Math.log10(v) : -40;
+    const hDb = h > 0 ? 20 * Math.log10(h) : -40;
+    vvDb[i] = vDb;
+    vhDb[i] = hDb;
+    ratioDb[i] = vDb - hDb;
+  }
+
+  const channelValues = [vvDb, vhDb, ratioDb];
+  const channelStats = channelValues.map((d) => computePercentilesSigned(d, low, high));
+  const channels = channelValues.map((d, i) =>
+    stretchBandToUint8(d, channelStats[i].p2, channelStats[i].p98, gamma)
+  );
+
+  const rgbaData = Buffer.alloc(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    rgbaData[i * 4]     = channels[0][i]; // R = VV (dB)
+    rgbaData[i * 4 + 1] = channels[1][i]; // G = VH (dB)
+    rgbaData[i * 4 + 2] = channels[2][i]; // B = VV/VH ratio (dB)
+    rgbaData[i * 4 + 3] = 255;
+  }
+
+  const scale = Math.min(32, Math.max(1, TARGET_MAX_DIM / Math.max(width, height)));
+  const outW = Math.round(width * scale);
+  const outH = Math.round(height * scale);
+
+  let pipeline = sharp(rgbaData, { raw: { width, height, channels: 4 } })
+    .resize(outW, outH, { kernel: sharp.kernel.lanczos3 });
+  if (doSharpen) pipeline = pipeline.sharpen({ sigma: 0.6 });
+  const pngBuffer = await pipeline.png({ compressionLevel: 6 }).toBuffer();
+
+  const stats = {
+    vvDb: { min: channelStats[0].p2, max: channelStats[0].p98 },
+    vhDb: { min: channelStats[1].p2, max: channelStats[1].p98 },
+    ratioDb: { min: channelStats[2].p2, max: channelStats[2].p98 },
+  };
+
+  return { pngBuffer, stats };
+}
+
 // ── Index path (ndvi / ndwi / ndmi / ndbi / savi / evi / bsi) ───────────────
 
 // Same idea as computePercentiles() for composites, but over the *computed
@@ -824,6 +1109,222 @@ async function renderChange(
   return { pngBuffer, stats };
 }
 
+// ── DEM derivative path (elevation / slope / hillshade / aspect / contours) ──
+// المشترك بين الخمسة دول: بياخدوا بلد elevation واحد بس، وبيحسبوا لكل بكسل
+// بناءً على الـ 3×3 neighborhood بتاعته (مش قيمة البكسل لوحدها زي renderIndex).
+// عشان كده مش ممكن نستخدم evalFormula العادية هنا.
+
+// متر/بكسل من الـ bbox الحقيقي بتاع النافذة (WGS84) — نفس الحسبة المستخدمة في
+// /api/raster-proxy (route.ts التاني) لحساب مساحة البكسل بالمتر المربع.
+function pixelSizeMeters(bbox: [number, number, number, number] | null, width: number, height: number) {
+  if (!bbox) return { pw: 30, ph: 30 }; // fallback تقريبي (دقة Copernicus DEM الافتراضية)
+  const [w, s, e, n] = bbox;
+  const latMid = (s + n) / 2;
+  const metersPerDegLat = 111320;
+  const metersPerDegLon = 111320 * Math.cos((latMid * Math.PI) / 180);
+  const pw = (Math.abs(e - w) / width) * metersPerDegLon || 30;
+  const ph = (Math.abs(n - s) / height) * metersPerDegLat || 30;
+  return { pw, ph };
+}
+
+// بيرجع قيمة الـ elevation عند (x,y) مع clamp للحواف (edge-replicate) — أبسط
+// وأنسب حل لبكسلات الحدود بدل ما نتعامل معاها كـ nodata ونعمل فجوة سودة حوالين
+// إطار الصورة كله.
+function sampleClamped(data: ArrayLike<number>, width: number, height: number, x: number, y: number) {
+  const cx = Math.max(0, Math.min(width - 1, x));
+  const cy = Math.max(0, Math.min(height - 1, y));
+  return data[cy * width + cx];
+}
+
+async function renderDemProduct(
+  band: BandRaster,
+  product: DemConfig["product"],
+  colormap: string,
+  rMin: number,
+  rMax: number,
+  contourIntervalM: number,
+  // ⚠️ زي renderIndex بالظبط: "v === 0" هو الطريقة اللي بنكتشف بيها nodata،
+  // بس في مناطق قريبة من مستوى سطح البحر (زي بعض الدلتا/الواحات) قيمة
+  // elevation الحقيقية ممكن فعلاً تساوي أو تقرب من 0 — فبيتفلتر بالغلط كـ
+  // "لا بيانات" وتفضل شفافة بالكامل. forceOpaque (جاي من ?transparent=0)
+  // بيقفل الفلتر ده تمامًا لـ elevation/slope/aspect/hillshade — مش لـ
+  // contours لأن الشفافية هناك هي أصل الرسم (اللي مش خط بيبقى شفاف كده
+  // مقصود، مش nodata).
+  forceOpaque = false,
+) {
+  const { width, height, data, bbox } = band;
+  const n = width * height;
+  const { pw, ph } = pixelSizeMeters(bbox, width, height);
+
+  const rgbaData = Buffer.alloc(n * 4);
+  let validPixels = 0, sum = 0, minV = Infinity, maxV = -Infinity;
+
+  if (product === "elevation") {
+    const stops = RAMPS[colormap] ?? RAMPS["spectral_r"] ?? RAMPS["rdylgn"];
+    const lut = buildLUT(stops);
+    // A 0..1500 m global scale makes a small, almost-flat AOI look like one
+    // colour. Stretch to its own 2nd..98th percentile when it has relief.
+    const local = computePercentiles(data, 2, 98);
+    const displayMin = local.p98 - local.p2 > 0.5 ? local.p2 : rMin;
+    const displayMax = local.p98 - local.p2 > 0.5 ? local.p98 : rMax;
+    const range = displayMax - displayMin || 1;
+    for (let i = 0; i < n; i++) {
+      const v = data[i];
+      const isNoData = !forceOpaque && (v === 0 || !Number.isFinite(v));
+      let t = (v - displayMin) / range;
+      t = Math.max(0, Math.min(1, t));
+      const byte = Math.round(t * 255);
+      const alpha = isNoData ? 0 : 255;
+      if (!isNoData) { validPixels++; sum += v; minV = Math.min(minV, v); maxV = Math.max(maxV, v); }
+      rgbaData[i * 4] = lut[byte * 3];
+      rgbaData[i * 4 + 1] = lut[byte * 3 + 1];
+      rgbaData[i * 4 + 2] = lut[byte * 3 + 2];
+      rgbaData[i * 4 + 3] = alpha;
+    }
+  } else if (product === "slope" || product === "aspect" || product === "hillshade") {
+    // Horn's method (نفس اللي GDAL/QGIS بيستخدموه) — gradient من 3×3 neighborhood
+    const azimuthDeg = 315; // اتجاه الشمس الافتراضي (شمال غرب) — زي الـ hillshade القياسي
+    const altitudeDeg = 45; // ارتفاع الشمس الافتراضي
+    const zenithRad = ((90 - altitudeDeg) * Math.PI) / 180;
+    const azimuthRad = (azimuthDeg * Math.PI) / 180;
+
+    const stops = RAMPS[colormap] ?? RAMPS["inferno"];
+    const lut = buildLUT(stops);
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        const a = sampleClamped(data, width, height, x - 1, y - 1);
+        const b = sampleClamped(data, width, height, x,     y - 1);
+        const c = sampleClamped(data, width, height, x + 1, y - 1);
+        const d = sampleClamped(data, width, height, x - 1, y);
+        const f = sampleClamped(data, width, height, x + 1, y);
+        const g = sampleClamped(data, width, height, x - 1, y + 1);
+        const h = sampleClamped(data, width, height, x,     y + 1);
+        const k = sampleClamped(data, width, height, x + 1, y + 1);
+
+        const dzdx = ((c + 2 * f + k) - (a + 2 * d + g)) / (8 * pw);
+        const dzdy = ((g + 2 * h + k) - (a + 2 * b + c)) / (8 * ph);
+        const slopeRad = Math.atan(Math.sqrt(dzdx * dzdx + dzdy * dzdy));
+
+        const center = data[i];
+        const isNoData = !forceOpaque && (center === 0 || !Number.isFinite(center));
+
+        let byte = 0;
+        let value = 0;
+        const alpha = isNoData ? 0 : 255;
+
+        if (product === "slope") {
+          value = (slopeRad * 180) / Math.PI; // درجات
+          const t = Math.max(0, Math.min(1, value / (rMax || 45)));
+          byte = Math.round(t * 255);
+        } else if (product === "aspect") {
+          let aspectDeg = (Math.atan2(dzdy, -dzdx) * 180) / Math.PI;
+          // تحويل من math angle لـ compass bearing (0°=شمال، بالساعة)
+          if (aspectDeg < 0) aspectDeg = 90 - aspectDeg;
+          else if (aspectDeg > 90) aspectDeg = 360 - aspectDeg + 90;
+          else aspectDeg = 90 - aspectDeg;
+          value = aspectDeg;
+          byte = Math.round((aspectDeg / 360) * 255);
+        } else {
+          // hillshade: قيمة 0-255 مباشرة (مش محتاجة colormap فعليًا)
+          const shade =
+            Math.cos(zenithRad) * Math.cos(slopeRad) +
+            Math.sin(zenithRad) * Math.sin(slopeRad) * Math.cos(azimuthRad - Math.atan2(dzdy, -dzdx));
+          value = Math.max(0, Math.min(255, Math.round(shade * 255)));
+          byte = value;
+        }
+
+        if (!isNoData) { validPixels++; sum += value; minV = Math.min(minV, value); maxV = Math.max(maxV, value); }
+
+        if (product === "hillshade") {
+          // Grayscale مباشر — من غير LUT/colormap
+          rgbaData[i * 4] = byte;
+          rgbaData[i * 4 + 1] = byte;
+          rgbaData[i * 4 + 2] = byte;
+          rgbaData[i * 4 + 3] = alpha;
+        } else {
+          rgbaData[i * 4] = lut[byte * 3];
+          rgbaData[i * 4 + 1] = lut[byte * 3 + 1];
+          rgbaData[i * 4 + 2] = lut[byte * 3 + 2];
+          rgbaData[i * 4 + 3] = alpha;
+        }
+      }
+    }
+  } else {
+    // contours: بنقسم الارتفاع لشرائح كل contourIntervalM متر، وأي بكسل على
+    // حدود شريحتين (مختلف عن أي جار من الـ 4 اللي حواليه) بيتلوّن كخط، والباقي
+    // شفاف تمامًا — بديل بسيط عن الطريقة التقليدية (marching squares/vector
+    // lines) بس شغال جوه نفس الـ PNG pipeline من غير ما نضيف endpoint تاني.
+    const interval = contourIntervalM > 0 ? contourIntervalM : 50;
+    const classIndex = new Int32Array(n);
+    for (let i = 0; i < n; i++) classIndex[i] = Math.floor(data[i] / interval);
+
+    const stops = RAMPS[colormap] ?? RAMPS["spectral"];
+    const lut = buildLUT(stops);
+    const elevRange = rMax - rMin || 1;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        const center = data[i];
+        const isNoData = center === 0 || !Number.isFinite(center);
+        const cls = classIndex[i];
+        const neighborClasses = [
+          classIndex[Math.max(0, y - 1) * width + x],
+          classIndex[Math.min(height - 1, y + 1) * width + x],
+          classIndex[y * width + Math.max(0, x - 1)],
+          classIndex[y * width + Math.min(width - 1, x + 1)],
+        ];
+        const isLine = !isNoData && neighborClasses.some((c) => c !== cls);
+
+        if (isLine) {
+          const t = Math.max(0, Math.min(1, (center - rMin) / elevRange));
+          const byte = Math.round(t * 255);
+          rgbaData[i * 4] = lut[byte * 3];
+          rgbaData[i * 4 + 1] = lut[byte * 3 + 1];
+          rgbaData[i * 4 + 2] = lut[byte * 3 + 2];
+          rgbaData[i * 4 + 3] = 255;
+          validPixels++; sum += center; minV = Math.min(minV, center); maxV = Math.max(maxV, center);
+        } else {
+          rgbaData[i * 4 + 3] = 0;
+        }
+      }
+    }
+  }
+
+  // A locally flat but not perfectly level area can have hillshade values in
+  // a very narrow band (for example 170..178). Stretch that band to black →
+  // white so the terrain direction remains visible; a truly flat AOI stays a
+  // single tone, which is the correct analytical result.
+  if (product === "hillshade" && validPixels > 0 && maxV - minV > 2) {
+    const shadeRange = maxV - minV;
+    for (let i = 0; i < n; i++) {
+      if (rgbaData[i * 4 + 3] === 0) continue;
+      const shade = rgbaData[i * 4];
+      const stretched = Math.max(0, Math.min(255, Math.round(((shade - minV) / shadeRange) * 255)));
+      rgbaData[i * 4] = stretched;
+      rgbaData[i * 4 + 1] = stretched;
+      rgbaData[i * 4 + 2] = stretched;
+    }
+  }
+
+  const stats = validPixels > 0
+    ? { min: minV, max: maxV, mean: sum / validPixels, validPixels }
+    : { min: 0, max: 0, mean: 0, validPixels: 0 };
+
+  const scaleOut = Math.min(32, Math.max(1, TARGET_MAX_DIM / Math.max(width, height)));
+  const outW = Math.round(width * scaleOut);
+  const outH = Math.round(height * scaleOut);
+
+  const pngBuffer = await sharp(rgbaData, { raw: { width, height, channels: 4 } })
+    .resize(outW, outH, { kernel: sharp.kernel.lanczos3 })
+    .png({ compressionLevel: 6 })
+    .toBuffer();
+
+  return { pngBuffer, stats };
+}
+
 export async function GET(req: NextRequest) {
   const tRequestStart = performance.now();
   const { searchParams } = req.nextUrl;
@@ -837,6 +1338,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       { error: `Unknown type "${type}". Expected one of: ${Object.keys(ANALYSIS_CONFIG).join(", ")}` },
       { status: 400 }
+    );
+  }
+  if (config.kind === "unsupported") {
+    return NextResponse.json(
+      { error: `"${type}" (${config.label}) is not supported yet: ${config.reason}` },
+      { status: 501 }
     );
   }
   if (!urlsParam) {
@@ -924,6 +1431,28 @@ export async function GET(req: NextRequest) {
     const transparent = (searchParams.get("transparent") ?? "1") !== "0";
     const result = await renderIndex(
       bands, config.formula, colormap, rMin, rMax, zeroVal, alphaLow, alphaHigh, transparent
+    );
+    pngBuffer = result.pngBuffer;
+    stats = result.stats;
+  } else if (config.kind === "sar_composite") {
+    const gamma = parseFloat(searchParams.get("gamma") ?? "1.1");
+    const doSharpen = (searchParams.get("sharpen") ?? "1") !== "0";
+    const low = parseFloat(searchParams.get("low") ?? "2");
+    const high = parseFloat(searchParams.get("high") ?? "98");
+    const result = await renderSarComposite(bands, gamma, doSharpen, low, high);
+    pngBuffer = result.pngBuffer;
+    stats = result.stats;
+  } else if (config.kind === "dem") {
+    const colormap = searchParams.get("colormap") ?? config.defaultColormap;
+    const rMin = parseFloat(searchParams.get("min") ?? "0");
+    const rMax = parseFloat(searchParams.get("max") ?? "1500");
+    const contourInterval = parseFloat(searchParams.get("contourInterval") ?? "50");
+    // زي index بالظبط: ?transparent=0 بيقفل فلتر "v===0 يبقى nodata" (مفيدة
+    // لـ elevation/slope/aspect/hillshade فوق مناطق قريبة من الصفر فعليًا،
+    // مش contours — هناك الشفافية جزء من الرسم نفسه).
+    const demTransparent = (searchParams.get("transparent") ?? "1") !== "0";
+    const result = await renderDemProduct(
+      bands[0], config.product, colormap, rMin, rMax, contourInterval, !demTransparent
     );
     pngBuffer = result.pngBuffer;
     stats = result.stats;

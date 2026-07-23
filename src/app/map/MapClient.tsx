@@ -23,6 +23,8 @@ import { updateProject } from "./projects/projectStorage";
 import type { ProjectSnapshot, UserProject } from "./projects/projectTypes";
 import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from "../_components/AnalysisSidebar/ChangeDetectionPanel";
 import type { SuperResolutionPreviewConfig } from "../_components/AnalysisSidebar/SuperResolutionPanel";
+import type { SatellitePreviewConfig } from "../_components/AnalysisSidebar/SatelliteDataPanel";
+import { SOURCE_META } from "../_components/AnalysisSidebar/SatellitePipelines";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";
@@ -40,28 +42,7 @@ type RasterPreviewConfig = {
   opacity: number;
   colorRamp: string;
   dataUrl: string;
-};
-
-type SatellitePreviewConfig = {
-  source: "sentinel-2" | "landsat";
-  satKey: SatKey;
-  band: string;
-  dateFrom: string;
-  dateTo: string;
-  cloudCover: number;
-  opacity: number;
-  scenePreview?: {
-    name: string;
-    band: string;
-    expression: string | null;
-    assets: string[];
-    assetUrls: Record<string, string>;
-    bounds: [[number, number], [number, number]];
-    coords: { lat: number; lng: number };
-    previewUrl?: string;
-    overviewUrl?: string;
-    geometry?: GeoJSON.Geometry | null;
-  };
+  tileUrl?: string;
 };
 
 function persistUploadedGeoJSON(map: Record<string, any>, onSkipped?: () => void) {
@@ -774,6 +755,7 @@ useEffect(() => {
           opacity: Math.min(0.72, Math.max(0.35, config.opacity)),
           colorRamp: "Scene preview",
           dataUrl: scene.previewUrl,
+          tileUrl: scene.tileUrl,
         };
         rasterOverlayRef.current?.(overlayConfig);
         // حفظ الـ satellite preview في الـ project — بنضيف للقائمة مش بنستبدل
@@ -792,7 +774,7 @@ useEffect(() => {
     changeSatRef.current?.(config.satKey);
     changeOpacityRef.current?.(config.opacity);
 
-    const layerName = config.source === "sentinel-2" ? "Sentinel-2 Preview" : "Landsat Preview";
+    const layerName = `${SOURCE_META[config.source].title} Preview`;
     const sourceLabel = `${layerName} | ${config.band} | ${config.dateFrom} to ${config.dateTo} | cloud <= ${config.cloudCover}%`;
 
     setLayers((prev) => {

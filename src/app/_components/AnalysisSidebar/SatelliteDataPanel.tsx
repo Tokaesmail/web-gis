@@ -1,13 +1,22 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { IdxKey, SatKey } from "../../map/mapTypes_proxy";
-import { SATELLITE_LEGENDS, SATELLITE_PIPELINES, type SatelliteAnalysisType, type SatelliteViewerMode } from "./SatellitePipelines";
+import {
+  SATELLITE_LEGENDS,
+  SATELLITE_PIPELINES,
+  SOURCE_INDICES,
+  SOURCE_COLLECTIONS,
+  SOURCE_META,
+  type SatelliteAnalysisType,
+  type SatelliteViewerMode,
+  type SatSource,
+} from "./SatellitePipelines";
 import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
 import { clipImageToPolygon, getPolygonRing } from "./geoClipUtils";
 import { setSelectedScene, openRasterCalculatorPanel } from "./sharedSceneSelection";
 import { useSharedDateRange } from "./sharedDateRange";
 
 export type SatellitePreviewConfig = {
-  source: "sentinel-2" | "landsat";
+  source: SatSource;
   satKey: SatKey;
   band: IdxKey;
   dateFrom: string;
@@ -24,6 +33,8 @@ export type SatellitePreviewConfig = {
     coords: { lat: number; lng: number };
     previewUrl?: string;
     overviewUrl?: string;
+    /** Ready-to-render STAC/TiTiler tiles, preferred for non-optical sources. */
+    tileUrl?: string;
     geometry?: GeoJSON.Geometry | null;
   };
 };
@@ -64,6 +75,7 @@ type SatelliteScene = {
   previewUrl?: string;
   itemUrl?: string;
   rawAssetUrl?: string;
+  tilejsonUrl?: string;
   assets?: Record<string, string>;
 };
 
@@ -583,7 +595,7 @@ export function SatelliteDataPanel({
   selectedFeature?: GeoJSON.Feature | null;
   onPreview?: (config: SatellitePreviewConfig) => void;
 }) {
-  const [source, setSource] = useState<"sentinel-2" | "landsat">("sentinel-2");
+  const [source, setSource] = useState<SatSource>("sentinel-2");
   // التاريخ بقى مشترك بين البانلز (sharedDateRange.ts) بدل local state —
   // كده لو غيرتي التاريخ هنا وبعدين فتحتي Raster Calculator (أو الباند اتقفل
   // وترندر تاني)، التاريخ بيفضل زي ما اخترتيه ومش بيرجع للديفولت.
@@ -633,11 +645,11 @@ const displayVertices = useMemo(() => {
     source === "sentinel-2"
       ? "Sentinel-2"
       : "Default";  
-    const sourceMeta = {
-    "sentinel-2": { title: "Sentinel-2", subtitle: "Primary source", resolution: "10m", cadence: "5 days", color: "#22d3ee" },
-    landsat: { title: "Landsat", subtitle: "Secondary source", resolution: "30m", cadence: "16 days", color: "#f59e0b" },
-  }[source];
+  const sourceMeta = SOURCE_META[source];
 
+  // ⚠️ اللستة دي بقت فيها كل الـ indices بتوعة كل المصادر مع بعض. اللي بيتعرض
+  // فعليًا في الـ dropdown هو visibleBandOptions تحت (مفلترة بـ SOURCE_INDICES
+  // حسب الـ source المختار دلوقتي) — عشان RGB مثلاً متظهرش مع Sentinel-1.
   const bandOptions: { key: IdxKey; label: string; desc: string; color: string }[] = [
     { key: "RGB", label: "RGB", desc: "Default true color", color: "#e2e8f0" },
     { key: "NDVI", label: "NDVI", desc: "Vegetation vigor", color: "#22c55e" },
@@ -647,7 +659,52 @@ const displayVertices = useMemo(() => {
     { key: "SAVI", label: "SAVI", desc: "Soil-adjusted vegetation", color: "#14b8a6" },
     { key: "EVI", label: "EVI", desc: "Enhanced vegetation", color: "#ec4899" },
     { key: "BSI", label: "BSI", desc: "Bare soil index", color: "#9333ea" },
+    // Sentinel-1 (Radar)
+    { key: "VV", label: "VV", desc: "Co-polarized backscatter", color: "#818cf8" },
+    { key: "VH", label: "VH", desc: "Cross-polarized backscatter", color: "#c084fc" },
+    { key: "RATIO", label: "VV/VH Ratio", desc: "Surface roughness contrast", color: "#f472b6" },
+    { key: "SAR_RGB", label: "SAR RGB Composite", desc: "R=VV, G=VH, B=VV/VH ratio", color: "#fb7185" },
+    // Copernicus DEM
+    { key: "ELEVATION", label: "Elevation", desc: "Terrain height", color: "#94a3b8" },
+    { key: "SLOPE", label: "Slope", desc: "Terrain steepness", color: "#f97316" },
+    { key: "HILLSHADE", label: "Hillshade", desc: "Shaded relief", color: "#cbd5e1" },
+    { key: "ASPECT", label: "Aspect", desc: "Slope direction", color: "#fb923c" },
+    // Sentinel-5P (Atmosphere)
+    { key: "NO2", label: "NO₂", desc: "Nitrogen dioxide", color: "#facc15" },
+    { key: "SO2", label: "SO₂", desc: "Sulfur dioxide", color: "#60a5fa" },
+    { key: "CO", label: "CO", desc: "Carbon monoxide", color: "#4ade80" },
+    { key: "OZONE", label: "Ozone", desc: "Total column ozone", color: "#f472b6" },
   ];
+
+  // الـ indices اللي المفروض تظهر فعليًا للمصدر الحالي بس (مش كل الليستة فوق)
+  const visibleBandOptions = useMemo(
+    () => bandOptions.filter((item) => SOURCE_INDICES[source].includes(item.key as SatelliteAnalysisType)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [source]
+  );
+
+  // لو غيّرتي المصدر والـ band المختار حاليًا مش موجود في مصادر المصدر الجديد
+  // (مثلاً كنتي على NDVI وبدّلتي لـ Sentinel-1)، بنرجّع أول index متاح للمصدر
+  // الجديد تلقائيًا بدل ما يفضل عالق على قيمة مش منطقية له.
+  useEffect(() => {
+    const allowed = SOURCE_INDICES[source];
+    if (!allowed.includes(band as SatelliteAnalysisType)) {
+      setBand(allowed[0] as IdxKey);
+      setFalseColorEnabled(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source]);
+
+  // Results belong to one collection only. Clearing them prevents an old
+  // Sentinel-2 scene from being sent to the map after the user selects
+  // Sentinel-1 or Copernicus DEM.
+  useEffect(() => {
+    setApiScenes([]);
+    setScenePreviewUrls({});
+    setActivePreviewSceneId(null);
+    setPreviewReady(false);
+    setSceneError(null);
+  }, [source]);
 
   useEffect(() => {
     if (!bandMenuOpen) return;
@@ -684,17 +741,85 @@ const displayVertices = useMemo(() => {
     }));
 }, [cloudCover, west, south, east, north]);
 
+const isOpticalSource = source === "sentinel-2" || source === "landsat";
 const scenes = useMemo(
-  () => (apiScenes.length ? apiScenes : fallbackScenes),
-  [apiScenes, fallbackScenes]
+  () => (apiScenes.length ? apiScenes : (isOpticalSource ? fallbackScenes : [])),
+  [apiScenes, fallbackScenes, isOpticalSource]
 );
 
   type AnalysisType = SatelliteAnalysisType;
   const activeAnalysis = (falseColorEnabled ? "SWIR" : band) as AnalysisType;
   const activeBandOption =bandOptions.find((item) => item.key === activeAnalysis) ?? bandOptions[0];
 
-  const getVisualization = (analysis: AnalysisType, collection = source === "landsat" ? "landsat-c2-l2" : "sentinel-2-l2a") => {
+  const getVisualization = (analysis: AnalysisType, collection = SOURCE_COLLECTIONS[source]) => {
     const isLandsat = collection.includes("landsat");
+    const isSentinel1 = collection.includes("sentinel-1");
+    const isDem = collection.includes("cop-dem") || collection.includes("dem");
+    const isSentinel5p = collection.includes("sentinel-5p");
+
+    // ⚠️ كل return هنا بقى بيرجع "type" (اسم الـ analysis param اللي الباك
+    // متوقعه) جنب الـ assets — الاتنين دايمًا بيتحددوا من نفس الفرع (حسب
+    // الـ collection الحقيقي بتاع الـ scene)، عشان "type" و"assets" متبقاش
+    // ممكن تتفرق زي ما كان بيحصل قبل كده (مثال حقيقي حصل: type="elevation"
+    // اتبعت مع asset فعليًا Sentinel-1 vv.tiff، لإن "type" كان بياخد قيمته من
+    // RASTER_PROXY_TYPE[analysis] الخام (state متأخر/مش متزامن مع source)
+    // بينما الـ assets كانت بتتحدد صح من collection. دلوقتي مفيش مصدرين
+    // منفصلين للحقيقة.
+
+    // ── Sentinel-1 (Radar / SAR) ──────────────────────────────────────────
+    // VV/VH بيجوا كـ band واحد جاهز من الـ STAC item (مفيش expression)، بنبعت
+    // ⚠️ لسه محتاجين منطق فعلي في الباك (threshold/multi-date comparison) —
+    // دلوقتي بنبعت VV/VH كأساس ليهم لحد ما تتحدد اللوجيك بالظبط مع الـ route.
+    if (isSentinel1) {
+      switch (analysis) {
+        case "VH":
+          return { assets: ["vh"], expression: null, type: "vh" };
+        case "RATIO":
+          // dB difference 20log10(VV) - 20log10(VH) — computed in route.ts,
+          // needs both bands, order matters ([vv, vh]).
+          return { assets: ["vv", "vh"], expression: null, type: "vv_vh_ratio" };
+        case "SAR_RGB":
+          // R=VV, G=VH, B=VV/VH ratio (all dB) — also needs both bands.
+          return { assets: ["vv", "vh"], expression: null, type: "sar_rgb" };
+        case "CHANGE":
+          // A real change product needs two selected dates. Preview the
+          // current VV scene until the UI supplies that second scene.
+          return { assets: ["vv"], expression: null, type: "vv" };
+        case "VV":
+        default:
+          return { assets: ["vv"], expression: null, type: "vv" };
+      }
+    }
+
+    // ── Copernicus DEM ─────────────────────────────────────────────────────
+    // كل الـ products دي مبنية على نفس الـ elevation band ("data") — الفرق
+    // بينهم مش في الـ assets المطلوبة، لكن في نوع المعالجة اللي الباك هيعملها.
+    if (isDem) {
+      const demTypes: Partial<Record<AnalysisType, string>> = {
+        ELEVATION: "elevation", SLOPE: "slope", HILLSHADE: "hillshade",
+        ASPECT: "aspect", 
+      };
+      return { assets: ["data"], expression: null, type: demTypes[analysis] ?? "elevation" };
+    }
+
+    // ── Sentinel-5P (Atmosphere) ───────────────────────────────────────────
+    // ⚠️ أسماء الـ assets دي placeholder — الـ collection الحقيقي على
+    // Planetary Computer (sentinel-5p-l2-netcdf) بيانه NetCDF مش GeoTIFF زي
+    // الباقي، فمحتاج parsing مختلف تمامًا في الباك. هنعدلها بمجرد ما تبعتيلي
+    // شكل الـ route بتاعها.
+    if (isSentinel5p) {
+      switch (analysis) {
+        case "SO2":
+          return { assets: ["so2"], expression: null, type: "so2" };
+        case "CO":
+          return { assets: ["co"], expression: null, type: "co" };
+        case "OZONE":
+          return { assets: ["o3"], expression: null, type: "ozone" };
+        case "NO2":
+        default:
+          return { assets: ["no2"], expression: null, type: "no2" };
+      }
+    }
 
     if (isLandsat) {
       switch (analysis) {
@@ -702,58 +827,63 @@ const scenes = useMemo(
           return {
             assets: ["red", "green", "blue"],
             expression: null,
+            type: "rgb",
           };
 
         case "NDVI":
           return {
             assets: ["nir08", "red"],
             expression: "(nir08-red)/(nir08+red)",
+            type: "ndvi",
           };
 
         case "NDWI":
           return {
             assets: ["green", "nir08"],
             expression: "(green-nir08)/(green+nir08)",
+            type: "ndwi",
           };
 
         case "NDMI":
           return {
             assets: ["nir08", "swir16"],
             expression: "(nir08-swir16)/(nir08+swir16)",
-          };
-          return {
-            assets: ["swir16", "nir08", "red"],
-            expression: null,
+            type: "ndmi",
           };
 
         case "NDBI":
           return {
             assets: ["swir16", "nir08"],
             expression: "(swir16-nir08)/(swir16+nir08)",
+            type: "ndbi",
           };
 
         case "SAVI":
           return {
             assets: ["nir08", "red"],
             expression: "((nir08-red)/(nir08+red+0.5))*1.5",
+            type: "savi",
           };
 
         case "EVI":
           return {
             assets: ["nir08", "red", "blue"],
             expression: "2.5*(nir08-red)/(nir08+6*red-7.5*blue+1)",
+            type: "evi",
           };
 
         case "BSI":
           return {
             assets: ["swir16", "red", "nir08", "blue"],
             expression: "((swir16+red)-(nir08+blue))/((swir16+red)+(nir08+blue))",
+            type: "bsi",
           };
 
         default:
           return {
             assets: ["red", "green", "blue"],
             expression: null,
+            type: "rgb",
           };
       }
     }
@@ -763,58 +893,63 @@ const scenes = useMemo(
         return {
           assets: ["B04", "B03", "B02"],
           expression: null,
+          type: "rgb",
         };
 
       case "NDVI":
         return {
           assets: ["B08", "B04"],
           expression: "(B08-B04)/(B08+B04)",
+          type: "ndvi",
         };
 
       case "NDWI":
         return {
           assets: ["B03", "B08"],
           expression: "(B03-B08)/(B03+B08)",
+          type: "ndwi",
         };
 
       case "NDMI":
         return {
           assets: ["B08", "B11"],
           expression: "(B08-B11)/(B08+B11)",
-        };
-        return {
-          assets: ["B11", "B08", "B04"],
-          expression: null,
+          type: "ndmi",
         };
 
       case "NDBI":
         return {
           assets: ["B11", "B08"],
           expression: "(B11-B08)/(B11+B08)",
+          type: "ndbi",
         };
 
       case "SAVI":
         return {
           assets: ["B08", "B04"],
           expression: "((B08-B04)/(B08+B04+0.5))*1.5",
+          type: "savi",
         };
 
       case "EVI":
         return {
           assets: ["B08", "B04", "B02"],
           expression: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)",
+          type: "evi",
         };
 
       case "BSI":
         return {
           assets: ["B11", "B04", "B08", "B02"],
           expression: "((B11+B04)-(B08+B02))/((B11+B04)+(B08+B02))",
+          type: "bsi",
         };
 
       default:
         return {
           assets: ["B04", "B03", "B02"],
           expression: null,
+          type: "rgb",
         };
     }
   };
@@ -823,7 +958,11 @@ const scenes = useMemo(
 const boundsString = bounds ? JSON.stringify(bounds) : "";
 
 useEffect(() => {
-  if (!clipToShape || !polygonRing) {
+  // نفس التحفظ اللي في handlePreviewScene: المصادر غير البصرية (Sentinel-1،
+  // Cop-DEM، Sentinel-5P) لسه الباك ماعندوش قصّ حقيقي بالـ bbox ليها، فمحاولة
+  // canvas-clip synchronous على صورها ممكن تجمّد التاب. بنمنع الـ loop ده
+  // يشتغل خالص للمصادر دي.
+  if (!clipToShape || !polygonRing || !isOpticalSource) {
     setClippedThumbs({});
     // مفيش داعي نمسح الكاش هنا، ممكن نرجع نستخدمه لو المستخدم فعّل clipToShape تاني
     return;
@@ -835,6 +974,11 @@ useEffect(() => {
     const activeIds = new Set<string>();
 
     for (const scene of scenes) {
+      // منحملش/منقصّش أي صورة إلا لو المستخدم دوس على السينة دي بنفسه (Preview on map)
+      // ده اللي بيمنع تحميل كل الصور مرة واحدة على البراوزر لما تظهر الليستة
+      const isRevealed = Boolean(scenePreviewUrls[scene.id]) || scene.id === activePreviewSceneId;
+      if (!isRevealed) continue;
+
       const src = scene.thumbnail ?? scene.previewUrl;
       const currentBounds = bounds;
       if (!src || !currentBounds) continue;
@@ -868,13 +1012,13 @@ useEffect(() => {
   })();
   return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [scenes, clipToShape, polygonRing, boundsString]); // الكود هنا معتمد على boundsString النصي وليس الـ Array! // أضفنا bounds للمصفوفة لضمان التحديث عند تغيير المكان
+}, [scenes, clipToShape, polygonRing, boundsString, scenePreviewUrls, activePreviewSceneId, isOpticalSource]); // الكود هنا معتمد على boundsString النصي وليس الـ Array! // أضفنا bounds للمصفوفة لضمان التحديث عند تغيير المكان
 
 // useEffect(() => {
 //   console.log("effect fired");
 // }, [scenes]);
 
-  const activeVisualization = getVisualization(activeAnalysis, source === "landsat" ? "landsat-c2-l2" : "sentinel-2-l2a");
+  const activeVisualization = getVisualization(activeAnalysis, SOURCE_COLLECTIONS[source]);
   const legendConfig = SATELLITE_LEGENDS[activeAnalysis];
 
   const normalizeBandAssetKey = (key: string) => {
@@ -943,30 +1087,57 @@ useEffect(() => {
       case "BSI":
         // -0.3 (نبات كثيف) → 0.4 (تربة عارية)
         return { rescale: "-0.3,0.4", colormap: "rdbu_r", alphaLow: "0.02", alphaHigh: "0.18" };
+
+      // ⚠️ القيم تحت (rescale) placeholder مبني على مدى نظري للبيانات —
+      // لازم تتظبط لما نشوف قيم حقيقية راجعة من الباك بعد ما تبعتي الـ route.
+      case "VV":
+        // Planetary Computer GRD is detected amplitude. The server displays
+        // its log value (roughly 0..60), not calibrated -25..0 sigma0 dB.
+        return { rescale: "0,60", colormap: "spectral_r", alphaLow: "0", alphaHigh: "0" };
+      case "VH":
+        return { rescale: "0,60", colormap: "spectral", alphaLow: "0", alphaHigh: "0" };
+      case "RATIO":
+        // dB difference between VV and VH — placeholder range, تحتاج تتظبط
+        // لما تشوفي قيم appliedRange الحقيقية الراجعة من route.ts (X-Raster-Stats).
+        return { rescale: "-20,20", colormap: "spectral", alphaLow: "0", alphaHigh: "0" };
+      case "CHANGE":
+        return { rescale: "-1,1", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.1" };
+
+      case "ELEVATION":
+        // متر فوق سطح البحر — المدى ده تقريبي لمصر، محتاج يتظبط حسب المنطقة
+        return { rescale: "0,1500", colormap: "spectral_r", alphaLow: "0", alphaHigh: "0" };
+      case "SLOPE":
+        // درجات (0-45+)
+        return { rescale: "0,45", colormap: "inferno", alphaLow: "0", alphaHigh: "0" };
+      case "HILLSHADE":
+        // Grayscale فعليًا — استخدمنا rdylbu_r مؤقتًا لحد ما نضيف "greyscale"
+        // ramp حقيقي في الباك (route.ts)
+        return { rescale: "0,255", colormap: "rdylbu_r", alphaLow: "0", alphaHigh: "0" };
+      case "ASPECT":
+        // درجات بوصلة 0-360 (دائري، مش linear فعليًا — تقريب هنا)
+        return { rescale: "0,360", colormap: "rdylbu_r", alphaLow: "0", alphaHigh: "0" };
+        // ⚠️ دي أصلًا خطوط (vector) مش raster ملوّن — لسه محتاجة endpoint مختلف
+        // في الباك يرجّع GeoJSON lines بدل PNG. الـ rescale هنا placeholder بس.
+
+      case "NO2":
+        return { rescale: "0,0.0002", colormap: "inferno", alphaLow: "0", alphaHigh: "0" };
+      case "SO2":
+        return { rescale: "0,0.0005", colormap: "rdylbu_r", alphaLow: "0", alphaHigh: "0" };
+      case "CO":
+        return { rescale: "0,0.05", colormap: "greens", alphaLow: "0", alphaHigh: "0" };
+      case "OZONE":
+        return { rescale: "0,0.3", colormap: "rdbu", alphaLow: "0", alphaHigh: "0" };
+
       default:
         return { rescale: "0,3000", colormap: "", alphaLow: "", alphaHigh: "" };
     }
   };
 
-  // Analysis type (Panel) → "type" param اللي الـ /api/raster-proxy/analyze route عايزه
-  // ⚠️ لسه محتاجين نضيف الدعم الفعلي لـ ndbi/savi/evi/bsi جوه route.ts بتاع
-  // /api/raster-proxy/analyze (اللي بيحسب الـ expression فعليًا من الـ bands) —
-  // الفرونت هنا جاهز يبعتهم، بس النسخة اللي عندي من الـ route كانت لملف
-  // /api/raster-proxy (color-ramp proxy) مش /api/raster-proxy/analyze، فمحتاجين
-  // الملف ده تاني عشان نضيف فيه الحسابات دي.
-  const RASTER_PROXY_TYPE: Record<
-    AnalysisType,
-    "rgb"  | "ndvi" | "ndwi" | "ndmi" | "ndbi" | "savi" | "evi" | "bsi"
-  > = {
-    RGB: "rgb",
-    NDVI: "ndvi",
-    NDWI: "ndwi",
-    NDMI: "ndmi",
-    NDBI: "ndbi",
-    SAVI: "savi",
-    EVI: "evi",
-    BSI: "bsi",
-  };
+  // ⚠️ ملحوظة: كان هنا قبل كده RASTER_PROXY_TYPE map منفصل بيحدد الـ "type"
+  // param من الـ analysis الخام. اتشالت لإنها كانت هي بالظبط سبب باج حقيقي
+  // (type=elevation اتبعت مع asset Sentinel-1 vv.tiff) — دلوقتي "type" بيتحدد
+  // جوه getVisualization() نفسها (نفس الفرع اللي بيحدد الـ assets)، فمستحيل
+  // يتفرقوا عن بعض تاني. شوفي getVisualization فوق.
 
   // بديل makePlanetaryComputerPreviewUrl — بيبني رابط الـ backend الجديد
   // /api/raster-proxy/analyze بدل ما يودّي على titiler بتاع Planetary Computer.
@@ -997,26 +1168,53 @@ useEffect(() => {
 
     // بنبعت الروابط الخام (Unsigned) زي ما هي — الـ route هو اللي هيوقّعها
     // ويعمل cache للتوقيع، فمفيش أي request منفصل هنا قبل الوصول للباك.
-    const type = RASTER_PROXY_TYPE[analysis];
+    // ⚠️ "type" بقى جاي من visualization.type (المحدد حسب scene.collection
+    // الحقيقي) مش من RASTER_PROXY_TYPE[analysis] الخام — ده كان بيسبب حالة
+    // حقيقية شوفناها في الـ console: type=elevation اتبعت مع asset فعليًا
+    // Sentinel-1 vv.tiff، لإن "type" و"assets" كانوا بيتحسبوا من مصدرين
+    // مختلفين (analysis الخام VS scene.collection) وممكن يتفرقوا لو الـ
+    // band state لسه مش متزامن مع الـ source. دلوقتي الاتنين من نفس المصدر.
+    const type = visualization.type;
     const params = new URLSearchParams();
     params.set("type", type);
     params.set("urls", rawUrls.join(","));
     // bbox إلزامي في الـ route — من غيره هيحاول يقرا الـ scene كاملة ويعلّق
     params.set("bbox", `${west},${south},${east},${north}`);
 
-    if (visualization.expression) {
-      // index (ndvi/ndwi/ndmi/ndbi/savi/evi/bsi): نبعت الـ rescale + منطقة
-      // الشفافية المخصصة للـ analysis. الـ colormap بنسيبه على default الـ
-      // route نفسه (كل analysis له لون مختلف دلوقتي في ANALYSIS_CONFIG).
+    const isComposite = type === "rgb" || type === "swir" || type === "sar_rgb";
+    const isDem = (["elevation", "slope", "hillshade", "aspect"] as string[]).includes(type);
+
+    if (isComposite) {
+      // composite (rgb/swir)
+      params.set("sharpen", "1");
+    } else if (isDem) {
+      // min/max/colormap/contourInterval، مش alphaLow/alphaHigh
       const style = getIndexPreviewStyle(analysis);
       const [minVal, maxVal] = style.rescale.split(",");
       params.set("min", minVal);
       params.set("max", maxVal);
+      if (style.colormap) params.set("colormap", style.colormap);
+      // ASPECT بتستخدم نفس فلتر "v===0 يبقى nodata" بتاع elevation — لو
+      // الـ AOI قريبة من مستوى سطح البحر (زي بعض مناطق الدلتا/الواحات) قيم
+      // متعملهاش كده — الشفافية هناك هي رسم الخط نفسه مش nodata.
+      if (analysis === "ASPECT") params.set("transparent", "0");
+    } else {
+      // index (ndvi/ndwi/ndmi/ndbi/savi/evi/bsi/vv/vh/flood): نبعت الـ rescale +
+      // منطقة الشفافية المخصصة للـ analysis.
+      const style = getIndexPreviewStyle(analysis);
+      const [minVal, maxVal] = style.rescale.split(",");
+      params.set("min", minVal);
+      params.set("max", maxVal);
+      if (style.colormap) params.set("colormap", style.colormap);
       if (style.alphaLow) params.set("alphaLow", style.alphaLow);
       if (style.alphaHigh) params.set("alphaHigh", style.alphaHigh);
-    } else {
-      // composite (rgb/swir)
-      params.set("sharpen", "1");
+      // VV/VH/FLOOD مش index بمعنى NDVI (مفيش "zero crossing" له معنى حقيقي) —
+      // شفافية-حوالين-الصفر بتاعة renderIndex كانت بتخفي الصورة كلها لو الـ
+      // backscatter منخفض جدًا (زي فوق رمل أملس) لأن كل البكسلات بتقع في نفس
+      // الـ byte اللي بيتحسب zero-crossing. نقفلها تمامًا للتلاتة دول.
+      if (type === "vv" || type === "vh" || type === "vv_vh_ratio") {
+        params.set("transparent", "0");
+      }
     }
 
     return `/api/raster-proxy/analyze?${params.toString()}`;
@@ -1026,6 +1224,35 @@ useEffect(() => {
     Boolean(scene.previewUrl ?? scene.thumbnail ?? scene.itemUrl) ||
     sceneHasVisualizationAssets(scene, analysis);
 
+  const makeStacBboxPreviewUrl = (
+    scene: SatelliteScene,
+    targetBounds: [[number, number], [number, number]],
+    // ⚠️ الـ tilejson الافتراضي بييجي مظبوط لعرض VV (زي ما Planetary Computer
+    // مسجّله كـ default render لـ collection ده). عشان نعرض VH بنفس المسار
+    // (TiTiler الرسمي، مش route.ts بتاعنا)، لازم نستبدل query param اسمه
+    // "assets" من "vv" لـ "vh" — الباقي (rescale/colormap) بيفضل زي ما هو
+    // جاي من TiTiler، ممكن يحتاج تظبيط يدوي لو مش مناسب بصريًا لـ VH.
+    assetOverride?: string
+  ): string | undefined => {
+    if (!scene.tilejsonUrl) return undefined;
+    try {
+      const url = new URL(scene.tilejsonUrl);
+      const [[bboxSouth, bboxWest], [bboxNorth, bboxEast]] = targetBounds;
+      // TiTiler's item/bbox endpoint renders only this WGS84 window while
+      // keeping the collection's native radar/terrain colour configuration.
+      url.pathname = url.pathname.replace(
+        /\/item\/tilejson\.json$/,
+        `/item/bbox/${bboxWest},${bboxSouth},${bboxEast},${bboxNorth}.png`
+      );
+      if (assetOverride && url.searchParams.has("assets")) {
+        url.searchParams.set("assets", assetOverride);
+      }
+      return url.toString();
+    } catch {
+      return undefined;
+    }
+  };
+
   
 
   const fetchScenes = async () => {
@@ -1033,14 +1260,24 @@ useEffect(() => {
     setSceneError(null);
 
     try {
-      const collection = source === "sentinel-2" ? "sentinel-2-l2a" : "landsat-c2-l2";
+      // ⚠️ cop-dem-glo-30 عبارة عن dataset ثابت (مفيهوش تواريخ فعلية زي باقي
+      // الـ collections)، فالـ dateFrom/dateTo هيتبعتوا بس مش هيأثروا فعليًا
+      // على النتايج لحد ما نتأكد إزاي الباك عايز يتعامل معاها.
+      const collection = SOURCE_COLLECTIONS[source];
+      // ⚠️ cop-dem-glo-30 عبارة عن dataset ثابت (مفيش "datetime" حقيقي في
+      // items بتاعته) — لو بعتنا datetime filter في الـ STAC search request،
+      // الـ API بيستبعد أي item مالوش temporal extent خالص (ده سلوك موثّق في
+      // STAC API spec)، يعني النتيجة كانت دايمًا صفر scenes لأي بحث Cop-DEM
+      // مهما كان الـ bbox، وده كان بيخلي الصورة تفضل معمولاش لها preview أبدًا.
+      // الحل: منبعتش datetime خالص للمصدر ده.
+      const isStaticCollection = source === "cop-dem";
       const response = await fetch("https://planetarycomputer.microsoft.com/api/stac/v1/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           collections: [collection],
           bbox: [west, south, east, north],
-          datetime: `${dateFrom}T00:00:00Z/${dateTo}T23:59:59Z`,
+          ...(isStaticCollection ? {} : { datetime: `${dateFrom}T00:00:00Z/${dateTo}T23:59:59Z` }),
           limit: 12,
         }),
         
@@ -1091,6 +1328,7 @@ useEffect(() => {
             previewUrl: thumbnail,
             itemUrl,
             rawAssetUrl,
+            tilejsonUrl: feature?.assets?.tilejson?.href,
             assets,
           };
         })
@@ -1120,6 +1358,11 @@ useEffect(() => {
 
   const handlePreviewScene = async (scene: SatelliteScene) => {
   const analysis = activeAnalysis;
+  if (!sceneHasVisualizationAssets(scene, analysis)) {
+    const required = getVisualization(analysis, scene.collection).assets.join(", ");
+    setSceneError(`This scene does not include the required asset(s): ${required}. Choose another scene.`);
+    return;
+  }
   const rawPreviewUrl = makeRasterProxyAnalyzeUrl(scene, analysis);
   
   // تعديل أساسي: اجعلي الخريطة تركز وتتعامل مع الـ AOI bounds الخاص بكِ مباشرة لمنع الـ Zoom Out العنيف
@@ -1132,12 +1375,41 @@ useEffect(() => {
   setPreviewingSceneId(scene.id);
   setSceneError(null);
 
-  let previewUrl = rawPreviewUrl;
-  if (clipToShape && polygonRing && rawPreviewUrl) {
+  // Sentinel-1 and Copernicus DEM publish TiTiler rendering settings in STAC.
+  // Request a bbox image—not an unconstrained tile layer—so the preview is
+  // confined to the user's AOI instead of the entire satellite scene.
+  // ⚠️ VV وVH بيتقروا من raw measurement/*.tiff files اللي بتستخدم Ground
+  // Control Points (GCPs) للـ georeferencing بدل affine transform عادي —
+  // geotiff.js (اللي route.ts بتاعنا مبني عليه) مش بيدعم GCPs، فأي حاجة
+  // بتعدي على route.ts بترجع bbox غلط تمامًا (شوفنا ده فعليًا: pixel واحد
+  // بس، bbox=30,30,31,31 بدل الـ AOI الحقيقي). TiTiler الرسمي بتاع
+  // Planetary Computer بيتعامل مع الـ GCPs صح من ناحيته، فVH بقت بتاخد نفس
+  // مسار VV (asset override بس على نفس الـ tilejson) بدل route.ts.
+  // FLOOD لسه من غير مسار مباشر جاهز — هي مش asset موجود أصلًا، دي كلاس
+  // مشتقة (threshold على VV)، TiTiler معندوش "flood" جاهز نرجّعه زي VH.
+  // لسه محتاجة تتعمل فعليًا (إما GCP support في route.ts، أو expression
+  // classification لو TiTiler بتاعتنا بيدعمه) — دلوقتي بتفضل على المسار
+  // المحلي القديم وهترجع نتيجة غلط لحد ما تتعمل.
+  const useReadyTiles =
+    scene.collection.includes("sentinel-1") && (analysis === "VV" || analysis === "VH");
+  const stacBboxPreviewUrl = useReadyTiles
+    ? makeStacBboxPreviewUrl(scene, sceneBounds, analysis === "VH" ? "vh" : undefined)
+    : undefined;
+
+  let previewUrl = stacBboxPreviewUrl ?? rawPreviewUrl;
+  // ⚠️ clipImageToPolygon بيعمل canvas processing synchronous على الصورة كاملة.
+  // للمصادر البصرية (sentinel-2/landsat) الصورة الراجعة من الباك مقصوصة
+  // بالـ bbox فعلًا فحجمها مضبوط. لكن Sentinel-1 (VV/VH/FLOOD/CHANGE) وCop-DEM
+  // وSentinel-5P لسه الباك ماعندوش منطق قصّ حقيقي لهم (شوفي getVisualization
+  // فوق) — فلو الباك رجّع الـ scene كاملة (بدل جزء الـ bbox)، محاولة عمل
+  // canvas clip synchronous على صورة بالحجم ده كانت بتجمّد التاب كليًا وترجع
+  // مش بترد على أي كليك. بنعطل الـ clip للمصادر دي مؤقتًا لحد ما الباك يتظبط،
+  // بدل ما نسيب المستخدم يعلّق التاب من غير ما يعرف السبب.
+  if (clipToShape && polygonRing && previewUrl && (isOpticalSource || Boolean(stacBboxPreviewUrl))) {
     try {
-      previewUrl = await clipImageToPolygon(rawPreviewUrl, sceneBounds, polygonRing);
+      previewUrl = await clipImageToPolygon(previewUrl, sceneBounds, polygonRing);
     } catch {
-      previewUrl = rawPreviewUrl; 
+      previewUrl = stacBboxPreviewUrl ?? rawPreviewUrl;
     }
   }
 
@@ -1338,26 +1610,29 @@ function openImageUrlSafely(url: string) {
     {/* Source Controls (Satellite Type, Dates, Cloud Threshold) */}
     {showSourceControls && (
       <>
-        <div className="grid grid-cols-2 gap-2">
-          {[
-            { key: "sentinel-2" as const, title: "Sentinel-2", sub: "Primary", color: "#22d3ee" },
-            { key: "landsat" as const, title: "Landsat", sub: "Secondary", color: "#f59e0b" },
-          ].map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => setSource(item.key)}
-              className={`rounded-lg border p-3 text-left transition-all cursor-pointer ${
-                source === item.key ? "bg-white/[0.07] border-cyan-400/35" : "bg-white/[0.025] border-white/[0.06] hover:border-white/[0.14]"
-              }`}
+        <div className="space-y-1.5">
+          <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Satellite source</p>
+          <div className="relative" dir="ltr">
+            <select
+              value={source}
+              onChange={(e) => setSource(e.target.value as SatSource)}
+              dir="ltr"
+              className="h-10 w-full cursor-pointer appearance-none rounded-lg border border-white/[0.08] bg-[#020817]/70 pl-8 pr-8 text-xs font-semibold text-slate-200 outline-none transition focus:border-cyan-400/40"
             >
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full" style={{ background: item.color, boxShadow: `0 0 8px ${item.color}` }} />
-                <span className="text-xs font-semibold text-slate-200">{item.title}</span>
-              </div>
-              <p className="text-[0.58rem] text-slate-500 mt-1">{item.sub}</p>
-            </button>
-          ))}
+              {(Object.keys(SOURCE_META) as SatSource[]).map((key) => (
+                <option key={key} value={key} className="bg-[#020817]  text-slate-200">
+                  {SOURCE_META[key].title} — {SOURCE_META[key].subtitle}
+                </option>
+              ))}
+            </select>
+            <svg
+              viewBox="0 0 20 20"
+              className="mx-auto my-auto pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500"
+              fill="none"
+            >
+              <path d="M5.5 7.5l4.5 4.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
@@ -1379,6 +1654,13 @@ function openImageUrlSafely(url: string) {
     {showMultispectralControls && (
       <div className="space-y-2">
         <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Band selector</p>
+
+        {source === "sentinel-5p" && (
+          <div className="rounded-lg border border-amber-400/18 bg-amber-400/[0.05] px-3 py-2 text-[0.6rem] text-amber-200">
+            Sentinel-5P products aren&apos;t rendering yet — the source data is NetCDF, which needs a
+            conversion step on the backend before previews will work here.
+          </div>
+        )}
 
         <div ref={bandMenuRef}>
           <button
@@ -1414,7 +1696,7 @@ function openImageUrlSafely(url: string) {
               role="listbox"
               className="relative z-10 mt-1.5 max-h-72 w-full overflow-y-auto rounded-lg border border-white/[0.1] bg-[#151c28] p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.45)]"
             >
-              {bandOptions.map((item) => {
+              {visibleBandOptions.map((item) => {
                 const isActive = !falseColorEnabled && activeAnalysis === item.key;
                 return (
                   <button
@@ -1650,11 +1932,25 @@ function openImageUrlSafely(url: string) {
         scenes.map((scene) => (
           <div key={scene.id} className="rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">
             <div className="flex items-center gap-3">
-              {(clippedThumbs[scene.id] ?? scene.thumbnail) ? (
-                <img src={clippedThumbs[scene.id] ?? scene.thumbnail} alt="" className="w-8 h-8 rounded-md border border-white/[0.08] object-cover bg-slate-900" />
-              ) : (
-                <div className="w-8 h-8 rounded-md border border-white/[0.08] bg-gradient-to-br from-slate-700 via-emerald-800 to-cyan-700" />
-              )}
+              <button
+                type="button"
+                onClick={() => handlePreviewScene(scene)}
+                disabled={previewingSceneId === scene.id}
+                title="اضغط لتحميل الصورة وعرضها على الخريطة"
+                className="relative h-8 w-8 shrink-0 overflow-hidden rounded-md border border-white/[0.08] bg-gradient-to-br from-slate-700 via-emerald-800 to-cyan-700 disabled:cursor-wait"
+              >
+                {(clippedThumbs[scene.id] ?? scenePreviewUrls[scene.id]) ? (
+                  <img
+                    src={clippedThumbs[scene.id] ?? scenePreviewUrls[scene.id]}
+                    alt=""
+                    className="h-8 w-8 object-cover"
+                  />
+                ) : (
+                  <span className="absolute inset-0 flex items-center justify-center text-[0.55rem] text-slate-200">
+                    {previewingSceneId === scene.id ? "..." : "▶"}
+                  </span>
+                )}
+              </button>
               <div className="min-w-0 flex-1">
                 <p className="text-[0.68rem] text-slate-200 truncate">{scene.id}</p>
                 <p className="text-[0.55rem] text-slate-500">{formatDateDMY(scene.date)} | cloud {scene.cloud}% | {scene.collection}</p>

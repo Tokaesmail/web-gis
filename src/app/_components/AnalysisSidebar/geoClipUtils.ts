@@ -55,6 +55,15 @@ export function getPolygonRing(feature?: GeoJSON.Feature | null): [number, numbe
   return null;
 }
 
+/** أعلى حجم (عرض×طول) مسموح بيه قبل ما نحاول نعمل canvas clip. الصور الجاية
+ * من route.ts (الباك اند بتاعنا) بتبقى محدودة بـ 1024px أقصى حد على أي ضلع،
+ * فـ 2000×2000 هنا سقف أمان واسع بما يكفي مع مفيش أي هامش تانى فعلي. لو أي
+ * مسار fallback (scene.itemUrl / rawAssetUrl الخام) رجّع صورة أكبر من كده،
+ * canvas.toDataURL() السينكرونس هيجمّد التاب فعليًا لحد ما يخلص الـ PNG
+ * encode — فبنرفض نعمل clip على الصورة دي أصلًا ونرجّع الأصل زي ما هو
+ * بدل ما نخاطر بالتجميد. */
+const MAX_CLIP_DIMENSION = 2000;
+
 /** Clips a rectangular image (covering `bounds`) to the exact polygon shape.
  * Everything outside the polygon becomes transparent. */
 export async function clipImageToPolygon(
@@ -70,10 +79,19 @@ export async function clipImageToPolygon(
     el.src = imageSrc;
   });
 
+  const width = img.naturalWidth || img.width;
+  const height = img.naturalHeight || img.height;
+
+  // ⚠️ حماية أساسية ضد التجميد: لو الصورة أكبر من المتوقع (fallback على
+  // asset خام بدل الصورة المقصوصة من الباك)، منعملش canvas عليها خالص.
+  if (width > MAX_CLIP_DIMENSION || height > MAX_CLIP_DIMENSION) {
+    return imageSrc;
+  }
+
   const [[south, west], [north, east]] = bounds;
   const canvas = document.createElement("canvas");
-  canvas.width = img.naturalWidth || img.width;
-  canvas.height = img.naturalHeight || img.height;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext("2d");
   if (!ctx) return imageSrc;
 
