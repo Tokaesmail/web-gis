@@ -454,8 +454,13 @@ useEffect(() => {
       }
 
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
-      const layer = config.tileUrl
-        ? L.tileLayer(config.tileUrl, {
+      // ملحوظة: config.tileUrl لازم يكون XYZ template حقيقي (فيه {z}/{x}/{y}).
+      // لو هو مجرد رابط ملف GeoTIFF واحد (زي اللي راجع من raster-calc)، بيبقى
+      // مش صالح كـ tile source خالص (المتصفح مش بيقدر يعرض TIFF كـ tile)،
+      // فبنرجع لـ imageOverlay اللي شغال أصلًا بالـ PNG + bounds الحقيقية.
+      const hasTileTemplate = !!config.tileUrl && config.tileUrl.includes("{z}");
+      const layer = hasTileTemplate
+        ? L.tileLayer(config.tileUrl!, {
             opacity: config.opacity,
             pane: "imagePane",
             crossOrigin: "anonymous",

@@ -1224,34 +1224,18 @@ useEffect(() => {
     Boolean(scene.previewUrl ?? scene.thumbnail ?? scene.itemUrl) ||
     sceneHasVisualizationAssets(scene, analysis);
 
-  const makeStacBboxPreviewUrl = (
-    scene: SatelliteScene,
-    targetBounds: [[number, number], [number, number]],
-    // ⚠️ الـ tilejson الافتراضي بييجي مظبوط لعرض VV (زي ما Planetary Computer
-    // مسجّله كـ default render لـ collection ده). عشان نعرض VH بنفس المسار
-    // (TiTiler الرسمي، مش route.ts بتاعنا)، لازم نستبدل query param اسمه
-    // "assets" من "vv" لـ "vh" — الباقي (rescale/colormap) بيفضل زي ما هو
-    // جاي من TiTiler، ممكن يحتاج تظبيط يدوي لو مش مناسب بصريًا لـ VH.
-    assetOverride?: string
-  ): string | undefined => {
-    if (!scene.tilejsonUrl) return undefined;
-    try {
-      const url = new URL(scene.tilejsonUrl);
-      const [[bboxSouth, bboxWest], [bboxNorth, bboxEast]] = targetBounds;
-      // TiTiler's item/bbox endpoint renders only this WGS84 window while
-      // keeping the collection's native radar/terrain colour configuration.
-      url.pathname = url.pathname.replace(
-        /\/item\/tilejson\.json$/,
-        `/item/bbox/${bboxWest},${bboxSouth},${bboxEast},${bboxNorth}.png`
-      );
-      if (assetOverride && url.searchParams.has("assets")) {
-        url.searchParams.set("assets", assetOverride);
-      }
-      return url.toString();
-    } catch {
-      return undefined;
-    }
-  };
+  // ⚠️ makeStacBboxPreviewUrl اتشالت من هنا: كانت بتاخد الـ tilejson الافتراضي
+  // بتاع Planetary Computer نفسها للـ collection عشان "تعدّي" على geotiff.js
+  // مش قادر يقرا GCP-referenced measurement/*.tiff بشكل مباشر. المشكلة إن
+  // الـ default tilejson ده مش single-band VV/VH فعليًا — هو composite ثلاثي
+  // ثابت (R=VV, G=VH, B=VV/VH ratio) مسجّل كـ default render لكل الـ
+  // collection، فتبديل query param "assets" من vv لـ vh بس (مع سيبان
+  // expression=vv;vh;vv/vh زي ما هي) كان بيرجّع نتيجة شبه مكسورة — وده سبب إن
+  // VV وVH كانوا بيبانوا شبه بعض تقريبًا في الـ preview. المشكلة الأصلية
+  // (GCP) اتحلت فعليًا جوه route.ts (sentinel1CropUrl بيستخدم crop endpoint
+  // بتاع Planetary Computer Data API اللي بيحل الـ GCPs من ناحيته)، فبقى
+  // ممكن الاعتماد بس على makeRasterProxyAnalyzeUrl (rawPreviewUrl) لكل
+  // الأنواع، بما فيهم VV/VH.
 
   
 
@@ -1375,28 +1359,21 @@ useEffect(() => {
   setPreviewingSceneId(scene.id);
   setSceneError(null);
 
-  // Sentinel-1 and Copernicus DEM publish TiTiler rendering settings in STAC.
-  // Request a bbox image—not an unconstrained tile layer—so the preview is
-  // confined to the user's AOI instead of the entire satellite scene.
-  // ⚠️ VV وVH بيتقروا من raw measurement/*.tiff files اللي بتستخدم Ground
-  // Control Points (GCPs) للـ georeferencing بدل affine transform عادي —
-  // geotiff.js (اللي route.ts بتاعنا مبني عليه) مش بيدعم GCPs، فأي حاجة
-  // بتعدي على route.ts بترجع bbox غلط تمامًا (شوفنا ده فعليًا: pixel واحد
-  // بس، bbox=30,30,31,31 بدل الـ AOI الحقيقي). TiTiler الرسمي بتاع
-  // Planetary Computer بيتعامل مع الـ GCPs صح من ناحيته، فVH بقت بتاخد نفس
-  // مسار VV (asset override بس على نفس الـ tilejson) بدل route.ts.
-  // FLOOD لسه من غير مسار مباشر جاهز — هي مش asset موجود أصلًا، دي كلاس
-  // مشتقة (threshold على VV)، TiTiler معندوش "flood" جاهز نرجّعه زي VH.
-  // لسه محتاجة تتعمل فعليًا (إما GCP support في route.ts، أو expression
-  // classification لو TiTiler بتاعتنا بيدعمه) — دلوقتي بتفضل على المسار
-  // المحلي القديم وهترجع نتيجة غلط لحد ما تتعمل.
-  const useReadyTiles =
-    scene.collection.includes("sentinel-1") && (analysis === "VV" || analysis === "VH");
-  const stacBboxPreviewUrl = useReadyTiles
-    ? makeStacBboxPreviewUrl(scene, sceneBounds, analysis === "VH" ? "vh" : undefined)
-    : undefined;
-
-  let previewUrl = stacBboxPreviewUrl ?? rawPreviewUrl;
+  // ⚠️ سابقًا VV/VH كانوا بيتحوّلوا لمسار تاني (makeStacBboxPreviewUrl) بحجة
+  // إن geotiff.js/route.ts مش بيدعم GCP-referenced measurement/*.tiff files.
+  // ده اتحل فعليًا في route.ts (شوفي sentinel1CropUrl هناك): أي رابط raw
+  // Sentinel-1 measurement بيتستبدل تلقائيًا برابط crop endpoint بتاع
+  // Planetary Computer Data API (بيحل الـ GCPs من ناحيته ويرجّع crop مظبوط
+  // للـ bbox المطلوب)، فـ route.ts بقى بيرجّع VV/VH صح زي أي index تاني.
+  // المسار القديم (makeStacBboxPreviewUrl) كان بيستخدم الـ tilejson
+  // الافتراضي بتاع Planetary Computer نفسها للـ collection — وده مش single-band
+  // VV/VH فعليًا، هو composite ثلاثي (R=VV, G=VH, B=VV/VH ratio) مسجّل كـ
+  // default render لكل الـ collection، فتبديل "assets=vv" لـ "assets=vh" (مع
+  // ترك expression=vv;vh;vv/vh زي ما هي) كان بيدّي نتيجة شبه مكسورة — ده كان
+  // سبب إن VV وVH كانوا شكلهم شبه بعض تقريبًا. دلوقتي بنعتمد بس على
+  // rawPreviewUrl (route.ts بتاعنا) لكل الأنواع، فكل analysis بيرجّع من
+  // الـ asset الصح بتاعه فعلًا.
+  let previewUrl = rawPreviewUrl;
   // ⚠️ clipImageToPolygon بيعمل canvas processing synchronous على الصورة كاملة.
   // للمصادر البصرية (sentinel-2/landsat) الصورة الراجعة من الباك مقصوصة
   // بالـ bbox فعلًا فحجمها مضبوط. لكن Sentinel-1 (VV/VH/FLOOD/CHANGE) وCop-DEM
@@ -1405,11 +1382,11 @@ useEffect(() => {
   // canvas clip synchronous على صورة بالحجم ده كانت بتجمّد التاب كليًا وترجع
   // مش بترد على أي كليك. بنعطل الـ clip للمصادر دي مؤقتًا لحد ما الباك يتظبط،
   // بدل ما نسيب المستخدم يعلّق التاب من غير ما يعرف السبب.
-  if (clipToShape && polygonRing && previewUrl && (isOpticalSource || Boolean(stacBboxPreviewUrl))) {
+  if (clipToShape && polygonRing && previewUrl && isOpticalSource) {
     try {
       previewUrl = await clipImageToPolygon(previewUrl, sceneBounds, polygonRing);
     } catch {
-      previewUrl = stacBboxPreviewUrl ?? rawPreviewUrl;
+      previewUrl = rawPreviewUrl;
     }
   }
 
