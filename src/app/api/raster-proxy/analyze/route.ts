@@ -402,11 +402,17 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
   // الـ input، شوفي renderDemProduct.
   elevation: {
     kind: "dem", bandCount: 1, label: "Elevation (single DEM band)",
-    product: "elevation", defaultColormap: "spectral_r",
+    // كان "spectral_r" (أزرق→أحمر ديفيرجينج) بيخالف الـ legend في البانل
+    // ("أخضر=واطي، أصفر=نص، أحمر=عالي"). اتغيّر لـ "rdylgn" — شوفي عكس الـ
+    // byte جوه renderDemProduct (قسم elevation) عشان اتجاه الألوان يطابق صح.
+    product: "elevation", defaultColormap: "rdylgn",
   },
   slope: {
     kind: "dem", bandCount: 1, label: "Slope steepness in degrees (from DEM)",
-    product: "slope", defaultColormap: "inferno",
+    // كان "inferno" (أسود→بنفسجي→أصفر) بيخالف الـ legend ("0°=أخضر مسطح،
+    // 45°+=أحمر شديد الانحدار"). اتغيّر لـ "rdylgn" مع عكس الـ byte جوه
+    // renderDemProduct (قسم slope).
+    product: "slope", defaultColormap: "rdylgn",
   },
   hillshade: {
     kind: "dem", bandCount: 1, label: "Shaded relief (from DEM)",
@@ -414,6 +420,9 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
   },
   aspect: {
     kind: "dem", bandCount: 1, label: "Slope direction / compass aspect (from DEM)",
+    // الـ ramp نفسه فضل "rdylbu_r" — بس اتجاه عرضه اتعكس جوه renderDemProduct
+    // (قسم aspect) عشان N(0°)=أحمر وE/S(90°-180°)=أخضر وW(270°)=بنفسجي
+    // يطابقوا الـ legend بدل ما يبقوا معكوسين.
     product: "aspect", defaultColormap: "rdylbu_r",
   },
 
@@ -763,6 +772,84 @@ function alignBandsToCommonGrid(bands: BandRaster[]): BandRaster[] {
 
   return bands.map((b) => resampleNearest(b, targetWidth, targetHeight));
 }
+
+// ── Speckle filter (Lee filter) لبيانات SAR الخام ───────────────────────────
+// كل بكسل في صورة SAR فيه speckle noise طبيعي (نتيجة التداخل البناء/الهدام
+// لموجات الرادار المرتجعة من داخل نفس resolution cell). VH بالذات بيتأثر بيها
+// أكتر من VV لإن إشارته أضعف وأقرب لـ noise floor، فبعد الـ dB conversion +
+// الـ percentile stretch الضيق (2%-98%) الضوضاء دي بتتمدد على المدى اللوني
+// كامل وتبين وكأنها عشوائية بالكامل حتى لو فيه بنية حقيقية تحتها.
+//
+// الـ Lee filter ده adaptive: بيحافظ على الحواف/البنية الحقيقية (بعكس boxcar
+// mean اللي بيمسح كل حاجة زي بعض بما فيها الحواف) عن طريق مقارنة التباين
+// المحلي حوالين كل بكسل بتباين الضوضاء العام في الصورة كلها:
+//   - لو التباين المحلي عالي (يعني فيه حافة/بنية حقيقية) → نسيب البكسل قريب
+//     من قيمته الأصلية.
+//   - لو التباين المحلي واطي (يعني منطقة متجانسة والتباين اللي فيها أغلبه
+//     ضوضاء) → نستبدله بالمتوسط المحلي (smoothing).
+// بيشتغل على الـ amplitude الخام (قبل تحويل dB) عشان يبقى متوافق مع فيزياء
+// الـ speckle نفسها (multiplicative noise على الـ amplitude/intensity).
+function applySpeckleFilter(band: BandRaster, windowSize = 3): BandRaster {
+  const { data, width, height } = band;
+  const ctor = data.constructor as new (len: number) => BandRaster["data"];
+  const out = new ctor(data.length);
+  const r = Math.max(1, Math.floor(windowSize / 2));
+
+  // تقدير عام لـ coefficient of variation بتاع الضوضاء من الصورة كلها —
+  // ده اللي بيفرّق للـ Lee filter بين "تباين حقيقي في الإشارة" و"تباين ناتج
+  // عن الـ speckle" في كل نافذة محلية بعد كده.
+  let sum = 0;
+  let sumSq = 0;
+  for (let i = 0; i < data.length; i++) {
+    sum += data[i];
+    sumSq += data[i] * data[i];
+  }
+  const n = data.length || 1;
+  const globalMean = sum / n;
+  const globalVar = Math.max(sumSq / n - globalMean * globalMean, 0);
+  const globalCV = globalMean > 0 ? Math.sqrt(globalVar) / globalMean : 0;
+  const noiseVariance = globalCV * globalCV;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+
+      let localSum = 0;
+      let localSumSq = 0;
+      let count = 0;
+      for (let dy = -r; dy <= r; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= height) continue;
+        const rowOffset = yy * width;
+        for (let dx = -r; dx <= r; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= width) continue;
+          const v = data[rowOffset + xx];
+          localSum += v;
+          localSumSq += v * v;
+          count++;
+        }
+      }
+      const localMean = localSum / count;
+      const localVar = Math.max(localSumSq / count - localMean * localMean, 0);
+
+      // Lee filter weight: k = localVar / (localVar + localMean² · noiseVariance)
+      const denom = localVar + localMean * localMean * noiseVariance;
+      const k = denom > 0 ? localVar / denom : 0;
+
+      out[idx] = localMean + k * (data[idx] - localMean);
+    }
+  }
+
+  return { ...band, data: out };
+}
+
+// أنواع SAR اللي محتاجة speckle filtering قبل الـ dB conversion/rendering —
+// باقي الأنواع (Sentinel-2 optical, DEM, ...) مالهاش دعوة بالـ speckle
+// أصلًا فمبنطبقهوش عليها.
+const SAR_SPECKLE_FILTER_TYPES = new Set<string>([
+  "vv", "vh", "vv_vh_ratio", "sar_rgb", "change_vv", "change_vh",
+]);
 
 // Evaluates a per-pixel band-math formula against 2, 3, or 4 bands without
 // allocating a temporary array every pixel (this runs once per pixel per
@@ -1160,7 +1247,7 @@ async function renderDemProduct(
   let validPixels = 0, sum = 0, minV = Infinity, maxV = -Infinity;
 
   if (product === "elevation") {
-    const stops = RAMPS[colormap] ?? RAMPS["spectral_r"] ?? RAMPS["rdylgn"];
+    const stops = RAMPS[colormap] ?? RAMPS["rdylgn"] ?? RAMPS["spectral_r"];
     const lut = buildLUT(stops);
     // A 0..1500 m global scale makes a small, almost-flat AOI look like one
     // colour. Stretch to its own 2nd..98th percentile when it has relief.
@@ -1173,7 +1260,14 @@ async function renderDemProduct(
       const isNoData = !forceOpaque && (v === 0 || !Number.isFinite(v));
       let t = (v - displayMin) / range;
       t = Math.max(0, Math.min(1, t));
-      const byte = Math.round(t * 255);
+      // ⚠️ كان بيستخدم "spectral_r" (أزرق غامق→أحمر غامق ديفيرجينج) بينما
+      // الـ legend بيوصف "أخضر=واطي، أصفر=نص، أحمر/أبيض=عالي" — mismatch،
+      // ده ليه كانت بتبين بقع زرقاء مالهاش تفسير في اللیجند. defaultColormap
+      // اتغيّر لـ "rdylgn" (أحمر عند 0%، أخضر عند 100%)، وهنا بنعكس الـ byte
+      // (1-t) عشان الارتفاع الواطي (t=0) يوصل لطرف الأخضر، والعالي (t=1)
+      // يوصل لطرف الأحمر — يطابق اللیجند دلوقتي (عدا نقطة "أبيض" في القمة
+      // اللي مش موجودة في الـ ramp ده، تفصيلة تجميلية بسيطة مش جوهرية).
+      const byte = Math.round((1 - t) * 255);
       const alpha = isNoData ? 0 : 255;
       if (!isNoData) { validPixels++; sum += v; minV = Math.min(minV, v); maxV = Math.max(maxV, v); }
       rgbaData[i * 4] = lut[byte * 3];
@@ -1186,7 +1280,15 @@ async function renderDemProduct(
     const azimuthDeg = 315; // اتجاه الشمس الافتراضي (شمال غرب) — زي الـ hillshade القياسي
     const altitudeDeg = 45; // ارتفاع الشمس الافتراضي
     const zenithRad = ((90 - altitudeDeg) * Math.PI) / 180;
-    const azimuthRad = (azimuthDeg * Math.PI) / 180;
+    // ⚠️ باگ حقيقي كان هنا: azimuthDeg (315، بالـ compass bearing — 0°=شمال،
+    // بالساعة) كان بيتحول لراديان مباشرة من غير ما يتحول لنفس الـ math-angle
+    // convention اللي بيستخدمها atan2(dzdy, -dzdx) تحت (0°=شرق، عكس عقارب
+    // الساعة). الفرق بين الاتنين مش مجرد offset بسيط، فكان بيطلع بفرق قريب
+    // من 180° في اتجاه الإضاءة الفعلي — يعني الـ hillshade كان بيرسم الظل
+    // والضوء على العكس تقريبًا من مكان الشمس الحقيقي (315°/شمال غرب). التحويل
+    // الصح (زي ESRI/GDAL): azimuth_math = 360 - azimuth_compass + 90 (mod 360).
+    const azimuthMathDeg = (360 - azimuthDeg + 90) % 360;
+    const azimuthRad = (azimuthMathDeg * Math.PI) / 180;
 
     const stops = RAMPS[colormap] ?? RAMPS["inferno"];
     const lut = buildLUT(stops);
@@ -1217,7 +1319,14 @@ async function renderDemProduct(
         if (product === "slope") {
           value = (slopeRad * 180) / Math.PI; // درجات
           const t = Math.max(0, Math.min(1, value / (rMax || 45)));
-          byte = Math.round(t * 255);
+          // ⚠️ كان بيستخدم colormap "inferno" (أسود→بنفسجي→أحمر→أصفر) بينما
+          // الـ legend في البانل بيوصف "0°=أخضر (مسطح) → 45°+=أحمر (شديد
+          // الانحدار)" — mismatch كامل، ده ليه الصورة كانت طالعة ماجنتا/بنفسجي
+          // بدل أخضر-أصفر-أحمر. defaultColormap اتغيّر لـ "rdylgn" (نفس ramp
+          // NDVI: أحمر عند 0%، أخضر عند 100%)، وهنا بنعكس الـ byte (1-t) عشان
+          // "مسطح" (t=0) يوصل لطرف الأخضر (100%) و"شديد الانحدار" (t=1) يوصل
+          // لطرف الأحمر (0%) — يطابق اللیجند بالظبط.
+          byte = Math.round((1 - t) * 255);
         } else if (product === "aspect") {
           let aspectDeg = (Math.atan2(dzdy, -dzdx) * 180) / Math.PI;
           // تحويل من math angle لـ compass bearing (0°=شمال، بالساعة)
@@ -1225,7 +1334,14 @@ async function renderDemProduct(
           else if (aspectDeg > 90) aspectDeg = 360 - aspectDeg + 90;
           else aspectDeg = 90 - aspectDeg;
           value = aspectDeg;
-          byte = Math.round((aspectDeg / 360) * 255);
+          // ⚠️ الـ legend بيوصف N(0°)=أحمر، E/S(90°-180°)=أخضر، W(270°)/N(360°)
+          // =بنفسجي. ramp "rdylbu_r" (اسمها الحقيقي "Heat") ماشية بنفسجي(0%)→
+          // أزرق→سماوي→أخضر(~63%)→أصفر→أحمر(100%) — يعني عكس الاتجاه المطلوب
+          // بالظبط. بنعكس الـ byte (1-t) عشان 0°(شمال) يوصل لطرف الأحمر (100%
+          // الأصلي)، و~180° يوصل لمنطقة الأخضر، و360° يرجع تاني قريب من طرف
+          // البنفسجي (0% الأصلي) — بيطابق اللیجند دلوقتي.
+          const t = aspectDeg / 360;
+          byte = Math.round((1 - t) * 255);
         } else {
           // hillshade: قيمة 0-255 مباشرة (مش محتاجة colormap فعليًا)
           const shade =
@@ -1398,6 +1514,17 @@ export async function GET(req: NextRequest) {
   }
   const referenceBbox = bands[referenceBandIdx].bbox;
   bands = alignBandsToCommonGrid(bands);
+
+  // ── SAR speckle filtering (Lee filter) ────────────────────────────────────
+  // شغّال بس على أنواع Sentinel-1 (vv/vh/vv_vh_ratio/sar_rgb/change_vv/
+  // change_vh)، وقبل أي dB conversion — الـ formula بتاعت كل نوع من دول
+  // بتتوقع amplitude خام. اتفعل افتراضيًا (?speckle=0 لإلغاءه، ?speckleWindow=
+  // 5 مثلًا لنافذة أكبر/تنعيم أقوى — الافتراضي 3).
+  const speckleEnabled = (searchParams.get("speckle") ?? "1") !== "0";
+  const speckleWindow = parseInt(searchParams.get("speckleWindow") ?? "3", 10);
+  if (speckleEnabled && SAR_SPECKLE_FILTER_TYPES.has(type)) {
+    bands = bands.map((b) => applySpeckleFilter(b, speckleWindow));
+  }
 
   if (!checkSameGrid(bands)) {
     return NextResponse.json(
