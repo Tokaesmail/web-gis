@@ -187,6 +187,9 @@ export default function LeafletMap({
   const drawPointsRef  = useRef<[number, number][]>([]);
   const baseTileRef    = useRef<any>(null);
   const labelsLayerRef = useRef<any>(null);
+  // بيتبع دلوقتي أي طبقة قمر شغالة، عشان نطبّق حد الـ 30 متر على Default بس
+  const currentSatKeyRef = useRef<SatKey>("Default");
+  const applyResolutionCapRef = useRef<(() => void) | null>(null);
   // ── Zoom guard: يرجع زوم واحد أوتوماتيك لو التايلز مش متوفرة في المكان ده ──
   const tileErrorAtCurrentZoomRef = useRef(false);
   const zoomRevertTimeoutRef      = useRef<any>(null);
@@ -1542,6 +1545,7 @@ if (!restoredRef.current) {
         const def = SAT_LAYERS[satKey];
         if (baseTileRef.current) map.removeLayer(baseTileRef.current);
         if (!def?.url) return;
+        currentSatKeyRef.current = satKey;
         baseTileRef.current = L.tileLayer(def.url, {
           attribution:   def.attribution,
           maxZoom:       def.maxZoom,
@@ -1554,6 +1558,13 @@ if (!restoredRef.current) {
         // إعادة ضبط حالة الزوم عند تبديل المصدر (كل مصدر له تغطية مختلفة)
         tileErrorAtCurrentZoomRef.current = false;
         lastStableZoomRef.current = map.getZoom();
+        // حد الـ 30 متر مخصوص لـ Default بس — لأي طبقة تانية نرجّع الماكس زوم
+        // الطبيعي بتاعها زي ما هو متعرّف في SAT_LAYERS من غير أي سقف إضافي
+        if (satKey === "Default") {
+          applyResolutionCapRef.current?.();
+        } else {
+          map.setMaxZoom(def.maxZoom ?? 22);
+        }
       });
 
       onOpacityChangeRegister?.((o: number) => {
@@ -1580,19 +1591,19 @@ if (!restoredRef.current) {
       const notifyResolutionCap = () => {
         if (resolutionCapNotifiedRef.current) return;
         resolutionCapNotifiedRef.current = true;
-        toast.error(
-          isRTL
-            ? `وصلت لأقصى زوم (دقة ${TARGET_SCALE_LABEL_M} متر) في المكان ده`
-            : `Reached max zoom (${TARGET_SCALE_LABEL_M} m resolution) for this area`
-        );
+        toast.error("Reached max zoom for this area");
       };
 
       const applyResolutionCap = () => {
+        // الحد ده مخصوص لطبقة Default (Esri) بس — أي طبقة تانية (Google،
+        // Sentinel-2، Street Map، Terrain) تفضل شغالة بالماكس زوم الطبيعي بتاعها
+        if (currentSatKeyRef.current !== "Default") return;
         const lat = map.getCenter().lat;
         const capZoom = computeMaxZoomForResolution(lat, TARGET_SCALE_LABEL_M);
         map.setMaxZoom(capZoom);
         resolutionCapNotifiedRef.current = false; // إعادة تعيين لما اليوزر يتحرك لمكان/دقة جديدة
       };
+      applyResolutionCapRef.current = applyResolutionCap;
 
       applyResolutionCap();
       map.on("moveend", applyResolutionCap);

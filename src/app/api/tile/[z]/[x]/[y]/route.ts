@@ -5,10 +5,10 @@ const TILE_SOURCES: Record<string, string | string[]> = {
   sentinel: "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg",
 
   google_sat: [
-    "https://mt0.google.com/vt/lyr=s&x={x}&y={y}&z={z}",
-    "https://mt1.google.com/vt/lyr=s&x={x}&y={y}&z={z}",
-    "https://mt2.google.com/vt/lyr=s&x={x}&y={y}&z={z}",
-    "https://mt3.google.com/vt/lyr=s&x={x}&y={y}&z={z}",
+    "https://mt0.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+    "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+    "https://mt2.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+    "https://mt3.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
   ],
 
 };
