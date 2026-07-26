@@ -1701,6 +1701,20 @@ if (!restoredRef.current) {
               );
               const captureResult = await captureCircle(canvasRef.current, map, L, center, radiusMeters, metadata, captureTarget);
               onCapture?.(captureResult);
+            } else if (tool === "rectangle" && coords.length === 2) {
+              // ⚠️ lastCoordsRef only stores the 2 diagonal corners (that's all
+              // redrawCurrent needs for drawRect). But capture()'s polygon-clip
+              // needs all 4 corners — passing just 2 collapses the clip region
+              // to a zero-area line, producing a near-blank image. Rebuild the
+              // 4 corners exactly like the rectangle-draw-completion code does.
+              const [p1, p2] = coords;
+              const rectCoords: LatLngPoint[] = [
+                { lat: p1.lat, lng: p1.lng },
+                { lat: p2.lat, lng: p1.lng },
+                { lat: p2.lat, lng: p2.lng },
+                { lat: p1.lat, lng: p2.lng },
+              ];
+              await handleCapture(canvasRef.current, map, L, rectCoords, metadata);
             } else {
               await handleCapture(canvasRef.current, map, L, coords, metadata);
             }

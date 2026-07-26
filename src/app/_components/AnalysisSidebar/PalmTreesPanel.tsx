@@ -376,6 +376,16 @@ export default function PalmTreesPanel({
       form.append("shapeType", shapeKind); // "rectangle" | "polygon" | "circle" | "point" | "line"
       form.append("expression", expression.trim()); // the formula/condition to run on palm trees
 
+      // 🔍 DEBUG — بنطبع كل حاجة بنبعتها بالظبط قبل الإرسال
+      console.log("[Palm debug] ── Sending request ──");
+      console.log("[Palm debug] URL:", PALM_BACKEND_URL);
+      console.log("[Palm debug] image blob:", capture.blob.type, capture.blob.size, "bytes");
+      console.log("[Palm debug] date_range:", `${dateFrom}/${dateTo}`);
+      console.log("[Palm debug] study_area_bounds:", boundsToArray(capture.bounds));
+      console.log("[Palm debug] geo_bounds:", boundsToArray(capture.viewportBounds ?? capture.bounds));
+      console.log("[Palm debug] expression:", expression.trim());
+      console.log("[Palm debug] accessToken present?:", !!accessToken);
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -395,12 +405,19 @@ export default function PalmTreesPanel({
         clearTimeout(timeoutId);
       }
 
+      // 🔍 DEBUG — بنطبع كل حاجة راجعة من الباك إند زي ما هي، قبل أي معالجة
+      console.log("[Palm debug] ── Response received ──");
+      console.log("[Palm debug] HTTP status:", res.status, res.statusText);
+      console.log("[Palm debug] headers:", Object.fromEntries(res.headers.entries()));
+      const rawText = await res.clone().text().catch(() => "<failed to read body>");
+      console.log("[Palm debug] raw body:", rawText);
+
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Backend returned ${res.status}. ${text.slice(0, 160)}`);
+        throw new Error(`Backend returned ${res.status}. ${rawText.slice(0, 160)}`);
       }
 
       const data = await res.json().catch(() => null);
+      console.log("[Palm debug] parsed data:", data);
       if (data && data.success === false) {
         throw new Error(data?.message ?? "Palm detection request failed.");
       }
