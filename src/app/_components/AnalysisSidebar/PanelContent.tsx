@@ -6,6 +6,7 @@ import ExportButton from "../../map/ExportButton";
 import { CapturesPanel } from "./CapturesPanel";
 import { NDVILivePanel, OverviewLivePanel, WeatherLivePanel } from "./LivePanels";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
+import PalmTreesPanel, { type RasterTabKey } from "./PalmTreesPanel";
 import { SuperResolutionPanel, type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
 import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { ChangeDetectionPanel, type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
@@ -18,6 +19,7 @@ import { AnalysesManagerPanel } from "./AnalysesManagerPanel";
 
 export function PanelContent({
   id,
+  rasterTab = "default",
   selectedFeature,
   uploadedGeoJsonMap,
   captures,
@@ -33,6 +35,9 @@ export function PanelContent({
   onRequestMapCapture,
   pendingMapCapture,
   onClearMapCapture,
+  onRequestPalmCapture,
+  pendingPalmCapture,
+  onClearPalmCapture,
   layers,
   onLayerToggle,
   onLayerOpacity,
@@ -50,6 +55,8 @@ export function PanelContent({
   onOpenElevationFloat,
 }: {
   id: PanelId;
+  /** which Raster Calc sub-tab is active — set from AnalysisSidebar's hover flyout on the sidebar icon */
+  rasterTab?: RasterTabKey;
   onOpenElevationFloat?: () => void;
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
@@ -66,6 +73,9 @@ export function PanelContent({
   onRequestMapCapture?: () => void;
   pendingMapCapture?: MapCapture | null;
   onClearMapCapture?: () => void;
+  onRequestPalmCapture?: () => void;
+  pendingPalmCapture?: MapCapture | null;
+  onClearPalmCapture?: () => void;
   layers: MapLayer[];
   onLayerToggle: (id: string, visible: boolean) => void;
   onLayerOpacity: (id: string, opacity: number) => void;
@@ -95,7 +105,16 @@ export function PanelContent({
   }
 
   if (id === "raster") {
-    return <PlanetaryRasterPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />;
+    return rasterTab === "palms" ? (
+      <PalmTreesPanel
+        selectedFeature={selectedFeature}
+        onRequestCapture={onRequestPalmCapture}
+        pendingCapture={pendingPalmCapture}
+        onClearCapture={onClearPalmCapture}
+      />
+    ) : (
+      <PlanetaryRasterPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />
+    );
   }
 
   if (id === "super-resolution") {

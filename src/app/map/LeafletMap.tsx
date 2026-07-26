@@ -45,6 +45,12 @@ interface Props {
   onCoordsUpdate: (lat: number, lng: number) => void;
   flyToRef:       React.MutableRefObject<((lat: number, lng: number) => void) | null>;
   clearRef:       React.MutableRefObject<(() => void) | null>;
+  /** Captures whatever shape is currently drawn (lastCoordsRef/lastToolRef)
+   * WITHOUT requiring the user to draw a new one. Used by panels (like Palm
+   * Trees) that want to reuse the shape the user already selected instead of
+   * forcing a redraw. Returns true if a capture was attempted, false if
+   * there was nothing drawn to capture. */
+  captureCurrentRef?: React.MutableRefObject<(() => Promise<boolean>) | null>;
   onSatChange:    (handler: (sat: SatKey) => void) => void;
   onOpacityChangeRegister?: (handler: (o: number) => void) => void;
   /** register an image placement workflow (2 clicks to place image) */
@@ -159,7 +165,7 @@ function circleToPolygonLatLng(centerLat: number, centerLng: number, radiusMeter
 
 export default function LeafletMap({
   activeTool, captureTarget, onAreaSelected, onCoordsUpdate,
-  flyToRef, clearRef, onSatChange, onOpacityChangeRegister, onCapture,
+  flyToRef, clearRef, captureCurrentRef, onSatChange, onOpacityChangeRegister, onCapture,
   geoJsonData, extraGeoJsonData, latestGeoJson, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
   onImagePlacerRegister,
   onRasterOverlayRegister,
@@ -1668,6 +1674,43 @@ if (!restoredRef.current) {
         refreshOverlaysUi();
         stopImagePlacement();
       };
+
+      // ── Capture the shape that's ALREADY drawn (lastCoordsRef/lastToolRef)
+      // on demand, without requiring the user to draw a new one. Used by
+      // panels like Palm Trees that want to reuse the currently selected
+      // shape instead of forcing a redraw every time. ───────────────────────
+      if (captureCurrentRef) {
+        captureCurrentRef.current = async () => {
+          const coords = lastCoordsRef.current;
+          const tool = lastToolRef.current;
+          if (!coords.length || !canvasRef.current) return false;
+
+          const metadata: CaptureMetadata = {
+            areaName: "Current Selection",
+            areaSizeHa: 0,
+            zoom: map.getZoom(),
+            capturedAt: new Date().toISOString(),
+          };
+
+          try {
+            if (tool === "circle" && coords.length === 2) {
+              const center = coords[0];
+              const radiusMeters = map.distance(
+                L.latLng(center.lat, center.lng),
+                L.latLng(coords[1].lat, coords[1].lng)
+              );
+              const captureResult = await captureCircle(canvasRef.current, map, L, center, radiusMeters, metadata, captureTarget);
+              onCapture?.(captureResult);
+            } else {
+              await handleCapture(canvasRef.current, map, L, coords, metadata);
+            }
+            return true;
+          } catch (err) {
+            console.error("❌ captureCurrentRef error:", err);
+            return false;
+          }
+        };
+      }
 
       // ── Click ─────────────────────────────────────────────────────────────
       map.on("click", async (e: any) => {

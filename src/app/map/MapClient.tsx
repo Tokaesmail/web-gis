@@ -107,6 +107,15 @@ export default function MapPage() {
     blob: Blob; previewUrl: string;
     bounds: { north: number; south: number; east: number; west: number };
   } | null>(null);
+  // ── Palm Trees: pending capture (same shape as template/map above, plus
+  // viewportBounds — the backend needs BOTH the drawn shape's bounds
+  // (study_area_bounds) AND the full captured image's georeferenced bounds
+  // (geo_bounds), same idea as template_bounds/map_bounds in template-match) ─
+  const [pendingPalmCapture, setPendingPalmCapture] = useState<{
+    blob: Blob; previewUrl: string;
+    bounds: { north: number; south: number; east: number; west: number };
+    viewportBounds?: { north: number; south: number; east: number; west: number };
+  } | null>(null);
 
   // ── Layer panel state ────────────────────────────────────────────────────
   const [layers, setLayers] = useState<MapLayer[]>([
@@ -120,6 +129,9 @@ export default function MapPage() {
 
   const flyToRef               = useRef<((lat: number, lng: number) => void) | null>(null);
   const clearRef               = useRef<(() => void) | null>(null);
+  // Captures the currently-drawn shape on demand (no redraw required) —
+  // used by Palm Trees so it can reuse whatever shape is already selected.
+  const captureCurrentRef      = useRef<(() => Promise<boolean>) | null>(null);
   const changeSatRef           = useRef<((sat: SatKey) => void) | null>(null);
   const changeOpacityRef       = useRef<((o: number) => void) | null>(null);
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
@@ -131,7 +143,7 @@ export default function MapPage() {
 
   // ── double-click tracking ─────────────────────────────────────────────────
   const lastClickTimeRef = useRef<number>(0);
-  const templateMatchCaptureRef = useRef<"template" | "map" | null>(null);
+  const templateMatchCaptureRef = useRef<"template" | "map" | "palm" | null>(null);
 
   const isRestored = useRef(false);
   const isLayerSettingsHydrating = useRef(false);
@@ -550,8 +562,10 @@ useEffect(() => {
       };
       if (captureMode === "template") {
         setPendingTemplateCapture(mapCap);
-      } else {
+      } else if (captureMode === "map") {
         setPendingMapCapture(mapCap);
+      } else if (captureMode === "palm") {
+        setPendingPalmCapture({ ...mapCap, viewportBounds: capture.viewportBounds });
       }
       setActiveTool("pointer");
       return;
@@ -599,6 +613,32 @@ useEffect(() => {
     templateMatchCaptureRef.current = "map";
     setActiveTool("rectangle");
   }, []);
+
+  // ── Palm Trees: reuse whatever shape is ALREADY drawn on the map (via
+  // captureCurrentRef, exposed by LeafletMap) instead of forcing the user to
+  // redraw one every time — this was the actual UX gap: the panel only
+  // captured brand-new draws, so an already-selected shape just sat there
+  // forever while the panel waited for a draw that would never come. ───────
+  const handleRequestPalmCapture = useCallback(() => {
+    templateMatchCaptureRef.current = "palm";
+
+    void (async () => {
+      const capturedExisting = await captureCurrentRef.current?.();
+      if (capturedExisting) return; // handleCapture above will route the result into pendingPalmCapture
+
+      // Nothing was drawn yet — fall back to asking for a fresh shape,
+      // same as before. Any shape works (rectangle/polygon/circle/marker).
+      if (activeTool === "pointer") {
+        setActiveTool("rectangle");
+        toast(
+          isRTL
+            ? "ارسمي مستطيل على الخريطة (أو غيّري الأداة من شريط الأدوات لأي شكل تاني)"
+            : "Draw a rectangle on the map (or switch tools in the toolbar for a different shape)",
+          { icon: "✏️", duration: 5000 }
+        );
+      }
+    })();
+  }, [activeTool, isRTL]);
 
   const handleDeleteCapture = useCallback((id: number, url: string) => {
     setCaptures((prev) => {
@@ -1120,6 +1160,9 @@ useEffect(() => {
       onRequestMapCapture={handleRequestMapCapture}
       pendingMapCapture={pendingMapCapture}
       onClearMapCapture={() => { if (pendingMapCapture?.previewUrl) URL.revokeObjectURL(pendingMapCapture.previewUrl); setPendingMapCapture(null); }}
+      onRequestPalmCapture={handleRequestPalmCapture}
+      pendingPalmCapture={pendingPalmCapture}
+      onClearPalmCapture={() => { if (pendingPalmCapture?.previewUrl) URL.revokeObjectURL(pendingPalmCapture.previewUrl); setPendingPalmCapture(null); }}
       layers={layers}
       onLayerToggle={handleLayerToggle}
       onLayerOpacity={handleLayerOpacity}
@@ -1153,6 +1196,8 @@ useEffect(() => {
     pendingTemplateCapture,
     handleRequestMapCapture,
     pendingMapCapture,
+    handleRequestPalmCapture,
+    pendingPalmCapture,
     activePanel,
     layers,
     handleLayerToggle,
@@ -1233,6 +1278,7 @@ useEffect(() => {
               onCapture={handleCapture}
             flyToRef={flyToRef}
             clearRef={clearRef}
+            captureCurrentRef={captureCurrentRef}
             onSatChange={(h) => { changeSatRef.current = h; }}
               onOpacityChangeRegister={(h) => { changeOpacityRef.current = h; }}
             onImagePlacerRegister={(h) => { startImagePlacementRef.current = h; }}

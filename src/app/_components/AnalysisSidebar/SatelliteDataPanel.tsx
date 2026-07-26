@@ -569,6 +569,53 @@ async function getSignedPlanetaryComputerUrl(url: string) {
   }
 }
 
+// ── Sentinel-5P (Atmosphere) — real backend (sentinel5p_cog.py) ────────────
+// شكل الـ endpoint الحقيقي (من sentinel5p_cog.py):
+//   GET /api/sentinel5p/cog?asset_url=<NetCDF href من STAC item>&variable=<var>
+//       &bbox=west,south,east,north&min_qa=0.5
+//   → { url: "/cog-cache/<hash>.tif", cached: bool, stats?: {min,max,mean,...} }
+// ده بيرجّع COG (GeoTIFF عادي) — مش صورة جاهزة — فبعد ما ناخده بنبعته لـ
+// /api/raster-proxy/analyze زي أي GeoTIFF تاني (نفس فكرة باقي المصادر)،
+// عشان يطبّق عليه الـ colormap/stretch (route.ts بقى بيعامل no2/so2/co/ozone
+// كـ index عادي bandCount:1 — شوفي ANALYSIS_CONFIG هناك).
+// ⚠️ الـ base URL بتاع sentinel5p_cog.py (المايكروسيرفس ده) مش نفس /gis/*
+// العادي — هو FastAPI منفصل شغّال (حسب تعليمات التشغيل جوه الملف) على بورت
+// 8001. حطيت افتراض https://webgiss.duckdns.org:8001 تحت — أكدي لو
+// الدومين/البورت مختلف (مثلاً لو معمول reverse-proxy تحت مسار مختلف).
+const SENTINEL5P_CONVERTER_BASE_URL = "https://webgiss.duckdns.org:8001";
+
+const SENTINEL5P_VARIABLES: Record<"NO2" | "SO2" | "CO" | "OZONE", string> = {
+  NO2: "nitrogendioxide_tropospheric_column",
+  SO2: "sulfurdioxide_total_vertical_column",
+  CO: "carbonmonoxide_total_column",
+  OZONE: "ozone_total_vertical_column",
+};
+
+async function fetchSentinel5pCog(params: {
+  assetUrl: string;
+  variable: string;
+  bbox: [number, number, number, number]; // west, south, east, north
+  minQa?: number;
+}): Promise<{ url: string; stats?: { min?: number; max?: number; mean?: number } }> {
+  const { assetUrl, variable, bbox, minQa = 0.5 } = params;
+  const qs = new URLSearchParams({
+    asset_url: assetUrl,
+    variable,
+    bbox: bbox.join(","),
+    min_qa: String(minQa),
+  });
+  const res = await fetch(`${SENTINEL5P_CONVERTER_BASE_URL}/api/sentinel5p/cog?${qs.toString()}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Sentinel-5P COG conversion failed (${res.status}). ${text.slice(0, 160)}`);
+  }
+  const data = await res.json().catch(() => null);
+  const cogUrl = typeof data?.url === "string" ? data.url : null;
+  if (!cogUrl) throw new Error("Sentinel-5P converter returned no COG url — check its response shape.");
+  const absoluteUrl = cogUrl.startsWith("http") ? cogUrl : `${SENTINEL5P_CONVERTER_BASE_URL}${cogUrl}`;
+  return { url: absoluteUrl, stats: data?.stats };
+}
+
 async function downloadExternalFile(url: string, fileName: string) {
   try {
     const response = await fetch(url);
@@ -1374,6 +1421,45 @@ useEffect(() => {
   // rawPreviewUrl (route.ts بتاعنا) لكل الأنواع، فكل analysis بيرجّع من
   // الـ asset الصح بتاعه فعلًا.
   let previewUrl = rawPreviewUrl;
+
+  // ── Sentinel-5P: assets["no2"/"so2"/"co"/"o3"] بيبقوا NetCDF خام —
+  // route.ts محتاج GeoTIFF. بنحول الأول عن طريق sentinel5p_cog.py (COG
+  // conversion)، وبعدين بنبعت رابط الـ COG الناتج لـ /api/raster-proxy/analyze
+  // زي أي GeoTIFF تاني (بنفس pipeline الـ colormap/stretch).
+  if (source === "sentinel-5p") {
+    try {
+      const visualization = getVisualization(analysis, scene.collection);
+      const assetKey = visualization.assets[0]; // "no2" | "so2" | "co" | "o3"
+      const rawAssetUrl = getSceneAssetUrls(scene, analysis)[assetKey];
+      if (!rawAssetUrl) {
+        throw new Error(`This scene doesn't include the ${assetKey.toUpperCase()} NetCDF asset.`);
+      }
+      const variable = SENTINEL5P_VARIABLES[analysis as "NO2" | "SO2" | "CO" | "OZONE"];
+      const { url: cogUrl, stats } = await fetchSentinel5pCog({
+        assetUrl: rawAssetUrl,
+        variable,
+        bbox: [west, south, east, north],
+      });
+
+      const params = new URLSearchParams();
+      params.set("type", visualization.type);
+      params.set("urls", cogUrl);
+      params.set("bbox", `${west},${south},${east},${north}`);
+      // stats بترجع بس لما التحويل يكون fresh (مش cache hit) — لو مش موجودة
+      // (cached:true من غير stats)، renderIndex في route.ts بيقع على
+      // -1/1 الافتراضي، فمش هيكسر حاجة، بس الألوان ممكن تبان مسطحة لحد ما
+      // يتحدد min/max حقيقي لكل غاز.
+      if (typeof stats?.min === "number" && typeof stats?.max === "number") {
+        params.set("min", String(stats.min));
+        params.set("max", String(stats.max));
+      }
+      previewUrl = `/api/raster-proxy/analyze?${params.toString()}`;
+    } catch (err) {
+      setSceneError(err instanceof Error ? err.message : "Sentinel-5P request failed.");
+      setPreviewingSceneId(null);
+      return;
+    }
+  }
   // ⚠️ clipImageToPolygon بيعمل canvas processing synchronous على الصورة كاملة.
   // للمصادر البصرية (sentinel-2/landsat) الصورة الراجعة من الباك مقصوصة
   // بالـ bbox فعلًا فحجمها مضبوط. لكن Sentinel-1 (VV/VH/FLOOD/CHANGE) وCop-DEM
@@ -1633,9 +1719,9 @@ function openImageUrlSafely(url: string) {
         <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Band selector</p>
 
         {source === "sentinel-5p" && (
-          <div className="rounded-lg border border-amber-400/18 bg-amber-400/[0.05] px-3 py-2 text-[0.6rem] text-amber-200">
-            Sentinel-5P products aren&apos;t rendering yet — the source data is NetCDF, which needs a
-            conversion step on the backend before previews will work here.
+          <div className="rounded-lg border border-cyan-400/18 bg-cyan-400/[0.05] px-3 py-2 text-[0.6rem] text-cyan-200">
+            Sentinel-5P previews go through a NetCDF → COG conversion step (sentinel5p_cog.py) before
+            rendering — the first preview of a new scene/gas may take a bit longer while it converts.
           </div>
         )}
 

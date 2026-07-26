@@ -426,11 +426,29 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     product: "aspect", defaultColormap: "rdylbu_r",
   },
 
-  // ── Sentinel-5P (Atmosphere) — لسه مش متاحين ────────────────────────────────
-  no2: { kind: "unsupported", label: "NO2 tropospheric column", reason: "sentinel-5p-l2-netcdf assets are NetCDF, not GeoTIFF — needs a separate conversion/rendering step before this route can read them." },
-  so2: { kind: "unsupported", label: "SO2 column density", reason: "sentinel-5p-l2-netcdf assets are NetCDF, not GeoTIFF — needs a separate conversion/rendering step before this route can read them." },
-  co:  { kind: "unsupported", label: "CO column density", reason: "sentinel-5p-l2-netcdf assets are NetCDF, not GeoTIFF — needs a separate conversion/rendering step before this route can read them." },
-  ozone: { kind: "unsupported", label: "Total column ozone", reason: "sentinel-5p-l2-netcdf assets are NetCDF, not GeoTIFF — needs a separate conversion/rendering step before this route can read them." },
+  // ── Sentinel-5P (Atmosphere) ────────────────────────────────────────────
+  // ✅ اتحلت: الفرونت بقى بيكلم sentinel5p_cog.py الأول (GET /api/sentinel5p/cog)
+  // ويحول أصل الـ NetCDF لـ COG حقيقي، وبعدين بيبعت رابط الـ COG ده هنا في
+  // "urls" — يعني ده بقى GeoTIFF عادي بالنسبالنا (band واحد، قيمة العمود
+  // الفعلية جاهزة من غير أي حساب formula، فـ identity function). rMin/rMax
+  // بييجوا من ?min=/?max= (الفرونت بيبعتهم من stats الراجعة من الـ converter
+  // نفسه لو التحويل كان fresh، وإلا بيقع على defaults محلية).
+  no2: {
+    kind: "index", bandCount: 1, label: "NO2 tropospheric column (mol/m², single band from COG)",
+    formula: (v) => v, defaultColormap: "inferno",
+  },
+  so2: {
+    kind: "index", bandCount: 1, label: "SO2 column density (mol/m², single band from COG)",
+    formula: (v) => v, defaultColormap: "rdylbu_r",
+  },
+  co: {
+    kind: "index", bandCount: 1, label: "CO column density (mol/m², single band from COG)",
+    formula: (v) => v, defaultColormap: "greens",
+  },
+  ozone: {
+    kind: "index", bandCount: 1, label: "Total column ozone (mol/m², single band from COG)",
+    formula: (v) => v, defaultColormap: "rdbu_r",
+  },
 };
 
 // ── reproject a native-CRS bbox into WGS84 (lon/lat), reused by full & windowed reads ──

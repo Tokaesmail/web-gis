@@ -13,6 +13,7 @@ import { type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
 import VolumeCalculationPanel from "./VolumeCalculationPanel";
 import { OPEN_RASTER_CALCULATOR_EVENT } from "./sharedSceneSelection";
+import { RasterCalcSidebarItem, PALM_ICON, type RasterTabKey } from "./PalmTreesPanel";
 
 export default function AnalysisSidebar(
   {
@@ -36,6 +37,9 @@ export default function AnalysisSidebar(
   onRequestMapCapture,
   pendingMapCapture,
   onClearMapCapture,
+  onRequestPalmCapture,
+  pendingPalmCapture,
+  onClearPalmCapture,
   layers,
   onLayerToggle,
   onLayerOpacity,
@@ -72,6 +76,9 @@ export default function AnalysisSidebar(
   onRequestMapCapture?: () => void;
   pendingMapCapture?: MapCapture | null;
   onClearMapCapture?: () => void;
+  onRequestPalmCapture?: () => void;
+  pendingPalmCapture?: MapCapture | null;
+  onClearPalmCapture?: () => void;
   layers: MapLayer[];
   onLayerToggle: (id: string, visible: boolean) => void;
   onLayerOpacity: (id: string, opacity: number) => void;
@@ -91,6 +98,11 @@ export default function AnalysisSidebar(
   onOpenElevationFloat?: () => void;
 }) {
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
+  // Which Raster Calc sub-tab is active — "default" (the original Raster
+  // Calculator) or "palms" (PalmTreesPanel.tsx, a fully separate file).
+  // Lives here (not inside PanelContent) so it survives re-renders of the
+  // panel body and so the sidebar header label/icon can reflect it too.
+  const [rasterTab, setRasterTab] = useState<RasterTabKey>("default");
   const [uploadOpen, setUploadOpen] = useState(false);
   const { isRTL } = useLang();
   const [sidebarWidth, setSidebarWidth] = useState(340);
@@ -127,11 +139,24 @@ export default function AnalysisSidebar(
     }
   };
 
+  // Used by the Raster Calc / Palms hover flyout — always OPENS the raster
+  // panel with the chosen sub-tab (never toggles it closed), so picking an
+  // option from the flyout behaves predictably even if the panel is already open.
+  const selectRasterTab = (tab: RasterTabKey) => {
+    setRasterTab(tab);
+    if (onActivePanelChange) {
+      onActivePanelChange("raster");
+    } else {
+      setInternalActivePanel("raster");
+    }
+  };
+
   // SatelliteDataPanel dispatches this when the user clicks "Use this scene
   // in Raster Calculator" — always OPEN the panel (unlike togglePanel,
   // never close it even if it's already the active one).
   useEffect(() => {
     const openRasterPanel = () => {
+      setRasterTab("default");
       if (onActivePanelChange) {
         onActivePanelChange("raster");
       } else {
@@ -143,6 +168,9 @@ export default function AnalysisSidebar(
   }, [onActivePanelChange]);
   //^ معرفة بيانات الـ Panel
   const activeItem = panels.find((p) => p.id === activePanel);
+  const isPalmsActive = activePanel === "raster" && rasterTab === "palms";
+  const headerIcon = isPalmsActive ? PALM_ICON : activeItem?.icon;
+  const headerLabel = isPalmsActive ? "Palms" : (isRTL ? activeItem?.labelAr : activeItem?.labelEn);
 
   return (
     <>
@@ -180,10 +208,10 @@ export default function AnalysisSidebar(
             <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-white/[0.06] shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-7 h-7 rounded-lg bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400">
-                  {activeItem?.icon}
+                  {headerIcon}
                 </div>
                 <span className="text-sm font-medium text-slate-200">
-                  {isRTL ? activeItem?.labelAr : activeItem?.labelEn}
+                  {headerLabel}
                 </span>
               </div>
               <button
@@ -202,6 +230,7 @@ export default function AnalysisSidebar(
               {activePanel && (
                 <PanelContent
                   id={activePanel}
+                  rasterTab={rasterTab}
                   selectedFeature={selectedFeature}
                   uploadedGeoJsonMap={uploadedGeoJsonMap}
                   captures={captures}
@@ -217,6 +246,9 @@ export default function AnalysisSidebar(
                   onRequestMapCapture={onRequestMapCapture}
                   pendingMapCapture={pendingMapCapture}
                   onClearMapCapture={onClearMapCapture}
+                  onRequestPalmCapture={onRequestPalmCapture}
+                  pendingPalmCapture={pendingPalmCapture}
+                  onClearPalmCapture={onClearPalmCapture}
                   layers={layers}
                   onLayerToggle={onLayerToggle}
                   onLayerOpacity={onLayerOpacity}
@@ -242,46 +274,67 @@ export default function AnalysisSidebar(
           className="h-full flex flex-col items-center py-3 gap-1 bg-[#070f1e]/92 backdrop-blur-xl border-l border-white/[0.07] w-[52px] shrink-0"
           style={{ pointerEvents: "all" }}
         >
-          {panels.map((item) => (
-            <div key={item.id} className="relative group w-full flex justify-center">
-              <button
-                onClick={() => togglePanel(item.id)}
-                title={isRTL ? item.labelAr : item.labelEn}
-                aria-label={isRTL ? item.labelAr : item.labelEn}
-                className={`
-                  relative w-9 h-9 rounded-lg flex items-center justify-center
-                  transition-all duration-150 cursor-pointer
-                  ${activePanel === item.id
-                    ? "bg-cyan-400/15 text-cyan-400 shadow-[inset_0_0_0_1px_rgba(0,212,255,0.3)]"
-                    : "text-slate-500 hover:text-slate-200 hover:bg-white/[0.07]"
-                  }
-                `}
-              >
-                {item.icon}
-                {item.badge && (
-                  <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-3.5 bg-cyan-400 text-[#040d1a] text-[0.52rem] font-bold rounded-full flex items-center justify-center px-0.5">
-                    {item.badge}
-                  </span>
-                )}
-              </button>
+          {panels.map((item) => {
+            // "raster" gets a hover flyout (Raster Calc / Palms) instead of
+            // the plain icon+tooltip every other item uses — everything
+            // else below is untouched.
+            if (item.id === "raster") {
+              return (
+                <RasterCalcSidebarItem
+                  key={item.id}
+                  isActive={activePanel === "raster"}
+                  activeTab={rasterTab}
+                  onSelect={selectRasterTab}
+                  isRTL={isRTL}
+                  rasterIcon={item.icon}
+                  rasterLabelEn={item.labelEn}
+                  rasterLabelAr={item.labelAr}
+                  badge={item.badge}
+                />
+              );
+            }
 
-              {/* Tooltip */}
-              <div className={`
-                absolute top-1/2 -translate-y-1/2 pointer-events-none
-                opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50
-                ${isRTL ? "right-11" : "left-11"}
-              `}>
-                <div className="bg-[#0d1b2e] border border-white/10 text-slate-200 text-[0.68rem] tracking-wide px-2.5 py-1 rounded-md whitespace-nowrap shadow-xl">
-                  {isRTL ? item.labelAr : item.labelEn}
+            return (
+              <div key={item.id} className="relative group w-full flex justify-center">
+                <button
+                  onClick={() => togglePanel(item.id)}
+                  title={isRTL ? item.labelAr : item.labelEn}
+                  aria-label={isRTL ? item.labelAr : item.labelEn}
+                  className={`
+                    relative w-9 h-9 rounded-lg flex items-center justify-center
+                    transition-all duration-150 cursor-pointer
+                    ${activePanel === item.id
+                      ? "bg-cyan-400/15 text-cyan-400 shadow-[inset_0_0_0_1px_rgba(0,212,255,0.3)]"
+                      : "text-slate-500 hover:text-slate-200 hover:bg-white/[0.07]"
+                    }
+                  `}
+                >
+                  {item.icon}
                   {item.badge && (
-                    <span className="ml-1.5 bg-cyan-400/20 text-cyan-400 text-[0.58rem] px-1 rounded">
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-3.5 bg-cyan-400 text-[#040d1a] text-[0.52rem] font-bold rounded-full flex items-center justify-center px-0.5">
                       {item.badge}
                     </span>
                   )}
+                </button>
+
+                {/* Tooltip */}
+                <div className={`
+                  absolute top-1/2 -translate-y-1/2 pointer-events-none
+                  opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50
+                  ${isRTL ? "right-11" : "left-11"}
+                `}>
+                  <div className="bg-[#0d1b2e] border border-white/10 text-slate-200 text-[0.68rem] tracking-wide px-2.5 py-1 rounded-md whitespace-nowrap shadow-xl">
+                    {isRTL ? item.labelAr : item.labelEn}
+                    {item.badge && (
+                      <span className="ml-1.5 bg-cyan-400/20 text-cyan-400 text-[0.58rem] px-1 rounded">
+                        {item.badge}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           <div className="w-6 h-px bg-white/[0.08] my-1" />
 
