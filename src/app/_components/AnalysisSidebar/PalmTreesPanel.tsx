@@ -68,6 +68,21 @@ function colormapPreviewGradient(name: string): string {
   return COLOR_RAMPS.find((r) => r.key === name)?.gradient ?? COLOR_RAMPS[COLOR_RAMPS.length - 1].gradient;
 }
 
+// ─── Value Heatmap — الأعمدة الرقمية اللي ممكن اليوزر يختار يرسم منها هيت
+// ماب "قيمة" بدل هيت ماب "كثافة" ─────────────────────────────────────────────
+// نفس NUMERIC_COLUMNS بالحرف الواحد من app/api/palm-excel/route.ts (ما عدا
+// Palm ID، ده مُعرّف مش قيمة نرسمها). لو الباك إند ضاف عمود رقمي جديد يوم ما،
+// يتضاف هنا بس عشان يظهر في الـ dropdown.
+type HeatmapMode = "density" | "value";
+
+const VALUE_FIELDS: { key: string; label: string }[] = [
+  { key: "NDVI Value", label: "NDVI Value" },
+  { key: "NDMI Value", label: "NDMI Value" },
+  { key: "Stress Score", label: "Stress Score" },
+  { key: "Crown Diameter (m)", label: "Crown Diameter (m)" },
+  { key: "Crown Area (m2)", label: "Crown Area (m2)" },
+];
+
 // نفس شكل RasterPreviewConfig المستخدم في PlanetaryRasterPanel.tsx —
 // عشان لو الـ parent (MapClient) عنده onPreview overlay logic جاهز، الهيت
 // ماب بتاع النخل يشتغل عليه "زيها بالظبط" من غير أي تعديل هناك.
@@ -389,6 +404,11 @@ export default function PalmTreesPanel({
 
   // ── Heatmap state — نفس فكرة Colormap/Rescale بتاعة raster-calc، بس هنا
   // مطبّقة على شبكة كثافة نقط النخل بدل قيم NDVI/NDWI ─────────────────────
+  // heatmapMode: "density" (فين النخل مركّز) أو "value" (قيمة عمود بعينه —
+  // مثلاً نتيجة معادلة NDVI اللي اليوزر دخلها في الـ Formula box — موزّعة
+  // مكانيًا على النخل بدل عدّها بس)
+  const [heatmapMode, setHeatmapMode] = useState<HeatmapMode>("density");
+  const [valueField, setValueField] = useState<string>(VALUE_FIELDS[0].key);
   const [colormap, setColormap] = useState("inferno");
   const [rescaleMin, setRescaleMin] = useState(0);
   const [rescaleMax, setRescaleMax] = useState(1);
@@ -428,7 +448,7 @@ export default function PalmTreesPanel({
   // ── Heatmap generation — بتتنادى تلقائيًا أول ما نتيجة الكشف تنجح (لو فيه
   // geojson_url)، وبتتنادى تاني يدويًا لما اليوزر يغيّر الـ Colormap أو
   // الـ Rescale (زرار "Regenerate" تحت) بدل ما يعيد كشف النخل من الأول ────
-  const generateHeatmap = async (geojsonUrl: string) => {
+  const generateHeatmap = async (geojsonUrl: string, csvUrl?: string | null) => {
     setHeatmapStatus("loading");
     setHeatmapError(null);
     try {
@@ -437,10 +457,22 @@ export default function PalmTreesPanel({
         geojsonUrl,
         bbox: `${w},${s},${e},${n}`,
         colormap,
-        alphaLow: "0",
-        alphaHigh: "0.18",
         radius: "16",
       });
+
+      if (heatmapMode === "value") {
+        params.set("mode", "value");
+        params.set("valueField", valueField);
+        // csvUrl بيتبعت كـ fallback بس — لو القيمة موجودة أصلًا جوا properties
+        // كل نقطة في الـ geojson، الراوت هيستخدمها مباشرة من غير ما يحتاج الـ CSV خالص
+        const csv = csvUrl ?? result?.data?.csv_url;
+        if (csv) params.set("csvUrl", csv);
+      } else {
+        params.set("mode", "density");
+        params.set("alphaLow", "0");
+        params.set("alphaHigh", "0.18");
+      }
+
       if (userEditedRescale) {
         params.set("min", String(rescaleMin));
         params.set("max", String(rescaleMax));
@@ -479,8 +511,11 @@ export default function PalmTreesPanel({
       setHeatmapStatus("success");
 
       onPreview?.({
-        name: `Palm density · ${dateFrom}→${dateTo}`,
-        indexKey: "PALM_DENSITY",
+        name:
+          heatmapMode === "value"
+            ? `Palm ${valueField} · ${dateFrom}→${dateTo}`
+            : `Palm density · ${dateFrom}→${dateTo}`,
+        indexKey: heatmapMode === "value" ? `PALM_VALUE_${valueField}` : "PALM_DENSITY",
         date: dateFrom,
         dataUrl,
         bounds: renderedBounds,
@@ -591,7 +626,7 @@ export default function PalmTreesPanel({
       const geojsonUrl: string | undefined = data?.data?.geojson_url;
       if (geojsonUrl) {
         setUserEditedRescale(false); // نتاج جديد → خليه يحسب المدى تلقائيًا الأول
-        void generateHeatmap(geojsonUrl);
+        void generateHeatmap(geojsonUrl, data?.data?.csv_url ?? null);
       }
     } catch (err) {
       setStatus("error");
@@ -805,7 +840,9 @@ export default function PalmTreesPanel({
           {result?.data?.geojson_url && (
             <div className="space-y-2.5 rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
               <div className="flex items-center justify-between">
-                <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Density Heatmap</p>
+                <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">
+                  {heatmapMode === "value" ? `Value Heatmap · ${valueField}` : "Density Heatmap"}
+                </p>
                 {heatmapStatus === "loading" && (
                   <span className="flex items-center gap-1.5 text-[0.6rem] text-cyan-300">
                     <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
@@ -815,6 +852,70 @@ export default function PalmTreesPanel({
                   </span>
                 )}
               </div>
+
+              {/* Density / Value toggle — كثافة النخل (فين مركّز) ولا قيمة
+                  عمود بعينه (نتيجة المعادلة، مثلاً NDVI Value) موزّعة مكانيًا
+                  على النخل. التبديل بيولّد الهيت ماب تاني على طول. */}
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (heatmapMode === "density") return;
+                    setHeatmapMode("density");
+                    setUserEditedRescale(false);
+                    const gj = result?.data?.geojson_url;
+                    if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null);
+                  }}
+                  className={`rounded-md border px-2 py-1.5 text-[0.62rem] font-semibold transition-colors ${
+                    heatmapMode === "density"
+                      ? "border-cyan-400/45 bg-cyan-400/[0.1] text-cyan-300"
+                      : "border-white/[0.07] bg-white/[0.02] text-slate-400 hover:border-white/[0.16]"
+                  }`}
+                >
+                  Density
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (heatmapMode === "value") return;
+                    setHeatmapMode("value");
+                    setUserEditedRescale(false);
+                    const gj = result?.data?.geojson_url;
+                    if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null);
+                  }}
+                  className={`rounded-md border px-2 py-1.5 text-[0.62rem] font-semibold transition-colors ${
+                    heatmapMode === "value"
+                      ? "border-cyan-400/45 bg-cyan-400/[0.1] text-cyan-300"
+                      : "border-white/[0.07] bg-white/[0.02] text-slate-400 hover:border-white/[0.16]"
+                  }`}
+                >
+                  Value (expression result)
+                </button>
+              </div>
+
+              {/* اختيار العمود — يظهر بس في وضع Value. القايمة نفسها أعمدة
+                  CSV/Excel الرقمية بالحرف الواحد (NDVI Value/NDMI Value/...) */}
+              {heatmapMode === "value" && (
+                <div className="flex items-center gap-2">
+                  <span className="text-[0.58rem] uppercase tracking-wider text-slate-500 shrink-0">Column</span>
+                  <select
+                    value={valueField}
+                    onChange={(e) => {
+                      setValueField(e.target.value);
+                      setUserEditedRescale(false);
+                      const gj = result?.data?.geojson_url;
+                      if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null);
+                    }}
+                    className="flex-1 rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2 py-1.5 text-[0.65rem] text-slate-200 outline-none focus:border-cyan-400/40"
+                  >
+                    {VALUE_FIELDS.map((f) => (
+                      <option key={f.key} value={f.key}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {/* Colormap swatches — نفس الـ 8 ألوان بالظبط من raster-calc */}
               <div className="grid grid-cols-4 gap-1.5">
@@ -853,7 +954,10 @@ export default function PalmTreesPanel({
                 />
                 <button
                   type="button"
-                  onClick={() => result?.data?.geojson_url && void generateHeatmap(result.data.geojson_url)}
+                  onClick={() =>
+                    result?.data?.geojson_url &&
+                    void generateHeatmap(result.data.geojson_url, result?.data?.csv_url ?? null)
+                  }
                   disabled={heatmapStatus === "loading"}
                   className="ml-auto rounded-md bg-cyan-400/15 px-2.5 py-1 text-[0.6rem] font-semibold text-cyan-300 border border-cyan-400/30 hover:bg-cyan-400/25 disabled:opacity-50"
                 >
@@ -872,8 +976,11 @@ export default function PalmTreesPanel({
                     if (heatmapDataUrl && heatmapBounds) {
                       const [[rs, rw], [rn, re]] = heatmapBounds;
                       onPreview?.({
-                        name: `Palm density · ${dateFrom}→${dateTo}`,
-                        indexKey: "PALM_DENSITY",
+                        name:
+                          heatmapMode === "value"
+                            ? `Palm ${valueField} · ${dateFrom}→${dateTo}`
+                            : `Palm density · ${dateFrom}→${dateTo}`,
+                        indexKey: heatmapMode === "value" ? `PALM_VALUE_${valueField}` : "PALM_DENSITY",
                         date: dateFrom,
                         dataUrl: heatmapDataUrl,
                         bounds: heatmapBounds,
@@ -891,15 +998,17 @@ export default function PalmTreesPanel({
               {/* Legend gradient bar — نفس شكل الـ legend بتاع raster-calc */}
               <div>
                 <div className="flex items-center justify-between text-[0.55rem] text-slate-500 mb-1">
-                  <span>{rescaleMin.toFixed(2)} (sparse)</span>
-                  <span>(dense) {rescaleMax.toFixed(2)}</span>
+                  <span>{rescaleMin.toFixed(2)}{heatmapMode === "density" ? " (sparse)" : ""}</span>
+                  <span>{heatmapMode === "density" ? "(dense) " : ""}{rescaleMax.toFixed(2)}</span>
                 </div>
                 <div className="h-3 rounded-full overflow-hidden" style={{ background: activeColorRamp.gradient }} />
               </div>
 
               {heatmapStatus === "success" && heatmapStats && (
                 <p className="text-[0.58rem] text-slate-500">
-                  {heatmapStats.validPixels.toLocaleString()} rendered cells · mean density {heatmapStats.mean.toFixed(3)}
+                  {heatmapMode === "value"
+                    ? `${heatmapStats.validPixels.toLocaleString()} rendered cells · mean ${valueField} ${heatmapStats.mean.toFixed(3)}`
+                    : `${heatmapStats.validPixels.toLocaleString()} rendered cells · mean density ${heatmapStats.mean.toFixed(3)}`}
                 </p>
               )}
 
@@ -927,6 +1036,8 @@ export default function PalmTreesPanel({
               setHeatmapDataUrl(null);
               setHeatmapBounds(null);
               setHeatmapStats(null);
+              setHeatmapMode("density");
+              setUserEditedRescale(false);
             }}
             className="text-[0.6rem] text-slate-400 hover:text-slate-200 underline"
           >
