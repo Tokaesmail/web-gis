@@ -448,7 +448,21 @@ export default function PalmTreesPanel({
   // ── Heatmap generation — بتتنادى تلقائيًا أول ما نتيجة الكشف تنجح (لو فيه
   // geojson_url)، وبتتنادى تاني يدويًا لما اليوزر يغيّر الـ Colormap أو
   // الـ Rescale (زرار "Regenerate" تحت) بدل ما يعيد كشف النخل من الأول ────
-  const generateHeatmap = async (geojsonUrl: string, csvUrl?: string | null) => {
+  const generateHeatmap = async (
+    geojsonUrl: string,
+    csvUrl?: string | null,
+    overrides?: { colormap?: string; mode?: HeatmapMode; valueField?: string }
+  ) => {
+    // ⚠️ بنستخدم الـ overrides (لو موجودة) بدل الـ state مباشرة، لأن setState
+    // (setColormap/setHeatmapMode/setValueField) async — لو ندّينا على
+    // generateHeatmap في نفس اللحظة اللي بندّي فيها setState، الـ closure هنا
+    // لسه شايف القيمة القديمة، فكان بيتولّد هيت ماب بنفس الألوان/الوضع القديم
+    // رغم إن الزرار اتغيّر شكله (ده اللي كان بيخلي زراير الألوان تبان "ديزاين
+    // بس" — تتلوّن هي نفسها لكن الهيت ماب الفعلي على الخريطة ما يتغيّرش).
+    const effColormap = overrides?.colormap ?? colormap;
+    const effMode = overrides?.mode ?? heatmapMode;
+    const effValueField = overrides?.valueField ?? valueField;
+
     setHeatmapStatus("loading");
     setHeatmapError(null);
     try {
@@ -456,13 +470,13 @@ export default function PalmTreesPanel({
       const params = new URLSearchParams({
         geojsonUrl,
         bbox: `${w},${s},${e},${n}`,
-        colormap,
+        colormap: effColormap,
         radius: "16",
       });
 
-      if (heatmapMode === "value") {
+      if (effMode === "value") {
         params.set("mode", "value");
-        params.set("valueField", valueField);
+        params.set("valueField", effValueField);
         // csvUrl بيتبعت كـ fallback بس — لو القيمة موجودة أصلًا جوا properties
         // كل نقطة في الـ geojson، الراوت هيستخدمها مباشرة من غير ما يحتاج الـ CSV خالص
         const csv = csvUrl ?? result?.data?.csv_url;
@@ -512,15 +526,15 @@ export default function PalmTreesPanel({
 
       onPreview?.({
         name:
-          heatmapMode === "value"
-            ? `Palm ${valueField} · ${dateFrom}→${dateTo}`
+          effMode === "value"
+            ? `Palm ${effValueField} · ${dateFrom}→${dateTo}`
             : `Palm density · ${dateFrom}→${dateTo}`,
-        indexKey: heatmapMode === "value" ? `PALM_VALUE_${valueField}` : "PALM_DENSITY",
+        indexKey: effMode === "value" ? `PALM_VALUE_${effValueField}` : "PALM_DENSITY",
         date: dateFrom,
         dataUrl,
         bounds: renderedBounds,
         opacity: opacity / 100,
-        colorRamp: colormap,
+        colorRamp: effColormap,
         coords: { lat: (rs + rn) / 2, lng: (rw + re) / 2 },
       });
     } catch (err) {
@@ -864,7 +878,7 @@ export default function PalmTreesPanel({
                     setHeatmapMode("density");
                     setUserEditedRescale(false);
                     const gj = result?.data?.geojson_url;
-                    if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null);
+                    if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null, { mode: "density" });
                   }}
                   className={`rounded-md border px-2 py-1.5 text-[0.62rem] font-semibold transition-colors ${
                     heatmapMode === "density"
@@ -881,7 +895,7 @@ export default function PalmTreesPanel({
                     setHeatmapMode("value");
                     setUserEditedRescale(false);
                     const gj = result?.data?.geojson_url;
-                    if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null);
+                    if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null, { mode: "value" });
                   }}
                   className={`rounded-md border px-2 py-1.5 text-[0.62rem] font-semibold transition-colors ${
                     heatmapMode === "value"
@@ -904,7 +918,7 @@ export default function PalmTreesPanel({
                       setValueField(e.target.value);
                       setUserEditedRescale(false);
                       const gj = result?.data?.geojson_url;
-                      if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null);
+                      if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null, { mode: "value", valueField: e.target.value });
                     }}
                     className="flex-1 rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2 py-1.5 text-[0.65rem] text-slate-200 outline-none focus:border-cyan-400/40"
                   >
@@ -917,15 +931,26 @@ export default function PalmTreesPanel({
                 </div>
               )}
 
-              {/* Colormap swatches — نفس الـ 8 ألوان بالظبط من raster-calc */}
+              {/* Colormap swatches — نفس الـ 8 ألوان بالظبط من raster-calc.
+                  🐛 FIX: كانت بس بتعمل setColormap (تلوّن نفسها + شريط الـ
+                  legend تحت) من غير ما تعيد توليد صورة الهيت ماب الفعلية على
+                  الخريطة — فكانت عمليًا "زراير ديزاين" بلا أي تأثير حقيقي على
+                  الهيت ماب المعروض. دلوقتي كل ضغطة بتولّد الهيت ماب فورًا
+                  باللون الجديد (لو فيه نتيجة كشف جاهزة أصلًا). */}
               <div className="grid grid-cols-4 gap-1.5">
                 {COLOR_RAMPS.map((ramp) => (
                   <button
                     key={ramp.key}
                     type="button"
-                    onClick={() => setColormap(ramp.key)}
+                    onClick={() => {
+                      if (colormap === ramp.key) return;
+                      setColormap(ramp.key);
+                      const gj = result?.data?.geojson_url;
+                      if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null, { colormap: ramp.key });
+                    }}
+                    disabled={heatmapStatus === "loading"}
                     title={ramp.label}
-                    className={`group rounded-md border p-1 transition-colors ${
+                    className={`group rounded-md border p-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                       colormap === ramp.key ? "border-cyan-400/45 bg-cyan-400/[0.08]" : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.16]"
                     }`}
                   >
