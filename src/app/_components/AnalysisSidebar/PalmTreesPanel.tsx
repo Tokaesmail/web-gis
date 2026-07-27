@@ -363,9 +363,15 @@ export default function PalmTreesPanel({
       form.append("date_range", `${dateFrom}/${dateTo}`);
       // study_area_bounds: حدود الشكل المرسوم بس
       form.append("study_area_bounds", JSON.stringify(boundsToArray(capture.bounds)));
-      // geo_bounds: حدود اللقطة الكاملة اللي الصورة اتقصت منها — fallback لحدود
-      // الشكل نفسه لو مفيش viewport bounds لأي سبب
-      form.append("geo_bounds", JSON.stringify(boundsToArray(capture.viewportBounds ?? capture.bounds)));
+      // 🐛 FIX: geo_bounds كان بيتبعت بحدود الـ viewport الكامل (capture.viewportBounds)
+      // رغم إن الصورة الفعلية اللي بتتبعت (rawSelectedBlob/smallBlob من useMapCanvas)
+      // مقصوصة بالظبط على حدود الشكل المرسوم — نفس study_area_bounds بالظبط، مش
+      // الـ viewport كله. ده كان بيخلي الباك إند يحسب موقع كل نخلة مكتشفة على أساس
+      // إن كل بكسل بيمثل مساحة جغرافية أكبر بكتير من الحقيقة، فالنقط كانت بتتزحلق
+      // برّه حدود البولجون بالظبط زي ما ظهر في الـ GeoJSON. geo_bounds لازم يساوي
+      // حدود الصورة المرسلة فعليًا — يعني نفس study_area_bounds طول ما لسه بنبعت
+      // الصورة المقصوصة (captureTarget === "small"، الافتراضي الوحيد المتاح حاليًا).
+      form.append("geo_bounds", JSON.stringify(boundsToArray(capture.bounds)));
 
       // ── حقول إضافية بنبعتها كمان للسياق/الدقة — الباك إند غالبًا بيتجاهل
       // أي حقل مش عارفه، مفيش ضرر من إبقائها ────────────────────────────────
@@ -382,7 +388,7 @@ export default function PalmTreesPanel({
       console.log("[Palm debug] image blob:", capture.blob.type, capture.blob.size, "bytes");
       console.log("[Palm debug] date_range:", `${dateFrom}/${dateTo}`);
       console.log("[Palm debug] study_area_bounds:", boundsToArray(capture.bounds));
-      console.log("[Palm debug] geo_bounds:", boundsToArray(capture.viewportBounds ?? capture.bounds));
+      console.log("[Palm debug] geo_bounds:", boundsToArray(capture.bounds));
       console.log("[Palm debug] expression:", expression.trim());
       console.log("[Palm debug] accessToken present?:", !!accessToken);
 

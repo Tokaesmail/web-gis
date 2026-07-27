@@ -233,10 +233,22 @@ export function useMapCanvas() {
     // ③ الـ fix: نقطع أول حاجة على الـ resolution الأصلي (أصغر بكتير من الـ full viewport)،
     // وبعدين نعمل resize للقطعة الصغيرة بس — بدل ما كنا بنعمل resize للـ viewport
     // الكامل مرتين (combined + base) وده اللي كان بياخد وقت طويل جداً.
-    // الـ scale factor بين الـ native viewport والـ FIXED_W×FIXED_H بيفضل ثابت
-    // فمفيش أي فرق في الدقة أو في اتساق الـ GSD بين الصورتين.
-    const scaleX = FIXED_W / combined.width;
-    const scaleY = FIXED_H / combined.height;
+    //
+    // ⚠️ BUG FIX: كان في تصغير غلط هنا — الكود القديم كان بيضرب حجم الـ AOI
+    // المقصوص (nativeCropW/H) في نفس نسبة تصغير الـ viewport الكامل لـ
+    // FIXED_W×FIXED_H (scaleX/Y = 1280/combined.width). النسبة دي منطقها
+    // للـ "large" (لقطة الشاشة الكاملة) بس، ومفيهاش أي معنى لقصة AOI صغيرة:
+    // لو الشكل المرسوم كان شاغل مثلاً 300×200px بس على الشاشة (مزرعة صغيرة/زووم
+    // بعيد)، الصورة النهائية كانت بتتقص لحوالي 195×130px — دقة ضعيفة جدًا
+    // بتخلي موديل كشف النخل مش قادر يميّز أي تاج نخلة فيها، فبيرجع 0 نتائج
+    // رغم إن الـ bounds/الإحداثيات صح 100%.
+    //
+    // الحل: حجم القصة بيتحدد من حجمها الأصلي هي (native pixels) مش من نسبة
+    // تصغير حاجة تانية، مع حد أدنى (MIN_CROP) عشان الأشكال الصغيرة على الشاشة
+    // تتكبّر لدقة كافية للموديل، وحد أقصى (MAX_CROP) عشان الملف ميبقاش ضخم من
+    // غير داعي لو الشكل كان شاغل الشاشة كلها.
+    const MIN_CROP = 512;
+    const MAX_CROP = 2048;
 
     const px = coordinates.map((p) =>
       mapInstance.latLngToContainerPoint(L.latLng(p.lat, p.lng))
@@ -250,14 +262,24 @@ export function useMapCanvas() {
     const nativeCropW = Math.max(1, maxX - minX);
     const nativeCropH = Math.max(1, maxY - minY);
 
-    const cropW = Math.max(1, Math.round(nativeCropW * scaleX));
-    const cropH = Math.max(1, Math.round(nativeCropH * scaleY));
+    // نحافظ على نسبة الطول للعرض (aspect ratio) الأصلية للقصة نفسها،
+    // ونطبّق نفس عامل التكبير/التصغير على البعدين مع بعض.
+    const longestSide = Math.max(nativeCropW, nativeCropH);
+    let cropScale = 1;
+    if (longestSide < MIN_CROP) {
+      cropScale = MIN_CROP / longestSide;       // كبّر الأشكال الصغيرة جدًا
+    } else if (longestSide > MAX_CROP) {
+      cropScale = MAX_CROP / longestSide;       // صغّر الأشكال الضخمة جدًا بس
+    }
+
+    const cropW = Math.max(1, Math.round(nativeCropW * cropScale));
+    const cropH = Math.max(1, Math.round(nativeCropH * cropScale));
 
     const clipToPolygon = (ctx: CanvasRenderingContext2D) => {
       ctx.beginPath();
       px.forEach(({ x, y }, i) => {
-        const sx = (x - minX) * scaleX;
-        const sy = (y - minY) * scaleY;
+        const sx = (x - minX) * cropScale;
+        const sy = (y - minY) * cropScale;
         i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
       });
       ctx.closePath();
