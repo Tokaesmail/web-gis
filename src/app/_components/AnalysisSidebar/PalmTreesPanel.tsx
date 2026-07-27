@@ -35,6 +35,67 @@ import { useSession } from "next-auth/react";
 // analyses — دلوقتي بيتبعت معاه Bearer token زيهم بالظبط (شوفي useSession تحت).
 const PALM_BACKEND_URL = "https://webgiss.duckdns.org/gis/palm-detection";
 
+// ─── Heatmap ────────────────────────────────────────────────────────────────
+// Palm Detection مش بيرجع GeoTIFF زي NDVI/NDWI في raster-calc — بيرجع بس
+// نقط (geojson_url). عشان الهيت ماب تبقى "زي راستر كلك بالظبط" (نفس
+// الألوان، نفس منطق الـ rescale)، الـ proxy الجديد ده
+// (app/api/palm-heatmap/route.ts) بيحوّل النقط دي لشبكة كثافة ويلوّنها
+// بنفس RAMPS/buildLUT اللي renderIndex بتاع raster-calc بيستخدمهم بالظبط.
+const PALM_HEATMAP_PROXY_URL = "/api/palm-heatmap";
+
+// ─── Excel export ───────────────────────────────────────────────────────────
+// نفس فكرة PALM_HEATMAP_PROXY_URL بالظبط: csv_url اللي راجع من /gis/palm-detection
+// خام بلا تنسيق، فالـ proxy ده (app/api/palm-excel/route.ts) بيجيبه من السيرفر
+// (مفيش CORS) ويحوله لملف .xlsx منسّق (هيدر ملوّن، فلتر تلقائي، تلوين شرطي
+// لعمود Risk Level) بدل ما يفتح CSV خام في تاب جديدة.
+const PALM_EXCEL_PROXY_URL = "/api/palm-excel";
+
+// نفس الـ 10 color ramps بالحرف الواحد من PlanetaryRasterPanel.tsx — نسخة
+// self-contained هنا (زي باقي هذا الملف) عشان الشكل يطابق تمامًا.
+const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
+  { key: "rdylgn",    label: "Vegetation", gradient: "linear-gradient(90deg,#a50026 0%,#d73027 10%,#f46d43 20%,#fdae61 30%,#fee08b 40%,#ffffbf 50%,#d9ef8b 60%,#a6d96a 70%,#66bd63 80%,#1a9850 90%,#006837 100%)" },
+  { key: "rdbu",      label: "Water",      gradient: "linear-gradient(90deg,#d9ef8b 0%,#a6d96a 17%,#66c2a5 33%,#3288bd 50%,#2166ac 67%,#08306b 83%,#062254 100%)" },
+  { key: "rdbu_r",    label: "Moisture",   gradient: "linear-gradient(90deg,#f3f1f4 0%,#f0cac1 13%,#eeb780 25%,#ebb25b 38%,#e8c32d 50%,#e7e600 63%,#9fd601 75%,#2ab900 88%,#02a402 100%)" },
+  { key: "spectral",  label: "Spectral",   gradient: "linear-gradient(90deg,#440154 0%,#482878 11%,#3e4989 22%,#31688e 33%,#26828e 44%,#1f9e89 56%,#35b779 67%,#6ece58 78%,#b5de2b 89%,#fde725 100%)" },
+  { key: "spectral_r",label: "Spectral R", gradient: "linear-gradient(90deg,#08306b 0%,#2166ac 14%,#4393c3 28%,#92c5de 43%,#f4a582 57%,#d6604d 71%,#b2182b 86%,#67001f 100%)" },
+  { key: "magma",     label: "Thermal",    gradient: "linear-gradient(90deg,#f6f6fd 0%,#a0abed 11%,#358dc5 22%,#278da6 33%,#78b49c 44%,#e3dc85 56%,#f4b46b 67%,#da5b52 78%,#a21643 89%,#61031f 100%)" },
+  { key: "greens",    label: "Greens",     gradient: "linear-gradient(90deg,#f7fcf5 0%,#e5f5e0 13%,#c7e9c0 25%,#a1d99b 38%,#74c476 50%,#41ab5d 63%,#238b45 75%,#006d2c 88%,#00441b 100%)" },
+  { key: "rdylbu_r",  label: "Heat",       gradient: "linear-gradient(90deg,#4b0082 0%,#6a00a8 13%,#0000ff 25%,#00bfff 38%,#00ffea 50%,#00ff40 63%,#ffff00 75%,#ff8000 88%,#ff0000 100%)" },
+  { key: "inferno",   label: "Inferno",    gradient: "linear-gradient(90deg,#000004 0%,#1b0c41 11%,#4a0c6b 22%,#781c6d 33%,#a52c60 44%,#cf4446 56%,#ed6925 67%,#fb9b06 78%,#f7d13d 89%,#fcffa4 100%)" },
+];
+
+function colormapPreviewGradient(name: string): string {
+  return COLOR_RAMPS.find((r) => r.key === name)?.gradient ?? COLOR_RAMPS[COLOR_RAMPS.length - 1].gradient;
+}
+
+// نفس شكل RasterPreviewConfig المستخدم في PlanetaryRasterPanel.tsx —
+// عشان لو الـ parent (MapClient) عنده onPreview overlay logic جاهز، الهيت
+// ماب بتاع النخل يشتغل عليه "زيها بالظبط" من غير أي تعديل هناك.
+export type PalmHeatmapPreviewConfig = {
+  name: string;
+  indexKey: string;
+  date: string;
+  coords: { lat: number; lng: number };
+  bounds: [[number, number], [number, number]]; // [[south, west],[north, east]]
+  opacity: number;
+  colorRamp: string;
+  dataUrl: string;
+};
+
+function readHeatmapStatsFromHeaders(res: Response, fallbackMin: number, fallbackMax: number) {
+  const statsHeader = res.headers.get("X-Raster-Stats");
+  let parsed: { min?: number; max?: number; mean?: number; validPixels?: number } = {};
+  if (statsHeader) {
+    try { parsed = JSON.parse(statsHeader); } catch { parsed = {}; }
+  }
+  return {
+    min: Number.isFinite(parsed.min) ? Number(parsed.min) : fallbackMin,
+    max: Number.isFinite(parsed.max) ? Number(parsed.max) : fallbackMax,
+    mean: Number.isFinite(parsed.mean) ? Number(parsed.mean) : (fallbackMin + fallbackMax) / 2,
+    validPixels: Number.isFinite(parsed.validPixels) ? Number(parsed.validPixels) : 0,
+  };
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 // نفس الـ MapCapture بتاع TemplateMatchPanel.tsx بالظبط
 export interface MapCapture {
@@ -55,6 +116,9 @@ type Props = {
   pendingCapture?: MapCapture | null;
   /** clear the current capture (e.g. after a run, or to recapture) */
   onClearCapture?: () => void;
+  /** called with the resulting density-heatmap PNG + bounds, so MapClient/LeafletMap
+   *  can overlay it — same callback shape as PlanetaryRasterPanel's onPreview */
+  onPreview?: (config: PalmHeatmapPreviewConfig) => void;
 };
 
 type PalmBBox = [number, number, number, number]; // [west, south, east, north]
@@ -308,6 +372,7 @@ export default function PalmTreesPanel({
   onRequestCapture,
   pendingCapture,
   onClearCapture,
+  onPreview,
 }: Props) {
   const { data: session } = useSession();
   const accessToken = (session?.user as any)?.accessToken as string | undefined;
@@ -321,6 +386,24 @@ export default function PalmTreesPanel({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
   const [loadingSeconds, setLoadingSeconds] = useState(0);
+
+  // ── Heatmap state — نفس فكرة Colormap/Rescale بتاعة raster-calc، بس هنا
+  // مطبّقة على شبكة كثافة نقط النخل بدل قيم NDVI/NDWI ─────────────────────
+  const [colormap, setColormap] = useState("inferno");
+  const [rescaleMin, setRescaleMin] = useState(0);
+  const [rescaleMax, setRescaleMax] = useState(1);
+  const [userEditedRescale, setUserEditedRescale] = useState(false);
+  const [opacity, setOpacity] = useState(70); // %
+  const [heatmapStatus, setHeatmapStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
+  const [heatmapError, setHeatmapError] = useState<string | null>(null);
+  const [heatmapStats, setHeatmapStats] = useState<{ min: number; max: number; mean: number; validPixels: number } | null>(null);
+  const [heatmapDataUrl, setHeatmapDataUrl] = useState<string | null>(null);
+  const [heatmapBounds, setHeatmapBounds] = useState<[[number, number], [number, number]] | null>(null);
+
+  const activeColorRamp = useMemo(
+    () => COLOR_RAMPS.find((r) => r.key === colormap) ?? COLOR_RAMPS[COLOR_RAMPS.length - 1],
+    [colormap]
+  );
 
   // ── عداد ثواني بسيط وقت status === "loading"، عشان يبقى واضح إنها لسه
   // شغالة فعلاً ومش عالقة (ده كان اللي مفقود قبل كذا) ───────────────────────
@@ -341,6 +424,75 @@ export default function PalmTreesPanel({
 
   const hasShape = shapeKind !== "unknown";
   const canRun = hasShape && expression.trim().length > 0 && status !== "loading" && status !== "capturing";
+
+  // ── Heatmap generation — بتتنادى تلقائيًا أول ما نتيجة الكشف تنجح (لو فيه
+  // geojson_url)، وبتتنادى تاني يدويًا لما اليوزر يغيّر الـ Colormap أو
+  // الـ Rescale (زرار "Regenerate" تحت) بدل ما يعيد كشف النخل من الأول ────
+  const generateHeatmap = async (geojsonUrl: string) => {
+    setHeatmapStatus("loading");
+    setHeatmapError(null);
+    try {
+      const [w, s, e, n] = bbox; // [west, south, east, north] — نفس شكل الشكل المرسوم بالظبط
+      const params = new URLSearchParams({
+        geojsonUrl,
+        bbox: `${w},${s},${e},${n}`,
+        colormap,
+        alphaLow: "0",
+        alphaHigh: "0.18",
+        radius: "16",
+      });
+      if (userEditedRescale) {
+        params.set("min", String(rescaleMin));
+        params.set("max", String(rescaleMax));
+      }
+
+      const res = await fetch(`${PALM_HEATMAP_PROXY_URL}?${params.toString()}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `Heatmap generation failed (${res.status})`);
+      }
+
+      const realBboxHeader = res.headers.get("X-Real-Bbox");
+      const realBbox = realBboxHeader
+        ? (realBboxHeader.split(",").map(Number) as [number, number, number, number])
+        : bbox;
+      const [rw, rs, re, rn] = realBbox;
+      const renderedBounds: [[number, number], [number, number]] = [[rs, rw], [rn, re]];
+
+      const heatStats = readHeatmapStatsFromHeaders(res, rescaleMin, rescaleMax);
+      if (!userEditedRescale) {
+        setRescaleMin(heatStats.min);
+        setRescaleMax(heatStats.max);
+      }
+
+      const pngBlob = await res.blob();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("Could not read heatmap PNG"));
+        reader.readAsDataURL(pngBlob);
+      });
+
+      setHeatmapStats(heatStats);
+      setHeatmapDataUrl(dataUrl);
+      setHeatmapBounds(renderedBounds);
+      setHeatmapStatus("success");
+
+      onPreview?.({
+        name: `Palm density · ${dateFrom}→${dateTo}`,
+        indexKey: "PALM_DENSITY",
+        date: dateFrom,
+        dataUrl,
+        bounds: renderedBounds,
+        opacity: opacity / 100,
+        colorRamp: colormap,
+        coords: { lat: (rs + rn) / 2, lng: (rw + re) / 2 },
+      });
+    } catch (err) {
+      setHeatmapStatus("error");
+      setHeatmapError(err instanceof Error ? err.message : "Heatmap generation failed.");
+    }
+  };
 
   const submitToBackend = async (capture: MapCapture) => {
     setStatus("loading");
@@ -434,6 +586,13 @@ export default function PalmTreesPanel({
       // ✅ نمسح اللقطة بس لما ينجح الطلب — لو فشل، سيبنا الصورة زي ما هي عشان
       // "Run" تاني يعيد نفس المحاولة من غير ما يطلب رسم شكل جديد من الصفر
       onClearCapture?.();
+
+      // ── الهيت ماب بتتولّد أوتوماتيك أول ما فيه geojson_url في الرد ────────
+      const geojsonUrl: string | undefined = data?.data?.geojson_url;
+      if (geojsonUrl) {
+        setUserEditedRescale(false); // نتاج جديد → خليه يحسب المدى تلقائيًا الأول
+        void generateHeatmap(geojsonUrl);
+      }
     } catch (err) {
       setStatus("error");
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -643,9 +802,132 @@ export default function PalmTreesPanel({
             </div>
           )}
 
+          {result?.data?.geojson_url && (
+            <div className="space-y-2.5 rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Density Heatmap</p>
+                {heatmapStatus === "loading" && (
+                  <span className="flex items-center gap-1.5 text-[0.6rem] text-cyan-300">
+                    <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" />
+                    </svg>
+                    Rendering…
+                  </span>
+                )}
+              </div>
+
+              {/* Colormap swatches — نفس الـ 8 ألوان بالظبط من raster-calc */}
+              <div className="grid grid-cols-4 gap-1.5">
+                {COLOR_RAMPS.map((ramp) => (
+                  <button
+                    key={ramp.key}
+                    type="button"
+                    onClick={() => setColormap(ramp.key)}
+                    title={ramp.label}
+                    className={`group rounded-md border p-1 transition-colors ${
+                      colormap === ramp.key ? "border-cyan-400/45 bg-cyan-400/[0.08]" : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.16]"
+                    }`}
+                  >
+                    <span className="block h-5 rounded" style={{ background: ramp.gradient }} />
+                    <span className={`mt-1 block text-[0.55rem] ${colormap === ramp.key ? "text-cyan-300" : "text-slate-500 group-hover:text-slate-300"}`}>
+                      {ramp.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Rescale min/max — نفس فكرة raster-calc: بيتحسبوا تلقائيًا
+                  من أعلى كثافة فعلية، لحد ما اليوزر يعدّلهم بإيده */}
+              <div className="flex items-center gap-2">
+                <span className="text-[0.58rem] uppercase tracking-wider text-slate-500 shrink-0">Rescale</span>
+                <input
+                  type="number" step="0.05" value={rescaleMin}
+                  onChange={(e) => { setUserEditedRescale(true); setRescaleMin(Number(e.target.value)); }}
+                  className="w-16 rounded border border-white/10 bg-[#020817]/70 px-1.5 py-1 text-[0.65rem] text-slate-200 outline-none focus:border-cyan-400/40"
+                />
+                <span className="text-slate-600">→</span>
+                <input
+                  type="number" step="0.05" value={rescaleMax}
+                  onChange={(e) => { setUserEditedRescale(true); setRescaleMax(Number(e.target.value)); }}
+                  className="w-16 rounded border border-white/10 bg-[#020817]/70 px-1.5 py-1 text-[0.65rem] text-slate-200 outline-none focus:border-cyan-400/40"
+                />
+                <button
+                  type="button"
+                  onClick={() => result?.data?.geojson_url && void generateHeatmap(result.data.geojson_url)}
+                  disabled={heatmapStatus === "loading"}
+                  className="ml-auto rounded-md bg-cyan-400/15 px-2.5 py-1 text-[0.6rem] font-semibold text-cyan-300 border border-cyan-400/30 hover:bg-cyan-400/25 disabled:opacity-50"
+                >
+                  Regenerate
+                </button>
+              </div>
+
+              {/* Opacity slider */}
+              <div className="flex items-center gap-2">
+                <span className="text-[0.58rem] uppercase tracking-wider text-slate-500 shrink-0">Opacity</span>
+                <input
+                  type="range" min={0} max={100} value={opacity}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setOpacity(v);
+                    if (heatmapDataUrl && heatmapBounds) {
+                      const [[rs, rw], [rn, re]] = heatmapBounds;
+                      onPreview?.({
+                        name: `Palm density · ${dateFrom}→${dateTo}`,
+                        indexKey: "PALM_DENSITY",
+                        date: dateFrom,
+                        dataUrl: heatmapDataUrl,
+                        bounds: heatmapBounds,
+                        opacity: v / 100,
+                        colorRamp: colormap,
+                        coords: { lat: (rs + rn) / 2, lng: (rw + re) / 2 },
+                      });
+                    }
+                  }}
+                  className="flex-1 accent-cyan-400"
+                />
+                <span className="w-8 text-right text-[0.6rem] text-slate-400">{opacity}%</span>
+              </div>
+
+              {/* Legend gradient bar — نفس شكل الـ legend بتاع raster-calc */}
+              <div>
+                <div className="flex items-center justify-between text-[0.55rem] text-slate-500 mb-1">
+                  <span>{rescaleMin.toFixed(2)} (sparse)</span>
+                  <span>(dense) {rescaleMax.toFixed(2)}</span>
+                </div>
+                <div className="h-3 rounded-full overflow-hidden" style={{ background: activeColorRamp.gradient }} />
+              </div>
+
+              {heatmapStatus === "success" && heatmapStats && (
+                <p className="text-[0.58rem] text-slate-500">
+                  {heatmapStats.validPixels.toLocaleString()} rendered cells · mean density {heatmapStats.mean.toFixed(3)}
+                </p>
+              )}
+
+              {heatmapStatus === "error" && heatmapError && (
+                <div className="rounded-md border border-red-500/20 bg-red-500/[0.06] px-2.5 py-2 text-[0.6rem] text-red-300">
+                  {heatmapError}
+                </div>
+              )}
+
+              {heatmapDataUrl && !onPreview && (
+                // ⚠️ لو الأب لسه معملش wiring لـ onPreview (زي raster-calc's
+                // MapClient integration)، نعرض الصورة هنا كـ fallback بسيط
+                // عشان يبان فيه heatmap اتولّد فعلًا حتى قبل ما يتوصل بالخريطة
+                <img src={heatmapDataUrl} alt="Palm density heatmap" className="w-full rounded-md border border-white/10" />
+              )}
+            </div>
+          )}
+
           <button
             type="button"
-            onClick={() => { setStatus("idle"); setResult(null); }}
+            onClick={() => {
+              setStatus("idle");
+              setResult(null);
+              setHeatmapStatus("idle");
+              setHeatmapDataUrl(null);
+              setHeatmapBounds(null);
+              setHeatmapStats(null);
+            }}
             className="text-[0.6rem] text-slate-400 hover:text-slate-200 underline"
           >
             Run another analysis

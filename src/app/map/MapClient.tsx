@@ -24,6 +24,7 @@ import type { ProjectSnapshot, UserProject } from "./projects/projectTypes";
 import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from "../_components/AnalysisSidebar/ChangeDetectionPanel";
 import type { SuperResolutionPreviewConfig } from "../_components/AnalysisSidebar/SuperResolutionPanel";
 import type { SatellitePreviewConfig } from "../_components/AnalysisSidebar/SatelliteDataPanel";
+import type { PalmHeatmapPreviewConfig } from "../_components/AnalysisSidebar/PalmTreesPanel";
 import { SOURCE_META } from "../_components/AnalysisSidebar/SatellitePipelines";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
@@ -890,6 +891,61 @@ useEffect(() => {
     superResOverlayRef.current?.(config);
   }, []);
 
+  // ── Palm Trees: نفس آلية handleRasterPreview بالظبط — كانت ناقصة قبل
+  // كده، فالهيت ماب بتاع النخل كان بيرجع لـ fallback الصورة جوا السايد بار
+  // بس (شوفي PalmTreesPanel.tsx: "heatmapDataUrl && !onPreview") بدل ما
+  // يترسم كـ overlay حقيقي فوق الخريطة الأساسية زي أي راستر تاني.
+  // PalmHeatmapPreviewConfig نفس شكل RasterPreviewConfig بالظبط عدا حقل
+  // "expression" (مش موجود عند النخل لأنه مش مؤشر NDVI/NDWI محسوب من صيغة)،
+  // فبنمرره فاضي هنا بس عشان يطابق النوع اللي rasterOverlayRef متوقعه —
+  // addRasterOverlay في LeafletMap.tsx أصلًا مش بيستخدم الحقل ده في الرسم.
+  const handlePalmPreview = useCallback((config: PalmHeatmapPreviewConfig) => {
+    rasterOverlayRef.current?.({
+      name: config.name,
+      indexKey: config.indexKey,
+      expression: "",
+      date: config.date,
+      coords: config.coords,
+      bounds: config.bounds,
+      opacity: config.opacity,
+      colorRamp: config.colorRamp,
+      dataUrl: config.dataUrl,
+    });
+    changeOpacityRef.current?.(config.opacity);
+
+    // نحفظها في الـ project زي أي analysis تاني — عشان ترجع تظهر تلقائي
+    // لما اليوزر يفتح المشروع تاني (نفس منطق handleLoadProject تحت)
+    setSavedAnalyses((prev) => [...prev, {
+      id: crypto.randomUUID(),
+      type: "raster" as const,
+      name: config.name,
+      indexKey: config.indexKey,
+      expression: "",
+      date: config.date,
+      coords: config.coords,
+      bounds: config.bounds,
+      opacity: config.opacity,
+      colorRamp: config.colorRamp,
+      dataUrl: config.dataUrl,
+      savedAt: new Date().toISOString(),
+    }]);
+
+    setLayers((prev) => {
+      const resultLayer: MapLayer = {
+        id: "palm-heatmap-result",
+        name: config.name,
+        nameAr: config.name,
+        type: "raster",
+        visible: true,
+        opacity: config.opacity,
+        color: "#22d3ee",
+        source: `Palm density heatmap | ${config.date}`,
+      };
+      const withoutOld = prev.filter((layer) => layer.id !== "palm-heatmap-result");
+      return [resultLayer, ...withoutOld];
+    });
+  }, []);
+
   const handleChangeDetectionPreview = useCallback((config: ChangeDetectionPreviewConfig) => {
   rasterOverlayRef.current?.({
     name: config.name,
@@ -1174,6 +1230,7 @@ useEffect(() => {
       onLayer3D={handleOpen3D}
       onSatellitePreview={handleSatellitePreview}
       onRasterPreview={handleRasterPreview}
+      onPalmPreview={handlePalmPreview}
       onChangeDetectionPreview={handleChangeDetectionPreview}
       onChangeDetectionSwipe={handleSwipeCompare}
       onSuperResolutionPreview={handleSuperResolutionPreview}
@@ -1209,6 +1266,7 @@ useEffect(() => {
     handleLayerZoom,
     handleSatellitePreview,
     handleRasterPreview,
+    handlePalmPreview,
     handleChangeDetectionPreview,
     handleSwipeCompare,
     handleSuperResolutionPreview,

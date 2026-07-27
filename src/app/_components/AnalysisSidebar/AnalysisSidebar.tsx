@@ -13,7 +13,7 @@ import { type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
 import VolumeCalculationPanel from "./VolumeCalculationPanel";
 import { OPEN_RASTER_CALCULATOR_EVENT } from "./sharedSceneSelection";
-import { RasterCalcSidebarItem, PALM_ICON, type RasterTabKey } from "./PalmTreesPanel";
+import { RasterCalcSidebarItem, PALM_ICON, type RasterTabKey, type PalmHeatmapPreviewConfig } from "./PalmTreesPanel";
 
 export default function AnalysisSidebar(
   {
@@ -51,6 +51,7 @@ export default function AnalysisSidebar(
   onLayer3D,
   onSatellitePreview,
   onRasterPreview,
+  onPalmPreview,
   onChangeDetectionPreview,
   onChangeDetectionSwipe,
   onSuperResolutionPreview,
@@ -90,6 +91,8 @@ export default function AnalysisSidebar(
   onLayer3D?: (id: string) => void;
   onSatellitePreview?: (config: SatellitePreviewConfig) => void;
   onRasterPreview?: (config: RasterPreviewConfig) => void;
+  /** Puts the palm density heatmap on the actual map as a georeferenced overlay — same idea as onRasterPreview, just for PalmTreesPanel.tsx */
+  onPalmPreview?: (config: PalmHeatmapPreviewConfig) => void;
   onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
   /** Real, georeferenced Before/After swipe on the actual map (Change Detection only). Pass null to hide it. */
   onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
@@ -260,6 +263,7 @@ export default function AnalysisSidebar(
                   onLayer3D={onLayer3D}
                   onSatellitePreview={onSatellitePreview}
                   onRasterPreview={onRasterPreview}
+                  onPalmPreview={onPalmPreview}
                   onChangeDetectionPreview={onChangeDetectionPreview}
                   onChangeDetectionSwipe={onChangeDetectionSwipe}
                   onSuperResolutionPreview={onSuperResolutionPreview}

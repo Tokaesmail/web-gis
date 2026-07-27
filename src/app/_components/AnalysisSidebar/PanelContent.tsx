@@ -6,7 +6,7 @@ import ExportButton from "../../map/ExportButton";
 import { CapturesPanel } from "./CapturesPanel";
 import { NDVILivePanel, OverviewLivePanel, WeatherLivePanel } from "./LivePanels";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
-import PalmTreesPanel, { type RasterTabKey } from "./PalmTreesPanel";
+import PalmTreesPanel, { type RasterTabKey, type PalmHeatmapPreviewConfig } from "./PalmTreesPanel";
 import { SuperResolutionPanel, type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
 import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { ChangeDetectionPanel, type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
@@ -49,6 +49,7 @@ export function PanelContent({
   onLayer3D,
   onSatellitePreview,
   onRasterPreview,
+  onPalmPreview,
   onChangeDetectionPreview,
   onChangeDetectionSwipe,
   onSuperResolutionPreview,
@@ -87,6 +88,8 @@ export function PanelContent({
   onLayer3D?: (id: string) => void;
   onSatellitePreview?: (config: SatellitePreviewConfig) => void;
   onRasterPreview?: (config: RasterPreviewConfig) => void;
+  /** Puts the palm density heatmap on the actual map as a georeferenced overlay — same idea as onRasterPreview, just for PalmTreesPanel.tsx */
+  onPalmPreview?: (config: PalmHeatmapPreviewConfig) => void;
   onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
   /** Real, georeferenced Before/After swipe on the actual map (Change Detection only). Pass null to hide it. */
   onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
@@ -111,6 +114,7 @@ export function PanelContent({
         onRequestCapture={onRequestPalmCapture}
         pendingCapture={pendingPalmCapture}
         onClearCapture={onClearPalmCapture}
+        onPreview={onPalmPreview}
       />
     ) : (
       <PlanetaryRasterPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />
