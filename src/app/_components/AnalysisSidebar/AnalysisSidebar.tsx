@@ -275,7 +275,7 @@ export default function AnalysisSidebar(
         </div>
 
         <div
-          className="h-full flex flex-col items-center py-3 gap-1 bg-[#070f1e]/92 backdrop-blur-xl border-l border-white/[0.07] w-[52px] shrink-0"
+          className="h-full flex flex-col items-center py-3 gap-1 bg-[#070f1e]/92 border-l border-white/[0.07] w-[52px] shrink-0"
           style={{ pointerEvents: "all" }}
         >
           {panels.map((item) => {

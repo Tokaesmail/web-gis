@@ -25,7 +25,7 @@ export default function MapLayerBar({
   return (
     <div className="absolute bottom-2 left-2 right-2 sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-max sm:-translate-x-1/2 z-1000 flex items-center gap-2 pointer-events-auto overflow-x-auto sm:overflow-visible app-scroll pb-1 sm:pb-0">
       {/* Satellite selector */}
-      <div className="flex shrink-0 items-center bg-[#0a1628] backdrop-blur-md border border-white/10 rounded-full px-1 py-1 shadow-lg gap-0.5">
+      <div className="flex shrink-0 items-center bg-[#0a1628] border border-white/10 rounded-full px-1 py-1 shadow-lg gap-0.5">
         {(Object.keys(SAT_LAYERS) as SatKey[]).map((s) => (
           <button
             key={s}
@@ -48,7 +48,7 @@ export default function MapLayerBar({
       </div>
 
       {/* Opacity Slider */}
-      <div className="hidden md:flex items-center gap-3 bg-[#0a1628] backdrop-blur-md border border-white/10 rounded-full px-4 py-1.5 shadow-lg min-w-[140px]">
+      <div className="hidden md:flex items-center gap-3 bg-[#0a1628] border border-white/10 rounded-full px-4 py-1.5 shadow-lg min-w-[140px]">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-slate-500">
           <circle cx="12" cy="12" r="10"/><path d="M12 2v20M2 12h20"/>
         </svg>
@@ -67,7 +67,7 @@ export default function MapLayerBar({
       </div>
 
       {/* Active indicator */}
-      <div className="hidden lg:flex items-center gap-1.5 bg-[#0a1628] backdrop-blur-md border border-white/8 rounded-full px-2.5 py-1.5 shadow-lg">
+      <div className="hidden lg:flex items-center gap-1.5 bg-[#0a1628] border border-white/8 rounded-full px-2.5 py-1.5 shadow-lg">
         <div className="w-2 h-2 rounded-full bg-cyan-400" style={{ boxShadow: "0 0 6px #22d3ee" }} />
         <span className="text-[0.62rem] text-slate-400 font-mono">{sat}</span>
       </div>
