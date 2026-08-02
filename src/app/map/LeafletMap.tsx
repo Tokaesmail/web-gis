@@ -452,12 +452,17 @@ useEffect(() => {
       // كل analysis ليه key فريد — name + date عشان نعرض نفس الـ analysis مع update
       const overlayKey = `${config.indexKey}_${config.date}`;
 
-      // لو نفس الـ key موجود قبل كده امسحه (update مش duplicate)
-      const existing = rasterOverlayRef.current.get(overlayKey);
-      if (existing) {
-        try { map.removeLayer(existing); } catch (_) {}
-        rasterOverlayRef.current.delete(overlayKey);
-      }
+      // ⚠️ FIX: كنا بنمسح بس الـ overlay اللي نفس overlayKey (نفس band+date).
+      // ده معناه إن لو بدّلتي من NDVI لـ FIRE على MODIS مثلًا، الـ tile layer
+      // القديم بتاع NDVI كان فاضل موجود على الخريطة تحت الجديد (لأن الـ key
+      // اختلف)، فلو الجديد فشل يحمّل tiles أو كان شفاف في جزء من الشاشة، القديم
+      // كان بيبان تحته — وده اللي كان بيدّي إحساس إن "كل التحليلات شكلها واحد".
+      // الحل: نمسح كل الـ raster overlays القديمة قبل ما نضيف الجديد، عشان
+      // يفضل دايمًا تحليل واحد بس ظاهر فوق الخريطة في نفس اللحظة.
+      rasterOverlayRef.current.forEach((oldLayer, key) => {
+        try { map.removeLayer(oldLayer); } catch (_) {}
+        rasterOverlayRef.current.delete(key);
+      });
 
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
       // ملحوظة: config.tileUrl لازم يكون XYZ template حقيقي (فيه {z}/{x}/{y}).
@@ -471,6 +476,13 @@ useEffect(() => {
             pane: "imagePane",
             crossOrigin: "anonymous",
             maxZoom: 22,
+            // ⚠️ FIX (الأساس): من غير bounds، الـ tileLayer بيحمّل ويعرض أي
+            // tile يقع جوه الـ viewport الحالي — يعني التحليل بيتعرض على
+            // الكرة الأرضية كلها وانتي لو زوّمتي/اتحركتي بره الـ AOI هتلاقيه
+            // لسه ظاهر. bounds هنا بتقفل الـ tileLayer على نفس الـ AOI bbox
+            // المختار بالظبط (زي الـ imageOverlay تمامًا).
+            bounds,
+            noWrap: true,
           }).addTo(map)
         : L.imageOverlay(config.dataUrl, bounds, {
             opacity: config.opacity,

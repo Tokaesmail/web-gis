@@ -5,7 +5,11 @@ import {
   SATELLITE_PIPELINES,
   SOURCE_INDICES,
   SOURCE_COLLECTIONS,
+  SOURCE_ANALYSIS_COLLECTIONS,
   SOURCE_META,
+  TITILER_STYLES,
+  buildTitilerTileUrl,
+  buildTitilerBboxUrl,
   type SatelliteAnalysisType,
   type SatelliteViewerMode,
   type SatSource,
@@ -652,6 +656,13 @@ export function SatelliteDataPanel({
   const [viewerMode, setViewerMode] = useState<SatelliteViewerMode>("multispectral");
   const [falseColorEnabled, setFalseColorEnabled] = useState(false);
   const [bandMenuOpen, setBandMenuOpen] = useState(false);
+
+  // ⚠️ لازم يتحسب هنا فوق (قبل أي useEffect بيستخدمه في الـ dependency array)،
+  // مش تحت بعد الـ effects. الترتيب القديم كان بيسبب
+  // "Cannot access 'activeAnalysis' before initialization" لأن الـ effect
+  // اللي فوق كان بيتنفذ في render قبل ما الـ const يتعرّف.
+  type AnalysisType = SatelliteAnalysisType;
+  const activeAnalysis = (falseColorEnabled ? "SWIR" : band) as AnalysisType;
   const bandMenuRef = useRef<HTMLDivElement | null>(null);
   const [opacity, setOpacity] = useState(86);
   const [isLoading, setIsLoading] = useState(false);
@@ -721,6 +732,19 @@ const displayVertices = useMemo(() => {
     { key: "SO2", label: "SO₂", desc: "Sulfur dioxide", color: "#60a5fa" },
     { key: "CO", label: "CO", desc: "Carbon monoxide", color: "#4ade80" },
     { key: "OZONE", label: "Ozone", desc: "Total column ozone", color: "#f472b6" },
+    // MODIS
+    { key: "FIRE", label: "Fire", desc: "Active fire / thermal anomaly", color: "#dc2626" },
+    { key: "LST", label: "Temperature", desc: "Land surface temperature", color: "#f97316" },
+    // ASTER
+    { key: "MINERALS", label: "Minerals", desc: "Band-ratio lithology composite", color: "#f59e0b" },
+    { key: "THERMAL", label: "Thermal", desc: "Thermal infrared brightness", color: "#f43f5e" },
+    // Sentinel-3
+    { key: "SST", label: "Sea Surface Temp", desc: "SLSTR sea surface temperature", color: "#22d3ee" },
+    { key: "S3_LST", label: "Land Surface Temp", desc: "SLSTR land surface temperature", color: "#fb923c" },
+    { key: "OCEAN_COLOR", label: "Ocean Color", desc: "OLCI true-color water composite", color: "#0ea5e9" },
+    { key: "CHLOROPHYLL", label: "Chlorophyll", desc: "OLCI chlorophyll-a concentration", color: "#4ade80" },
+    { key: "FRP", label: "Fire Radiative Power", desc: "SLSTR active fire radiative power", color: "#ef4444" },
+    { key: "AEROSOL", label: "Aerosol", desc: "SYNERGY aerosol optical depth", color: "#a855f7" },
   ];
 
   // الـ indices اللي المفروض تظهر فعليًا للمصدر الحالي بس (مش كل الليستة فوق)
@@ -751,7 +775,15 @@ const displayVertices = useMemo(() => {
     setActivePreviewSceneId(null);
     setPreviewReady(false);
     setSceneError(null);
-  }, [source]);
+    // ⚠️ لـ MODIS/ASTER، تبديل الـ band (مثلاً Vegetation -> Fire) معناه STAC
+    // collection مختلف تمامًا (أو على الأقل asset مختلف تمامًا زي في ASTER)، فالـ
+    // scenes القديمة (من collection/asset قديم) لازم تتمسح وتتطلب fetchScenes
+    // جديدة، مش مجرد إعادة عرض نفس الـ scene.
+    // ⚠️ نفس المنطق بينطبق على Sentinel-3 (زي MODIS): كل analysis (SST/Land
+    // LST/Ocean Color/Chlorophyll/FRP/Aerosol) عبارة عن STAC collection مختلف
+    // تمامًا، مش نفس الـ collection الواحد.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, (source === "modis" || source === "aster" || source === "sentinel-3") ? activeAnalysis : null]);
 
   useEffect(() => {
     if (!bandMenuOpen) return;
@@ -794,8 +826,6 @@ const scenes = useMemo(
   [apiScenes, fallbackScenes, isOpticalSource]
 );
 
-  type AnalysisType = SatelliteAnalysisType;
-  const activeAnalysis = (falseColorEnabled ? "SWIR" : band) as AnalysisType;
   const activeBandOption =bandOptions.find((item) => item.key === activeAnalysis) ?? bandOptions[0];
 
   const getVisualization = (analysis: AnalysisType, collection = SOURCE_COLLECTIONS[source]) => {
@@ -803,6 +833,23 @@ const scenes = useMemo(
     const isSentinel1 = collection.includes("sentinel-1");
     const isDem = collection.includes("cop-dem") || collection.includes("dem");
     const isSentinel5p = collection.includes("sentinel-5p");
+    const isModis = collection.includes("modis");
+    const isAster = collection.includes("aster");
+    const isSentinel3 = collection.includes("sentinel-3");
+
+    // ── MODIS / ASTER / Sentinel-3 ───────────────────────────────────────
+    // المصادر دي بتتعرض عن طريق TiTiler مباشرة (buildTitilerTileUrl) مش عن
+    // طريق /api/raster-proxy/analyze، فـ TITILER_STYLES هو مصدر الحقيقة
+    // الوحيد للـ assets/expression بتوعها (بدل ما نكررهم هنا تاني). "type"
+    // هنا بس عشان الكود القديم اللي بيعرض visualization.assets/expression في
+    // الواجهة يفضل شغال زي ما هو.
+    if (isModis || isAster || isSentinel3) {
+      const style = TITILER_STYLES[analysis];
+      if (style) {
+        return { assets: style.assets, expression: style.expression ?? null, type: analysis.toLowerCase() };
+      }
+      return { assets: [], expression: null, type: analysis.toLowerCase() };
+    }
 
     // ⚠️ كل return هنا بقى بيرجع "type" (اسم الـ analysis param اللي الباك
     // متوقعه) جنب الـ assets — الاتنين دايمًا بيتحددوا من نفس الفرع (حسب
@@ -1294,7 +1341,12 @@ useEffect(() => {
       // ⚠️ cop-dem-glo-30 عبارة عن dataset ثابت (مفيهوش تواريخ فعلية زي باقي
       // الـ collections)، فالـ dateFrom/dateTo هيتبعتوا بس مش هيأثروا فعليًا
       // على النتايج لحد ما نتأكد إزاي الباك عايز يتعامل معاها.
-      const collection = SOURCE_COLLECTIONS[source];
+      // ⚠️ MODIS/VIIRS: كل analysis (Vegetation/Fire/Temperature.. إلخ) عبارة
+      // عن STAC collection مختلف تمامًا، مش نفس الـ collection الواحد زي
+      // Sentinel-2/Landsat. لازم نبحث في الـ collection الصح حسب الـ band
+      // المختارة دلوقتي، مش بس حسب الـ source.
+      const collection =
+        SOURCE_ANALYSIS_COLLECTIONS[source]?.[activeAnalysis] ?? SOURCE_COLLECTIONS[source];
       // ⚠️ cop-dem-glo-30 عبارة عن dataset ثابت (مفيش "datetime" حقيقي في
       // items بتاعته) — لو بعتنا datetime filter في الـ STAC search request،
       // الـ API بيستبعد أي item مالوش temporal extent خالص (ده سلوك موثّق في
@@ -1302,16 +1354,40 @@ useEffect(() => {
       // مهما كان الـ bbox، وده كان بيخلي الصورة تفضل معمولاش لها preview أبدًا.
       // الحل: منبعتش datetime خالص للمصدر ده.
       const isStaticCollection = source === "cop-dem";
+
+      // ⚠️ ASTER L1T (aster-l1t) عنده temporal extent محدود جدًا: من
+      // 2000-03-04 لحد 2006-12-31 بس (اتأكد ده من الـ collection metadata
+      // نفسها على PC). أي dateFrom/dateTo مالهومش overlap مع النطاق ده
+      // (زي الـ default الحديث اللي بيجي من sharedDateRange) هيرجع صفر
+      // features دايمًا، مهما كانت الـ AOI. بنعمل الفحص ده هنا قبل حتى ما
+      // نبعت الـ request، عشان نطلع رسالة واضحة بدل الرسالة العامة
+      // المضللة "No matching scenes ... AOI/date/cloud".
+      const ASTER_L1T_RANGE = { start: "2000-03-04", end: "2006-12-31" };
+      if (source === "aster" && (dateTo < ASTER_L1T_RANGE.start || dateFrom > ASTER_L1T_RANGE.end)) {
+        setApiScenes([]);
+        setSceneStatus("error");
+        setSceneError(
+          `ASTER L1T data is only available between ${ASTER_L1T_RANGE.start} and ${ASTER_L1T_RANGE.end}. ` +
+          `Your selected date range (${dateFrom} → ${dateTo}) doesn't overlap with it — that's why no scenes are returned, regardless of AOI or cloud filter. ` +
+          `Please pick a date range within 2000–2006.`
+        );
+        return;
+      }
+
+      const requestBody = {
+        collections: [collection],
+        bbox: [west, south, east, north],
+        ...(isStaticCollection ? {} : { datetime: `${dateFrom}T00:00:00Z/${dateTo}T23:59:59Z` }),
+        limit: 12,
+      };
+      // 👇 (1) اطبعي هنا الطلب اللي رايح فعليًا للـ STAC API — لو الـ bbox أو
+      // الـ datetime غلط، هتشوفيه هنا قبل ما حتى تستنى الـ response.
+      console.log("[STAC] request →", { source, activeAnalysis, collection, ...requestBody });
+
       const response = await fetch("https://planetarycomputer.microsoft.com/api/stac/v1/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          collections: [collection],
-          bbox: [west, south, east, north],
-          ...(isStaticCollection ? {} : { datetime: `${dateFrom}T00:00:00Z/${dateTo}T23:59:59Z` }),
-          limit: 12,
-        }),
-        
+        body: JSON.stringify(requestBody),
       });
       console.log("AFTER FETCH");
       console.log(response);
@@ -1320,15 +1396,67 @@ useEffect(() => {
       const payload = await response.json();
       console.log(payload,"AFTER PARSE");
       const features = Array.isArray(payload?.features) ? payload.features : [];
+      // 👇 (2) دي أهم واحدة لتشخيص "no matching scenes": بتقولك بالظبط كام
+      // feature رجع، وبتطبع أول item كامل (بما فيه item.assets — أسماء
+      // الملفات الحقيقية اللي الـ item ده جاي بيها) عشان تتأكدي إن أسماء
+      // الـ assets في TITILER_STYLES فعلاً متطابقة مع اللي راجع من السيرفر.
+      console.log(`[STAC] ${features.length} feature(s) returned for "${collection}"`, {
+        firstFeatureId: features[0]?.id,
+        firstFeatureAssetsKeys: features[0] ? Object.keys(features[0].assets ?? {}) : [],
+        firstFeatureFull: features[0] ?? null,
+      });
+
+      // ⚠️ DIAGNOSTIC: aster-l1t اتأكد وجوده على PC (2026-08-01)، بس تغطيته
+      // جغرافيًا محدودة (مش سينتينل-٢ اللي شبه global). لو مفيش features،
+      // بنفرّق بين حالتين: (أ) الـ collection نفسه اتشال/اتغير اسمه من على PC
+      // (حاجة مستقبلية ممكن تحصل) -> المشكلة في الـ ID مش في الـ AOI/date،
+      // (ب) الـ collection موجود لكن ببساطة معندوش تغطية/items للـ AOI/date دي.
+      // نفس الفحص اتضاف لـ sentinel-3 لإن الـ 5 collection IDs بتاعته جداد
+      // (اتأكدوا بالبحث بس مش بفحص مباشر لـ /collections زي باقي المصادر)،
+      // فمفيد نعرف بسرعة لو أي واحد فيهم غلط بدل ما نفتكر المشكلة في AOI/date.
+      if (!features.length && (source === "aster" || source === "sentinel-3")) {
+        try {
+          const collRes = await fetch(
+            `https://planetarycomputer.microsoft.com/api/stac/v1/collections/${collection}`
+          );
+          if (!collRes.ok) {
+            setApiScenes([]);
+            setSceneStatus("error");
+            setSceneError(
+              `الـ STAC collection "${collection}" مش موجود على Planetary Computer (HTTP ${collRes.status}). ` +
+              `المشكلة مش في الـ AOI أو التاريخ — لازم نستبدل الـ collection ID ده.`
+            );
+            return;
+          }
+        } catch (_) {
+          // fall through to normal "no scenes" handling below لو probe نفسه فشل
+        }
+      }
+
       const nextScenes = features
         .map((feature: StacFeature): SatelliteScene => {
           const props = feature?.properties ?? {};
           const cloud = Number(props["eo:cloud_cover"] ?? props["landsat:cloud_cover_land"] ?? 0);
+          // 👇 (4) لو الـ scenes list فضيت بعد الفلترة بالسحاب رغم إن الـ STAC
+          // رجّع features، دي اللي هتقولك السبب بالظبط: القيمة الخام لـ
+          // eo:cloud_cover (أو أي بديل ليها) قبل حتى ما نطبق الفلتر.
+          console.log("[cloud-filter] ", feature?.id, {
+            "eo:cloud_cover_raw": props["eo:cloud_cover"],
+            "landsat:cloud_cover_land_raw": props["landsat:cloud_cover_land"],
+            computedCloud: cloud,
+            currentThreshold: cloudCover,
+          });
           const date = String(props.datetime ?? "").slice(0, 10) || dateTo;
           const thumbnail =
             feature?.assets?.rendered_preview?.href ??
             feature?.assets?.thumbnail?.href ??
-            feature?.assets?.overview?.href;
+            feature?.assets?.overview?.href ??
+            // ⚠️ Sentinel-3 items (كل الـ 5 collections) بيستخدموا مفتاح
+            // "browse-jpg" للـ preview مش أي حاجة من فوق — اتأكد ده بفحص
+            // مباشر لـ item حقيقي (SL_2_WST) رجّع assets.browse-jpg بس مفيهوش
+            // rendered_preview/thumbnail/overview خالص. من غير السطر ده،
+            // scene cards بتاعت Sentinel-3 كانت هتفضل من غير صورة preview.
+            feature?.assets?.["browse-jpg"]?.href;
           const itemUrl =
             feature?.links?.find((link) => link.rel === "self")?.href ??
             feature?.links?.find((link) => link.rel === "alternate")?.href;
@@ -1363,13 +1491,30 @@ useEffect(() => {
             assets,
           };
         })
-        .filter((scene: SatelliteScene) => scene.cloud <= cloudCover)
+        // ⚠️ Sentinel-3 (زي MODIS) مالوش خاصية eo:cloud_cover قياسية في الـ
+        // STAC properties بتاعته (اتأكد ده بفحص مباشر لـ item حقيقي) — القيمة
+        // الافتراضية 0 المفروض تخلي الفلتر يعدي كل شيء، لكن بنستبعد الفلتر
+        // خالص هنا عشان مفيش معنى حقيقي لتطبيقه على مصدر مالوش القيمة دي أصلًا
+        // (وعشان أي قيمة غريبة/undefined متتحولش لصفر scenes بالغلط تاني).
+        .filter((scene: SatelliteScene) => source === "sentinel-3" || scene.cloud <= cloudCover)
         .sort((a: SatelliteScene, b: SatelliteScene) => b.score - a.score)
         .slice(0, 6);
 
       setApiScenes(nextScenes);
       setSceneStatus("success");
-      if (!nextScenes.length) setSceneError("No matching scenes from the external STAC API for this AOI/date/cloud filter.");
+      if (!nextScenes.length) {
+        // ⚠️ Sentinel-3 مش زي Sentinel-2: كل analysis عنده تغطية جغرافية
+        // محدودة بطبيعته (SST/Ocean Color/Chlorophyll = بحر بس، Land LST =
+        // بر بس)، فصفر نتايج هنا ممكن يكون سلوك متوقع مش باگ، حسب مكان الـ AOI.
+        const waterOnly = source === "sentinel-3" && (activeAnalysis === "SST" || activeAnalysis === "OCEAN_COLOR" || activeAnalysis === "CHLOROPHYLL");
+        const landOnly = source === "sentinel-3" && activeAnalysis === "S3_LST";
+        const coverageHint = waterOnly
+          ? " This analysis only has data over sea/ocean — check your AOI includes water."
+          : landOnly
+          ? " This analysis only has data over land — check your AOI isn't entirely over water."
+          : "";
+        setSceneError(`No matching scenes from the external STAC API for this AOI/date/cloud filter.${coverageHint}`);
+      }
     } catch (error: unknown) {
       setApiScenes([]);
       setSceneStatus("error");
@@ -1394,6 +1539,85 @@ useEffect(() => {
     setSceneError(`This scene does not include the required asset(s): ${required}. Choose another scene.`);
     return;
   }
+  // ── MODIS / ASTER / Sentinel-3: TiTiler مباشرة (tiles)، مش raster-proxy/analyze ──
+  // المصادر دي بتاخد مسار مختلف تمامًا: STAC Search رجّعت لينا الـ scene.id
+  // و scene.collection فعلًا، فبنبني tile URL template ({z}/{x}/{y}) بيكلم
+  // TiTiler بتاع Planetary Computer مباشرة، ونحطه في scenePreview.tileUrl
+  // (مش previewUrl) عشان الخريطة تعمل L.tileLayer بيه بدل L.imageOverlay.
+  // ⚠️ Sentinel-3 items هنا NetCDF مش COG (على عكس MODIS/ASTER) — لو
+  // buildTitilerTileUrl رجّع صورة فاضية/كسرت، أول حاجة تتفحص هي إن كان الـ
+  // tiler محتاج "variable=" بدل "assets=" (شوفي التعليق في SatellitePipelines.ts).
+  if (source === "modis" || source === "aster" || source === "sentinel-3") {
+    // ⚠️ الاتنين بقوا async دلوقتي (شوفي SatellitePipelines.ts) — styles
+    // زي ASTER THERMAL/MINERALS معلّمين dynamicRescale: true، فبيستنوا رد
+    // /item/statistics الأول قبل ما يرجعوا الرابط، عشان الـ rescale يتبني
+    // على القيم الحقيقية للـ scene بدل رقم ثابت مخمّن (اللي كان بيطلع لون
+    // ثابت في كل الصورة للـ Thermal/Minerals).
+    const tileUrl = await buildTitilerTileUrl(scene.collection, scene.id, analysis);
+    // ⚠️ tileUrl (XYZ) بيغطي شبكة الكرة الأرضية العالمية مش حدود الـ AOI —
+    // فلما نزوم أوت، كل tile بيمثل مساحة جغرافية أكبر فالتحليل "بيكبر" مع
+    // إن الـ AOI نفسه ثابت. بنبني كمان bboxUrl (صورة واحدة مقصوصة بالظبط
+    // على west/south/east/north بتاع الـ AOI عن طريق crop endpoint بتاع PC
+    // — نفس المنطق المستخدم فعلًا لـ Sentinel-1) ونحطها كـ previewUrl عشان
+    // LeafletMap يعرضها كـ imageOverlay بحدود الـ AOI الحقيقية، مش tileLayer.
+    const bboxUrl = await buildTitilerBboxUrl(scene.collection, scene.id, analysis, [west, south, east, north]);
+    // 👇 (3) دي أهم حاجة لو الـ scenes list ظهرت لكن الصورة نفسها فاضية/مكسورة:
+    // بتقولك أسماء الـ assets الحقيقية اللي الـ scene دي جايه بيها (من STAC)
+    // مقابل الـ tile URL اللي اتبنى فعليًا من TITILER_STYLES. لو asset اسمه
+    // مش موجود في scene.assets (يعني اتكتب غلط في TITILER_STYLES)، هتشوفيه هنا فورًا.
+    console.log("[TiTiler] scene →", scene.id, {
+      realAssetKeysFromStac: Object.keys(scene.assets ?? {}),
+      styleUsed: TITILER_STYLES[analysis],
+      builtTileUrl: tileUrl,
+      builtBboxUrl: bboxUrl,
+    });
+    if (!tileUrl) {
+      setSceneError(`No TiTiler style configured yet for "${analysis}" on this source — check TITILER_STYLES.`);
+      return;
+    }
+    const sceneBounds = bounds;
+    const sceneCoords = boundsCenter(sceneBounds);
+    const visualization = getVisualization(analysis, scene.collection);
+
+    setPreviewingSceneId(scene.id);
+    setSceneError(null);
+    setActivePreviewSceneId(scene.id);
+    onPreview?.({
+      source,
+      satKey,
+      band: analysis,
+      dateFrom,
+      dateTo,
+      cloudCover,
+      opacity: opacity / 100,
+      scenePreview: {
+        name: `${scene.id}_overview`,
+        band: analysis,
+        expression: visualization.expression,
+        assets: visualization.assets,
+        assetUrls: getSceneAssetUrls(scene, analysis),
+        bounds: sceneBounds,
+        coords: sceneCoords,
+        // bboxUrl (مقصوص بالظبط على الـ AOI) هو الأساس دلوقتي — تحطيطه في
+        // previewUrl يخلي LeafletMap يستخدم imageOverlay(bounds) بدل
+        // tileLayer، فمفيش تعدي عن حدود الـ AOI مهما زوّمنا أوت. tileUrl
+        // فاضل موجود كـ fallback لو bboxUrl فشل لأي سبب.
+        previewUrl: bboxUrl ?? scene.thumbnail ?? scene.previewUrl,
+        overviewUrl: scene.thumbnail ?? scene.previewUrl,
+        tileUrl: bboxUrl ? undefined : tileUrl,
+        geometry: bboxGeometry([
+          sceneBounds[0][1],
+          sceneBounds[0][0],
+          sceneBounds[1][1],
+          sceneBounds[1][0],
+        ]),
+      },
+    });
+    setPreviewingSceneId(null);
+    setPreviewReady(true);
+    return;
+  }
+
   const rawPreviewUrl = makeRasterProxyAnalyzeUrl(scene, analysis);
   
   // تعديل أساسي: اجعلي الخريطة تركز وتتعامل مع الـ AOI bounds الخاص بكِ مباشرة لمنع الـ Zoom Out العنيف
@@ -1937,7 +2161,7 @@ function openImageUrlSafely(url: string) {
       
       {sceneError && (
         <div className="rounded-lg border border-amber-400/18 bg-amber-400/[0.05] px-3 py-2 text-[0.62rem] text-amber-200">
-          {sceneError} Showing local preview candidates instead.
+          {sceneError}{isOpticalSource ? " Showing local preview candidates instead." : ""}
         </div>
       )}
     </div>

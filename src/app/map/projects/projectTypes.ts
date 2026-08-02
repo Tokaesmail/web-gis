@@ -24,7 +24,8 @@ export type SavedAnalysisConfig = {
   bounds: [[number, number], [number, number]];
   opacity: number;
   colorRamp: string;
-  dataUrl: string;          // الـ PNG data URL المحفوظ
+  dataUrl?: string;         // الـ PNG data URL المحفوظ (مش موجود لو التحليل جاي عن طريق tileUrl بس، زي MODIS/ASTER/Sentinel-3)
+  tileUrl?: string;         // XYZ tile template المباشر من TiTiler (MODIS/ASTER/Sentinel-3) — لازم يتحفظ عشان يرجع يظهر لما نفتح المشروع تاني
   savedAt: string;
 };
 

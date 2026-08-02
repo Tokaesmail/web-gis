@@ -75,6 +75,25 @@ function colormapPreviewGradient(name: string): string {
 // يتضاف هنا بس عشان يظهر في الـ dropdown.
 type HeatmapMode = "density" | "value";
 
+// ─── Render style — الشكل اللي البيانات بتتعرض بيه على الخريطة: "heatmap"
+// (سطح راستر متصل، الشغل الأصلي) أو "points" (كل نخلة نقطة منفصلة ملوّنة —
+// الإضافة الجديدة). الاتنين شغالين جنب بعض، ومفيش حاجة قديمة اتشالت —
+// دمجناهم مع HeatmapMode في دروب داون واحد فيه الأربع اختيارات كلها ───────
+type RenderStyle = "points" | "heatmap";
+export type DisplayMode = "density-heatmap" | "density-points" | "value-heatmap" | "value-points";
+
+const DISPLAY_MODE_OPTIONS: { key: DisplayMode; label: string }[] = [
+  { key: "density-heatmap", label: "Density · Heatmap" },
+  { key: "density-points", label: "Density · Points" },
+  { key: "value-heatmap", label: "Value · Heatmap" },
+  { key: "value-points", label: "Value · Points" },
+];
+
+function splitDisplayMode(m: DisplayMode): { mode: HeatmapMode; style: RenderStyle } {
+  const dash = m.indexOf("-");
+  return { mode: m.slice(0, dash) as HeatmapMode, style: m.slice(dash + 1) as RenderStyle };
+}
+
 const VALUE_FIELDS: { key: string; label: string }[] = [
   { key: "NDVI Value", label: "NDVI Value" },
   { key: "NDMI Value", label: "NDMI Value" },
@@ -95,6 +114,19 @@ export type PalmHeatmapPreviewConfig = {
   opacity: number;
   colorRamp: string;
   dataUrl: string;
+};
+
+// ─── Points preview config — الإضافة الجديدة، شكلها مختلف عن الراستر عمدًا
+// (مفيش dataUrl/bounds صورة، فيه بس مصفوفة نقط بلونها) عشان الـ parent يرسمها
+// كـ Leaflet CircleMarkers بدل ImageOverlay. لو الـ parent لسه معملش wiring
+// لـ onPreviewPoints (زي onPreview بالظبط)، الكومبوننت بيعرض fallback SVG
+// بسيط جوا نفسه عشان يبان النقط اتولّدت فعلًا. ──────────────────────────────
+export type PalmPointsPreviewConfig = {
+  name: string;
+  indexKey: string;
+  date: string;
+  points: { lat: number; lng: number; value: number; color: string }[];
+  opacity: number;
 };
 
 function readHeatmapStatsFromHeaders(res: Response, fallbackMin: number, fallbackMax: number) {
@@ -134,6 +166,9 @@ type Props = {
   /** called with the resulting density-heatmap PNG + bounds, so MapClient/LeafletMap
    *  can overlay it — same callback shape as PlanetaryRasterPanel's onPreview */
   onPreview?: (config: PalmHeatmapPreviewConfig) => void;
+  /** called with the resulting colored points (one per palm), so MapClient/LeafletMap
+   *  can render them as CircleMarkers — new, parallel to onPreview, for renderStyle="points" */
+  onPreviewPoints?: (config: PalmPointsPreviewConfig) => void;
 };
 
 type PalmBBox = [number, number, number, number]; // [west, south, east, north]
@@ -388,6 +423,7 @@ export default function PalmTreesPanel({
   pendingCapture,
   onClearCapture,
   onPreview,
+  onPreviewPoints,
 }: Props) {
   const { data: session } = useSession();
   const accessToken = (session?.user as any)?.accessToken as string | undefined;
@@ -408,6 +444,9 @@ export default function PalmTreesPanel({
   // مثلاً نتيجة معادلة NDVI اللي اليوزر دخلها في الـ Formula box — موزّعة
   // مكانيًا على النخل بدل عدّها بس)
   const [heatmapMode, setHeatmapMode] = useState<HeatmapMode>("density");
+  // renderStyle: الإضافة الجديدة — "heatmap" (زي ما كان دايمًا) أو "points"
+  // (كل نخلة نقطة). مع heatmapMode بيكوّنوا الـ 4 اختيارات في الدروب داون
+  const [renderStyle, setRenderStyle] = useState<RenderStyle>("heatmap");
   const [valueField, setValueField] = useState<string>(VALUE_FIELDS[0].key);
   const [colormap, setColormap] = useState("inferno");
   const [rescaleMin, setRescaleMin] = useState(0);
@@ -419,6 +458,19 @@ export default function PalmTreesPanel({
   const [heatmapStats, setHeatmapStats] = useState<{ min: number; max: number; mean: number; validPixels: number } | null>(null);
   const [heatmapDataUrl, setHeatmapDataUrl] = useState<string | null>(null);
   const [heatmapBounds, setHeatmapBounds] = useState<[[number, number], [number, number]] | null>(null);
+
+  // ── Points state — نفس فكرة heatmapStatus/heatmapError/heatmapDataUrl بس
+  // للإضافة الجديدة (renderStyle="points")، منفصلة عمدًا عشان أي حاجة قديمة
+  // متبنيتش على شكلها متتأثرش ────────────────────────────────────────────
+  const [pointsStatus, setPointsStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
+  const [pointsError, setPointsError] = useState<string | null>(null);
+  const [pointsData, setPointsData] = useState<{ lat: number; lng: number; value: number; color: string }[] | null>(null);
+
+  // ── حالة موحّدة لواجهة الـ UI (سبينر/رسالة خطأ) — بتتغير حسب renderStyle
+  // المختار دلوقتي، من غير ما نضطر نكرر كل شرط مرتين تحت ─────────────────
+  const activeStatus = renderStyle === "points" ? pointsStatus : heatmapStatus;
+  const activeError = renderStyle === "points" ? pointsError : heatmapError;
+  const displayMode: DisplayMode = `${heatmapMode}-${renderStyle}` as DisplayMode;
 
   const activeColorRamp = useMemo(
     () => COLOR_RAMPS.find((r) => r.key === colormap) ?? COLOR_RAMPS[COLOR_RAMPS.length - 1],
@@ -543,6 +595,91 @@ export default function PalmTreesPanel({
     }
   };
 
+  // ── Points generation — نفس فكرة generateHeatmap بالظبط (نفس params:
+  // colormap/rescale/mode/valueField)، بس بيطلب format=points من نفس
+  // الـ proxy فيرجع GeoJSON نقط بدل PNG، فمفيش أي حاجة جديدة في route.ts
+  // غير الإضافة اللي عملناها (format=points) — الراستر القديم زي ما هو ───
+  const generatePoints = async (
+    geojsonUrl: string,
+    csvUrl?: string | null,
+    overrides?: { colormap?: string; mode?: HeatmapMode; valueField?: string }
+  ) => {
+    const effColormap = overrides?.colormap ?? colormap;
+    const effMode = overrides?.mode ?? heatmapMode;
+    const effValueField = overrides?.valueField ?? valueField;
+
+    setPointsStatus("loading");
+    setPointsError(null);
+    try {
+      const [w, s, e, n] = bbox;
+      const params = new URLSearchParams({
+        geojsonUrl,
+        bbox: `${w},${s},${e},${n}`,
+        colormap: effColormap,
+        radius: "16",
+        format: "points",
+      });
+
+      if (effMode === "value") {
+        params.set("mode", "value");
+        params.set("valueField", effValueField);
+        const csv = csvUrl ?? result?.data?.csv_url;
+        if (csv) params.set("csvUrl", csv);
+      } else {
+        params.set("mode", "density");
+      }
+
+      if (userEditedRescale) {
+        params.set("min", String(rescaleMin));
+        params.set("max", String(rescaleMax));
+      }
+
+      const res = await fetch(`${PALM_HEATMAP_PROXY_URL}?${params.toString()}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `Points generation failed (${res.status})`);
+      }
+
+      const gj = await res.json();
+      const pts: { lat: number; lng: number; value: number; color: string }[] = (gj?.features ?? []).map(
+        (f: any) => ({
+          lng: f.geometry.coordinates[0],
+          lat: f.geometry.coordinates[1],
+          value: f.properties?.value,
+          color: f.properties?.color ?? "#66bd63",
+        })
+      );
+
+      setPointsData(pts);
+      setPointsStatus("success");
+
+      onPreviewPoints?.({
+        name:
+          effMode === "value"
+            ? `Palm ${effValueField} (points) · ${dateFrom}→${dateTo}`
+            : `Palm density (points) · ${dateFrom}→${dateTo}`,
+        indexKey: effMode === "value" ? `PALM_VALUE_POINTS_${effValueField}` : "PALM_DENSITY_POINTS",
+        date: dateFrom,
+        points: pts,
+        opacity: opacity / 100,
+      });
+    } catch (err) {
+      setPointsStatus("error");
+      setPointsError(err instanceof Error ? err.message : "Points generation failed.");
+    }
+  };
+
+  // ── Dispatcher — بتختار تولّد Heatmap (راستر) ولا Points حسب renderStyle
+  // الحالي (أو override صريح لو جاي من تغيير الدروب داون نفسه) ─────────────
+  const generateForStyle = (
+    geojsonUrl: string,
+    csvUrl?: string | null,
+    overrides?: { colormap?: string; mode?: HeatmapMode; valueField?: string; style?: RenderStyle }
+  ) => {
+    const style = overrides?.style ?? renderStyle;
+    return style === "points" ? generatePoints(geojsonUrl, csvUrl, overrides) : generateHeatmap(geojsonUrl, csvUrl, overrides);
+  };
+
   const submitToBackend = async (capture: MapCapture) => {
     setStatus("loading");
     setErrorMsg(null);
@@ -640,7 +777,7 @@ export default function PalmTreesPanel({
       const geojsonUrl: string | undefined = data?.data?.geojson_url;
       if (geojsonUrl) {
         setUserEditedRescale(false); // نتاج جديد → خليه يحسب المدى تلقائيًا الأول
-        void generateHeatmap(geojsonUrl, data?.data?.csv_url ?? null);
+        void generateForStyle(geojsonUrl, data?.data?.csv_url ?? null);
       }
     } catch (err) {
       setStatus("error");
@@ -855,9 +992,10 @@ export default function PalmTreesPanel({
             <div className="space-y-2.5 rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
               <div className="flex items-center justify-between">
                 <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">
-                  {heatmapMode === "value" ? `Value Heatmap · ${valueField}` : "Density Heatmap"}
+                  {DISPLAY_MODE_OPTIONS.find((o) => o.key === displayMode)?.label ?? "Density Heatmap"}
+                  {heatmapMode === "value" ? ` · ${valueField}` : ""}
                 </p>
-                {heatmapStatus === "loading" && (
+                {activeStatus === "loading" && (
                   <span className="flex items-center gap-1.5 text-[0.6rem] text-cyan-300">
                     <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
                       <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" />
@@ -867,48 +1005,44 @@ export default function PalmTreesPanel({
                 )}
               </div>
 
-              {/* Density / Value toggle — كثافة النخل (فين مركّز) ولا قيمة
-                  عمود بعينه (نتيجة المعادلة، مثلاً NDVI Value) موزّعة مكانيًا
-                  على النخل. التبديل بيولّد الهيت ماب تاني على طول. */}
-              <div className="grid grid-cols-2 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (heatmapMode === "density") return;
-                    setHeatmapMode("density");
+              {/* الدروب داون الموحّد: Density/Value × Points/Heatmap — الأربع
+                  اختيارات كلهم في مكان واحد. اختيارين قدامى (Density·Heatmap
+                  وValue·Heatmap، زي ما كانوا بالظبط بالراستر القديم) واختيارين
+                  جداد (Density·Points وValue·Points). التبديل بيولّد النتيجة
+                  فورًا بالشكل المطلوب (راستر أو نقط) من غير ما يشيل أي حاجة
+                  قديمة — الراستر لسه شغال زي ما هو تمامًا لو اخترتي heatmap. */}
+              <div className="flex items-center gap-2">
+                <span className="text-[0.58rem] uppercase tracking-wider text-slate-500 shrink-0">Display</span>
+                <select
+                  value={displayMode}
+                  onChange={(e) => {
+                    const next = e.target.value as DisplayMode;
+                    if (next === displayMode) return;
+                    const { mode: nextMode, style: nextStyle } = splitDisplayMode(next);
+                    setHeatmapMode(nextMode);
+                    setRenderStyle(nextStyle);
                     setUserEditedRescale(false);
                     const gj = result?.data?.geojson_url;
-                    if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null, { mode: "density" });
+                    if (gj) {
+                      void generateForStyle(gj, result?.data?.csv_url ?? null, {
+                        mode: nextMode,
+                        style: nextStyle,
+                      });
+                    }
                   }}
-                  className={`rounded-md border px-2 py-1.5 text-[0.62rem] font-semibold transition-colors ${
-                    heatmapMode === "density"
-                      ? "border-cyan-400/45 bg-cyan-400/[0.1] text-cyan-300"
-                      : "border-white/[0.07] bg-white/[0.02] text-slate-400 hover:border-white/[0.16]"
-                  }`}
+                  className="flex-1 rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2 py-1.5 text-[0.65rem] text-slate-200 outline-none focus:border-cyan-400/40"
                 >
-                  Density
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (heatmapMode === "value") return;
-                    setHeatmapMode("value");
-                    setUserEditedRescale(false);
-                    const gj = result?.data?.geojson_url;
-                    if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null, { mode: "value" });
-                  }}
-                  className={`rounded-md border px-2 py-1.5 text-[0.62rem] font-semibold transition-colors ${
-                    heatmapMode === "value"
-                      ? "border-cyan-400/45 bg-cyan-400/[0.1] text-cyan-300"
-                      : "border-white/[0.07] bg-white/[0.02] text-slate-400 hover:border-white/[0.16]"
-                  }`}
-                >
-                  Value (expression result)
-                </button>
+                  {DISPLAY_MODE_OPTIONS.map((o) => (
+                    <option key={o.key} value={o.key}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              {/* اختيار العمود — يظهر بس في وضع Value. القايمة نفسها أعمدة
-                  CSV/Excel الرقمية بالحرف الواحد (NDVI Value/NDMI Value/...) */}
+              {/* اختيار العمود — يظهر بس في وضع Value (Points أو Heatmap
+                  مفيش فرق هنا). القايمة نفسها أعمدة CSV/Excel الرقمية بالحرف
+                  الواحد (NDVI Value/NDMI Value/...) */}
               {heatmapMode === "value" && (
                 <div className="flex items-center gap-2">
                   <span className="text-[0.58rem] uppercase tracking-wider text-slate-500 shrink-0">Column</span>
@@ -918,7 +1052,7 @@ export default function PalmTreesPanel({
                       setValueField(e.target.value);
                       setUserEditedRescale(false);
                       const gj = result?.data?.geojson_url;
-                      if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null, { mode: "value", valueField: e.target.value });
+                      if (gj) void generateForStyle(gj, result?.data?.csv_url ?? null, { mode: "value", valueField: e.target.value });
                     }}
                     className="flex-1 rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2 py-1.5 text-[0.65rem] text-slate-200 outline-none focus:border-cyan-400/40"
                   >
@@ -946,9 +1080,9 @@ export default function PalmTreesPanel({
                       if (colormap === ramp.key) return;
                       setColormap(ramp.key);
                       const gj = result?.data?.geojson_url;
-                      if (gj) void generateHeatmap(gj, result?.data?.csv_url ?? null, { colormap: ramp.key });
+                      if (gj) void generateForStyle(gj, result?.data?.csv_url ?? null, { colormap: ramp.key });
                     }}
-                    disabled={heatmapStatus === "loading"}
+                    disabled={activeStatus === "loading"}
                     title={ramp.label}
                     className={`group rounded-md border p-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                       colormap === ramp.key ? "border-cyan-400/45 bg-cyan-400/[0.08]" : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.16]"
@@ -981,9 +1115,9 @@ export default function PalmTreesPanel({
                   type="button"
                   onClick={() =>
                     result?.data?.geojson_url &&
-                    void generateHeatmap(result.data.geojson_url, result?.data?.csv_url ?? null)
+                    void generateForStyle(result.data.geojson_url, result?.data?.csv_url ?? null)
                   }
-                  disabled={heatmapStatus === "loading"}
+                  disabled={activeStatus === "loading"}
                   className="ml-auto rounded-md bg-cyan-400/15 px-2.5 py-1 text-[0.6rem] font-semibold text-cyan-300 border border-cyan-400/30 hover:bg-cyan-400/25 disabled:opacity-50"
                 >
                   Regenerate
@@ -998,7 +1132,20 @@ export default function PalmTreesPanel({
                   onChange={(e) => {
                     const v = Number(e.target.value);
                     setOpacity(v);
-                    if (heatmapDataUrl && heatmapBounds) {
+                    if (renderStyle === "points") {
+                      if (pointsData) {
+                        onPreviewPoints?.({
+                          name:
+                            heatmapMode === "value"
+                              ? `Palm ${valueField} (points) · ${dateFrom}→${dateTo}`
+                              : `Palm density (points) · ${dateFrom}→${dateTo}`,
+                          indexKey: heatmapMode === "value" ? `PALM_VALUE_POINTS_${valueField}` : "PALM_DENSITY_POINTS",
+                          date: dateFrom,
+                          points: pointsData,
+                          opacity: v / 100,
+                        });
+                      }
+                    } else if (heatmapDataUrl && heatmapBounds) {
                       const [[rs, rw], [rn, re]] = heatmapBounds;
                       onPreview?.({
                         name:
@@ -1029,7 +1176,7 @@ export default function PalmTreesPanel({
                 <div className="h-3 rounded-full overflow-hidden" style={{ background: activeColorRamp.gradient }} />
               </div>
 
-              {heatmapStatus === "success" && heatmapStats && (
+              {renderStyle === "heatmap" && heatmapStatus === "success" && heatmapStats && (
                 <p className="text-[0.58rem] text-slate-500">
                   {heatmapMode === "value"
                     ? `${heatmapStats.validPixels.toLocaleString()} rendered cells · mean ${valueField} ${heatmapStats.mean.toFixed(3)}`
@@ -1037,17 +1184,46 @@ export default function PalmTreesPanel({
                 </p>
               )}
 
-              {heatmapStatus === "error" && heatmapError && (
+              {renderStyle === "points" && pointsStatus === "success" && pointsData && (
+                <p className="text-[0.58rem] text-slate-500">
+                  {(() => {
+                    const values = pointsData.map((p) => p.value).filter((v) => Number.isFinite(v));
+                    const mean = values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+                    return heatmapMode === "value"
+                      ? `${pointsData.length.toLocaleString()} palms plotted · mean ${valueField} ${mean.toFixed(3)}`
+                      : `${pointsData.length.toLocaleString()} palms plotted · mean local density ${mean.toFixed(3)}`;
+                  })()}
+                </p>
+              )}
+
+              {activeStatus === "error" && activeError && (
                 <div className="rounded-md border border-red-500/20 bg-red-500/[0.06] px-2.5 py-2 text-[0.6rem] text-red-300">
-                  {heatmapError}
+                  {activeError}
                 </div>
               )}
 
-              {heatmapDataUrl && !onPreview && (
+              {renderStyle === "heatmap" && heatmapDataUrl && !onPreview && (
                 // ⚠️ لو الأب لسه معملش wiring لـ onPreview (زي raster-calc's
                 // MapClient integration)، نعرض الصورة هنا كـ fallback بسيط
                 // عشان يبان فيه heatmap اتولّد فعلًا حتى قبل ما يتوصل بالخريطة
                 <img src={heatmapDataUrl} alt="Palm density heatmap" className="w-full rounded-md border border-white/10" />
+              )}
+
+              {renderStyle === "points" && pointsData && !onPreviewPoints && (
+                // ⚠️ نفس فكرة fallback الراستر بالظبط، بس هنا SVG بسيط بيرسم كل
+                // نخلة كنقطة بلونها — لحد ما الأب يعمل wiring لـ onPreviewPoints
+                // (يرسمهم كـ Leaflet CircleMarkers على الخريطة الحقيقية)
+                <svg
+                  viewBox="0 0 200 150"
+                  className="w-full rounded-md border border-white/10 bg-[#020817]"
+                >
+                  {pointsData.map((p, i) => {
+                    const [w, s, e, n] = bbox;
+                    const x = e > w ? ((p.lng - w) / (e - w)) * 200 : 100;
+                    const y = n > s ? ((n - p.lat) / (n - s)) * 150 : 75;
+                    return <circle key={i} cx={x} cy={y} r={1.6} fill={p.color} opacity={opacity / 100} />;
+                  })}
+                </svg>
               )}
             </div>
           )}
@@ -1062,6 +1238,10 @@ export default function PalmTreesPanel({
               setHeatmapBounds(null);
               setHeatmapStats(null);
               setHeatmapMode("density");
+              setRenderStyle("heatmap");
+              setPointsStatus("idle");
+              setPointsError(null);
+              setPointsData(null);
               setUserEditedRescale(false);
             }}
             className="text-[0.6rem] text-slate-400 hover:text-slate-200 underline"

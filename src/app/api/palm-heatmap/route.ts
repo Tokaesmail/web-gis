@@ -243,7 +243,7 @@ function buildValueGrid(
   outW: number,
   outH: number,
   radiusPx: number
-): { values: Float32Array; coverage: Float32Array } {
+): { numerator: Float32Array; coverage: Float32Array } {
   const [west, south, east, north] = bbox;
   const numerator = new Float32Array(outW * outH);
   const coverage = new Float32Array(outW * outH);
@@ -275,17 +275,78 @@ function buildValueGrid(
     }
   }
 
-  const values = new Float32Array(outW * outH);
-  for (let i = 0; i < values.length; i++) {
-    values[i] = coverage[i] > 1e-6 ? numerator[i] / coverage[i] : 0;
+  // ⚠️ القسمة (numerator/coverage → value لكل بكسل) اتنقلت لبرّه الدالة دي —
+  // بتحصل في GET بعد ما الاتنين (numerator وcoverage) ياخدوا Gaussian blur
+  // منفصل. لو قسمنا هنا الأول وبعدين عملنا blur على الناتج، ده بيبقى
+  // "متوسط متبلّر" مش IDW حقيقي؛ القسمة لازم تحصل بعد الـ blur عشان تفضل
+  // weighted average صح رياضيًا في كل بكسل حتى بعد الانتشار المكاني.
+  return { numerator, coverage };
+}
+
+/** Separable Gaussian blur على شبكة scalar (Float32Array) — ده اللي بيحوّل
+ *  "بقع Gaussian منفصلة حوالين كل نخلة" لسطح واحد متصل بالكامل (زي أي
+ *  heatmap حقيقي — KDE ملبّس بلير إضافي). بيشتغل على الـ grid الخام قبل أي
+ *  تلوين، فالـ interpolation بيحصل على القيم الرقمية نفسها مش على الألوان —
+ *  ده اللي بيخلي التدرج اللوني ناعم/متصل بدل ما يبان "قطع" بين البقع. */
+function gaussianBlurGrid(grid: Float32Array, w: number, h: number, sigma: number): Float32Array {
+  if (sigma <= 0.01) return grid;
+  const radius = Math.max(1, Math.min(60, Math.ceil(sigma * 3)));
+  const kernel = new Float32Array(radius * 2 + 1);
+  let kSum = 0;
+  for (let i = -radius; i <= radius; i++) {
+    const v = Math.exp(-(i * i) / (2 * sigma * sigma));
+    kernel[i + radius] = v;
+    kSum += v;
   }
-  return { values, coverage };
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= kSum;
+
+  // horizontal pass
+  const tmp = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const rowOff = y * w;
+    for (let x = 0; x < w; x++) {
+      let acc = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const xx = x + k < 0 ? 0 : x + k >= w ? w - 1 : x + k;
+        acc += grid[rowOff + xx] * kernel[k + radius];
+      }
+      tmp[rowOff + x] = acc;
+    }
+  }
+  // vertical pass
+  const out = new Float32Array(w * h);
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      let acc = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const yy = y + k < 0 ? 0 : y + k >= h ? h - 1 : y + k;
+        acc += tmp[yy * w + x] * kernel[k + radius];
+      }
+      out[y * w + x] = acc;
+    }
+  }
+  return out;
+}
+
+/** بيحوّل triplet RGB (0-255 لكل قناة) لـ hex string ("#rrggbb") — مستخدم في
+ *  format=points عشان كل نقطة تاخد لون واحد صريح تقدر React/Leaflet ترسمه
+ *  كـ fill مباشرة، بدل ما الفرونت يحتاج يعيد بناء LUT بنفسه. */
+function rgbToHex(r: number, g: number, b: number): string {
+  const h = (n: number) => n.toString(16).padStart(2, "0");
+  return `#${h(r)}${h(g)}${h(b)}`;
 }
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
 
   const mode = (searchParams.get("mode") ?? "density").toLowerCase() === "value" ? "value" : "density";
+  // ── format=raster (افتراضي — السلوك القديم + الجديد اللي اتضاف، صفر تغيير):
+  //    بيرجع صورة PNG overlay زي ما هو تمامًا.
+  // ── format=points (جديد — إضافة، مش بديل): بيرجع GeoJSON فيه كل نخلة
+  //    كنقطة منفصلة، ولون كل نقطة محسوب بنفس LUT/rescale اللي الراستر
+  //    بيستخدمهم بالظبط — عشان الألوان تتطابق بين وضع Points ووضع Heatmap
+  //    لنفس البيانات. الاتنين شغالين جنب بعض، مفيش حاجة اتشالت. ──────────
+  const format = (searchParams.get("format") ?? "raster").toLowerCase() === "points" ? "points" : "raster";
   const geojsonUrl = searchParams.get("geojsonUrl");
   const csvUrl = searchParams.get("csvUrl"); // اختياري — fallback لو القيمة مش جوا الـ geojson properties
   const valueField = searchParams.get("valueField"); // إجباري لو mode=value (مثلاً "NDVI Value")
@@ -294,6 +355,12 @@ export async function GET(req: NextRequest) {
   const alphaLow = parseFloat(searchParams.get("alphaLow") ?? "0");
   const alphaHigh = parseFloat(searchParams.get("alphaHigh") ?? "0.18");
   const radiusPx = parseFloat(searchParams.get("radius") ?? "16");
+  // ── سطح متصل حقيقي بدل بقع منفصلة: بعد ما نبني الـ grid الخام (splat لكل
+  // نخلة)، بنعمّله Gaussian blur إضافي بـ sigma = smooth (بالبكسل). الافتراضي
+  // اتحسب من radiusPx نفسه (×2) عشان البقع تندمج في سطح واحد من غير ما
+  // اليوزر يحتاج يظبط بارامتر جديد بنفسه — لو عايزة أنعم/أقسى، ابعتي
+  // ?smooth=<px> صراحةً. smooth=0 بيرجّع للسلوك القديم (بقع منفصلة). ─────
+  const smoothPx = parseFloat(searchParams.get("smooth") ?? String(Math.max(6, radiusPx * 2)));
   const minParam = searchParams.get("min");
   const maxParam = searchParams.get("max");
   // عتبة "فيه بيانات كفاية هنا" لوضع value بس — منفصلة عمدًا عن alphaLow/
@@ -361,7 +428,11 @@ export async function GET(req: NextRequest) {
   // ── فرع mode=density: زي ما كان بالظبط، صفر تغيير في المنطق ─────────────
   if (mode === "density") {
     const points: LngLat[] = rawPoints.map((p) => [p.lng, p.lat]);
-    const grid = buildDensityGrid(points, bbox, outW, outH, radiusPx);
+    const rawGrid = buildDensityGrid(points, bbox, outW, outH, radiusPx);
+    // ✅ ده الفرق الأساسي: بدل ما نلوّن rawGrid (بقع منفصلة حوالين كل نخلة
+    // بينها فراغات/قطع واضحة)، بنلوّن grid المتبلّرة — سطح واحد متصل، وأي
+    // بكسلين جنب بعض ألوانهم قريبة من بعض (مفيش قفزة لونية حادة)
+    const grid = gaussianBlurGrid(rawGrid, outW, outH, smoothPx);
 
     let dataMax = 0;
     for (let i = 0; i < grid.length; i++) if (grid[i] > dataMax) dataMax = grid[i];
@@ -370,6 +441,38 @@ export async function GET(req: NextRequest) {
     const effMin = minParam !== null && Number.isFinite(Number(minParam)) ? Number(minParam) : 0;
     const effMax = maxParam !== null && Number.isFinite(Number(maxParam)) ? Number(maxParam) : dataMax;
     const range = effMax - effMin || 0.001;
+
+    // ── format=points: بدل ما نطلع صورة راستر، بنطلع GeoJSON فيه كل نخلة
+    // كنقطة، ولونها بنعمله sample من نفس الـ grid المتبلّرة في مكان النخلة
+    // نفسها — يعني لو سويتشتي بين Points وHeatmap لنفس النتيجة، الألوان
+    // هتتطابق بالظبط لأنها جايه من نفس السطح بالظبط ────────────────────────
+    if (format === "points") {
+      const features = rawPoints.map((p) => {
+        const px = Math.min(outW - 1, Math.max(0, Math.round(((p.lng - west) / (east - west)) * outW)));
+        const py = Math.min(outH - 1, Math.max(0, Math.round(((north - p.lat) / (north - south)) * outH)));
+        const v = grid[py * outW + px];
+        const t = Math.max(0, Math.min(1, (v - effMin) / range));
+        const byte = Math.round(t * 255);
+        return {
+          type: "Feature" as const,
+          geometry: { type: "Point" as const, coordinates: [p.lng, p.lat] },
+          properties: { value: v, color: rgbToHex(lut[byte * 3], lut[byte * 3 + 1], lut[byte * 3 + 2]) },
+        };
+      });
+      return NextResponse.json(
+        { type: "FeatureCollection", features },
+        {
+          headers: {
+            "Cache-Control": "public, max-age=120",
+            "X-Real-Bbox": bbox.join(","),
+            "X-Palm-Count": String(rawPoints.length),
+            "X-Heatmap-Mode": "density",
+            "X-Heatmap-Format": "points",
+            "X-Heatmap-Smooth": String(smoothPx),
+          },
+        }
+      );
+    }
 
     const zeroT = Math.max(0, Math.min(1, (0 - effMin) / range));
     const maxDist = Math.max(zeroT, 1 - zeroT) || 1;
@@ -425,6 +528,7 @@ export async function GET(req: NextRequest) {
         "X-Raster-Histogram": histogram.join(","),
         "X-Palm-Count": String(rawPoints.length),
         "X-Heatmap-Mode": "density",
+        "X-Heatmap-Smooth": String(smoothPx),
       },
     });
   }
@@ -475,15 +579,54 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const { values: grid, coverage } = buildValueGrid(valuedPoints, bbox, outW, outH, radiusPx);
-
   const rawValues = valuedPoints.map((p) => p.value);
   const dataMin = Math.min(...rawValues);
   const dataMax = Math.max(...rawValues);
-
   const effMin = minParam !== null && Number.isFinite(Number(minParam)) ? Number(minParam) : dataMin;
   const effMax = maxParam !== null && Number.isFinite(Number(maxParam)) ? Number(maxParam) : dataMax;
   const range = effMax - effMin || 0.001;
+
+  // ── format=points: كل نخلة بتاخد لونها من قيمتها الحقيقية هي (مش قيمة
+  // متوسطة من الجوار زي الراستر) — أدق تمثيل لـ "قيمة كل نخلة" وقت ما
+  // اليوزر مختار Points، وبرضو بيستخدم نفس effMin/effMax/LUT بالظبط زي
+  // الراستر عشان الألوان تتطابق لو سويتشتي بين الاتنين ───────────────────
+  if (format === "points") {
+    const features = valuedPoints.map((p) => {
+      const t = Math.max(0, Math.min(1, (p.value - effMin) / range));
+      const byte = Math.round(t * 255);
+      return {
+        type: "Feature" as const,
+        geometry: { type: "Point" as const, coordinates: [p.lng, p.lat] },
+        properties: { value: p.value, color: rgbToHex(lut[byte * 3], lut[byte * 3 + 1], lut[byte * 3 + 2]) },
+      };
+    });
+    return NextResponse.json(
+      { type: "FeatureCollection", features },
+      {
+        headers: {
+          "Cache-Control": "public, max-age=120",
+          "X-Real-Bbox": bbox.join(","),
+          "X-Palm-Count": String(rawPoints.length),
+          "X-Heatmap-Mode": "value",
+          "X-Heatmap-Format": "points",
+          "X-Value-Field": valueField!,
+          "X-Values-Resolved": String(valuedPoints.length),
+        },
+      }
+    );
+  }
+
+  const { numerator, coverage: rawCoverage } = buildValueGrid(valuedPoints, bbox, outW, outH, radiusPx);
+  // ✅ نفس فكرة mode=density: نبلّر numerator وcoverage الخام كل واحد لوحده
+  // (مش القيمة المقسومة) وبعدين نقسم — كده كل بكسل بيفضل weighted average
+  // رياضيًا صح حتى بعد الانتشار المكاني، والنتيجة سطح value متصل بدل نقط
+  // متفرقة كل واحدة بجزيرتها الخاصة
+  const numeratorBlurred = gaussianBlurGrid(numerator, outW, outH, smoothPx);
+  const coverage = gaussianBlurGrid(rawCoverage, outW, outH, smoothPx);
+  const grid = new Float32Array(outW * outH);
+  for (let i = 0; i < grid.length; i++) {
+    grid[i] = coverage[i] > 1e-6 ? numeratorBlurred[i] / coverage[i] : 0;
+  }
 
   const n = outW * outH;
   const rgbaData = Buffer.alloc(n * 4);
@@ -538,6 +681,7 @@ export async function GET(req: NextRequest) {
       "X-Heatmap-Mode": "value",
       "X-Value-Field": valueField!,
       "X-Values-Resolved": String(valuedPoints.length),
+      "X-Heatmap-Smooth": String(smoothPx),
     },
   });
 }

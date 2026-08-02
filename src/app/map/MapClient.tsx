@@ -42,7 +42,7 @@ type RasterPreviewConfig = {
   bounds: [[number, number], [number, number]];
   opacity: number;
   colorRamp: string;
-  dataUrl: string;
+  dataUrl?: string;
   tileUrl?: string;
 };
 
@@ -785,7 +785,7 @@ useEffect(() => {
         },
       };
       setLatestGeoJson({ type: "FeatureCollection", features: [feature] });
-      if (scene.previewUrl) {
+      if (scene.previewUrl || scene.tileUrl) {
         const overlayConfig = {
           name: scene.name,
           indexKey: scene.band,
@@ -1091,7 +1091,7 @@ useEffect(() => {
     if (analyses.length > 0) {
       // نرسم كل analysis بـ delay متراكم عشان الخريطة تكون جاهزة
       analyses.forEach((analysis, index) => {
-        if (!analysis?.dataUrl) return;
+        if (!analysis?.dataUrl && !analysis?.tileUrl) return;
         setTimeout(() => {
           rasterOverlayRef.current?.({
             name: analysis.name,
@@ -1103,6 +1103,7 @@ useEffect(() => {
             opacity: analysis.opacity,
             colorRamp: analysis.colorRamp,
             dataUrl: analysis.dataUrl,
+            tileUrl: analysis.tileUrl,
           });
         }, 800 + index * 300); // 800ms أول واحد، كل واحد بعده + 300ms
       });
