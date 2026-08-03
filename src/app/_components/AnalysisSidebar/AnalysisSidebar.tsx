@@ -13,7 +13,7 @@ import { type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
 import VolumeCalculationPanel from "./VolumeCalculationPanel";
 import { OPEN_RASTER_CALCULATOR_EVENT } from "./sharedSceneSelection";
-import { RasterCalcSidebarItem, PALM_ICON, type RasterTabKey, type PalmHeatmapPreviewConfig } from "./PalmTreesPanel";
+import { RasterCalcSidebarItem, PALM_ICON, type RasterTabKey, type PalmHeatmapPreviewConfig, type PalmPointsPreviewConfig } from "./PalmTreesPanel";
 
 export default function AnalysisSidebar(
   {
@@ -52,6 +52,7 @@ export default function AnalysisSidebar(
   onSatellitePreview,
   onRasterPreview,
   onPalmPreview,
+  onPalmPointsPreview,
   onChangeDetectionPreview,
   onChangeDetectionSwipe,
   onSuperResolutionPreview,
@@ -93,6 +94,8 @@ export default function AnalysisSidebar(
   onRasterPreview?: (config: RasterPreviewConfig) => void;
   /** Puts the palm density heatmap on the actual map as a georeferenced overlay — same idea as onRasterPreview, just for PalmTreesPanel.tsx */
   onPalmPreview?: (config: PalmHeatmapPreviewConfig) => void;
+  /** Puts palm "points" render style (one CircleMarker per detected palm) on the actual map — parallel to onPalmPreview, for PalmTreesPanel.tsx's renderStyle="points" */
+  onPalmPointsPreview?: (config: PalmPointsPreviewConfig) => void;
   onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
   /** Real, georeferenced Before/After swipe on the actual map (Change Detection only). Pass null to hide it. */
   onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
@@ -264,6 +267,7 @@ export default function AnalysisSidebar(
                   onSatellitePreview={onSatellitePreview}
                   onRasterPreview={onRasterPreview}
                   onPalmPreview={onPalmPreview}
+                  onPalmPointsPreview={onPalmPointsPreview}
                   onChangeDetectionPreview={onChangeDetectionPreview}
                   onChangeDetectionSwipe={onChangeDetectionSwipe}
                   onSuperResolutionPreview={onSuperResolutionPreview}

@@ -6,7 +6,7 @@ import ExportButton from "../../map/ExportButton";
 import { CapturesPanel } from "./CapturesPanel";
 import { NDVILivePanel, OverviewLivePanel, WeatherLivePanel } from "./LivePanels";
 import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
-import PalmTreesPanel, { type RasterTabKey, type PalmHeatmapPreviewConfig } from "./PalmTreesPanel";
+import PalmTreesPanel, { type RasterTabKey, type PalmHeatmapPreviewConfig, type PalmPointsPreviewConfig } from "./PalmTreesPanel";
 import { SuperResolutionPanel, type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
 import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { ChangeDetectionPanel, type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
@@ -50,6 +50,7 @@ export function PanelContent({
   onSatellitePreview,
   onRasterPreview,
   onPalmPreview,
+  onPalmPointsPreview,
   onChangeDetectionPreview,
   onChangeDetectionSwipe,
   onSuperResolutionPreview,
@@ -90,6 +91,8 @@ export function PanelContent({
   onRasterPreview?: (config: RasterPreviewConfig) => void;
   /** Puts the palm density heatmap on the actual map as a georeferenced overlay — same idea as onRasterPreview, just for PalmTreesPanel.tsx */
   onPalmPreview?: (config: PalmHeatmapPreviewConfig) => void;
+  /** Puts palm "points" render style (one CircleMarker per detected palm) on the actual map — parallel to onPalmPreview, for PalmTreesPanel.tsx's renderStyle="points" */
+  onPalmPointsPreview?: (config: PalmPointsPreviewConfig) => void;
   onChangeDetectionPreview?: (config: ChangeDetectionPreviewConfig) => void;
   /** Real, georeferenced Before/After swipe on the actual map (Change Detection only). Pass null to hide it. */
   onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
@@ -115,6 +118,7 @@ export function PanelContent({
         pendingCapture={pendingPalmCapture}
         onClearCapture={onClearPalmCapture}
         onPreview={onPalmPreview}
+        onPreviewPoints={onPalmPointsPreview}
       />
     ) : (
       <PlanetaryRasterPanel selectedFeature={selectedFeature} onPreview={onRasterPreview} />

@@ -24,7 +24,7 @@ import type { ProjectSnapshot, UserProject } from "./projects/projectTypes";
 import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from "../_components/AnalysisSidebar/ChangeDetectionPanel";
 import type { SuperResolutionPreviewConfig } from "../_components/AnalysisSidebar/SuperResolutionPanel";
 import type { SatellitePreviewConfig } from "../_components/AnalysisSidebar/SatelliteDataPanel";
-import type { PalmHeatmapPreviewConfig } from "../_components/AnalysisSidebar/PalmTreesPanel";
+import type { PalmHeatmapPreviewConfig, PalmPointsPreviewConfig } from "../_components/AnalysisSidebar/PalmTreesPanel";
 import { SOURCE_META } from "../_components/AnalysisSidebar/SatellitePipelines";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
@@ -137,6 +137,13 @@ export default function MapPage() {
   const changeOpacityRef       = useRef<((o: number) => void) | null>(null);
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
   const rasterOverlayRef       = useRef<((config: RasterPreviewConfig) => void) | null>(null);
+  const pointsOverlayRef       = useRef<((config: {
+    name: string;
+    indexKey: string;
+    date: string;
+    points: { lat: number; lng: number; value: number; color: string }[];
+    opacity: number;
+  } | null) => void) | null>(null);
   const superResOverlayRef     = useRef<((config: SuperResolutionPreviewConfig | null) => void) | null>(null);
   const swipeCompareRef        = useRef<((config: ChangeDetectionSwipeConfig | null) => void) | null>(null);
   const lastCoordsRef          = useRef<{ lat: number; lng: number }>({ lat: 30.0, lng: 31.0 });
@@ -941,7 +948,41 @@ useEffect(() => {
         color: "#22d3ee",
         source: `Palm density heatmap | ${config.date}`,
       };
-      const withoutOld = prev.filter((layer) => layer.id !== "palm-heatmap-result");
+      const withoutOld = prev.filter((layer) => layer.id !== "palm-heatmap-result" && layer.id !== "palm-points-result");
+      return [resultLayer, ...withoutOld];
+    });
+  }, []);
+
+  // ── Palm Trees "points" render style — نفس آلية handlePalmPreview فوق
+  // بالظبط، بس بيرسم نقطة (CircleMarker) لكل نخلة بدل صورة راستر واحدة.
+  // كان ده ناقص خالص قبل كده: PalmTreesPanel كان بينادي onPreviewPoints بس
+  // مفيش حد واصل بيه لأي حاجة حقيقية على الخريطة (شوفي LeafletMap.tsx:
+  // onPointsOverlayRegister)، فوضع "Points" كان بيرجع لـ fallback SVG جوه
+  // السايد بار بس، أيًّا كان الوضع اللي مختاراه في الدروب داون.
+  const handlePalmPointsPreview = useCallback((config: PalmPointsPreviewConfig) => {
+    pointsOverlayRef.current?.({
+      name: config.name,
+      indexKey: config.indexKey,
+      date: config.date,
+      points: config.points,
+      opacity: config.opacity,
+    });
+
+    setLayers((prev) => {
+      const resultLayer: MapLayer = {
+        id: "palm-points-result",
+        name: config.name,
+        nameAr: config.name,
+        type: "raster",
+        visible: true,
+        opacity: config.opacity,
+        color: "#22d3ee",
+        source: `Palm points | ${config.date}`,
+      };
+      // بنمسح أي نتيجة هيت ماب أو نقط قديمة بتاعة النخل قبل ما نضيف الجديدة
+      // — عشان قايمة الـ layers تفضل متطابقة مع اللي فعليًا ظاهر فوق الخريطة
+      // (LeafletMap بيمسح الطبقة القديمة على الخريطة نفسها زي ما هو موضّح فوق).
+      const withoutOld = prev.filter((layer) => layer.id !== "palm-points-result" && layer.id !== "palm-heatmap-result");
       return [resultLayer, ...withoutOld];
     });
   }, []);
@@ -1232,6 +1273,7 @@ useEffect(() => {
       onSatellitePreview={handleSatellitePreview}
       onRasterPreview={handleRasterPreview}
       onPalmPreview={handlePalmPreview}
+      onPalmPointsPreview={handlePalmPointsPreview}
       onChangeDetectionPreview={handleChangeDetectionPreview}
       onChangeDetectionSwipe={handleSwipeCompare}
       onSuperResolutionPreview={handleSuperResolutionPreview}
@@ -1268,6 +1310,7 @@ useEffect(() => {
     handleSatellitePreview,
     handleRasterPreview,
     handlePalmPreview,
+    handlePalmPointsPreview,
     handleChangeDetectionPreview,
     handleSwipeCompare,
     handleSuperResolutionPreview,
@@ -1344,6 +1387,7 @@ useEffect(() => {
             onRasterOverlayRegister={(h) => { rasterOverlayRef.current = h as any; }}
             onSwipeOverlayRegister={(h) => { swipeCompareRef.current = h as any; }}
             onSuperResOverlayRegister={(h) => { superResOverlayRef.current = h as any; }}
+            onPointsOverlayRegister={(h) => { pointsOverlayRef.current = h as any; }}
             geoJsonData={contourLayer?.visible ? geoJsonData : null}
             extraGeoJsonData={combinedGeoJson}
             latestGeoJson={latestGeoJson}

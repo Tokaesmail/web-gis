@@ -1052,11 +1052,12 @@ const scenes = useMemo(
 const boundsString = bounds ? JSON.stringify(bounds) : "";
 
 useEffect(() => {
-  // نفس التحفظ اللي في handlePreviewScene: المصادر غير البصرية (Sentinel-1،
-  // Cop-DEM، Sentinel-5P) لسه الباك ماعندوش قصّ حقيقي بالـ bbox ليها، فمحاولة
-  // canvas-clip synchronous على صورها ممكن تجمّد التاب. بنمنع الـ loop ده
-  // يشتغل خالص للمصادر دي.
-  if (!clipToShape || !polygonRing || !isOpticalSource) {
+  // ملحوظة: المصادر غير البصرية (Sentinel-1، Cop-DEM، Sentinel-5P) لسه
+  // الباك ماعندوش قصّ حقيقي بالـ bbox ليها، فالصورة الراجعة ممكن تكون
+  // أكبر بكتير. clipImageToPolygon نفسه بقى بيصغّر أي صورة كبيرة قبل ما
+  // يعمل canvas clip عشان ميجمّدش التاب، فمبقاش لازم نمنع الـ clip عن
+  // المصادر دي خالص.
+  if (!clipToShape || !polygonRing) {
     setClippedThumbs({});
     // مفيش داعي نمسح الكاش هنا، ممكن نرجع نستخدمه لو المستخدم فعّل clipToShape تاني
     return;
@@ -1579,6 +1580,19 @@ useEffect(() => {
     const sceneCoords = boundsCenter(sceneBounds);
     const visualization = getVisualization(analysis, scene.collection);
 
+    // ⚠️ bboxUrl فوق مقصوصة بالفعل على مستطيل bbox الـ AOI، لكن لسه مستطيل —
+    // لو المستخدم رسم بولوجن/دايرة مش مستطيلة والـ "Clip to drawn shape"
+    // شغال، لازم نعمل نفس خطوة clipImageToPolygon اللي بتتعمل للمصادر
+    // التانية تحت، وإلا الصورة هتفضل تطلع مستطيلة مهما كان شكل الـ AOI.
+    let clippedPreviewUrl = bboxUrl ?? scene.thumbnail ?? scene.previewUrl;
+    if (clipToShape && polygonRing && clippedPreviewUrl) {
+      try {
+        clippedPreviewUrl = await clipImageToPolygon(clippedPreviewUrl, sceneBounds, polygonRing);
+      } catch {
+        // لو القص فشل (مثلاً تحميل الصورة فشل بسبب CORS)، سيبي الصورة زي ما هي بدل ما توقفي كل الـ preview
+      }
+    }
+
     setPreviewingSceneId(scene.id);
     setSceneError(null);
     setActivePreviewSceneId(scene.id);
@@ -1602,7 +1616,7 @@ useEffect(() => {
         // previewUrl يخلي LeafletMap يستخدم imageOverlay(bounds) بدل
         // tileLayer، فمفيش تعدي عن حدود الـ AOI مهما زوّمنا أوت. tileUrl
         // فاضل موجود كـ fallback لو bboxUrl فشل لأي سبب.
-        previewUrl: bboxUrl ?? scene.thumbnail ?? scene.previewUrl,
+        previewUrl: clippedPreviewUrl,
         overviewUrl: scene.thumbnail ?? scene.previewUrl,
         tileUrl: bboxUrl ? undefined : tileUrl,
         geometry: bboxGeometry([
@@ -1684,15 +1698,12 @@ useEffect(() => {
       return;
     }
   }
-  // ⚠️ clipImageToPolygon بيعمل canvas processing synchronous على الصورة كاملة.
-  // للمصادر البصرية (sentinel-2/landsat) الصورة الراجعة من الباك مقصوصة
-  // بالـ bbox فعلًا فحجمها مضبوط. لكن Sentinel-1 (VV/VH/FLOOD/CHANGE) وCop-DEM
-  // وSentinel-5P لسه الباك ماعندوش منطق قصّ حقيقي لهم (شوفي getVisualization
-  // فوق) — فلو الباك رجّع الـ scene كاملة (بدل جزء الـ bbox)، محاولة عمل
-  // canvas clip synchronous على صورة بالحجم ده كانت بتجمّد التاب كليًا وترجع
-  // مش بترد على أي كليك. بنعطل الـ clip للمصادر دي مؤقتًا لحد ما الباك يتظبط،
-  // بدل ما نسيب المستخدم يعلّق التاب من غير ما يعرف السبب.
-  if (clipToShape && polygonRing && previewUrl && isOpticalSource) {
+  // ⚠️ clipImageToPolygon بيعمل canvas processing على الصورة، لكن دلوقتي هو
+  // نفسه بيصغّر أي صورة أكبر من الحد الآمن الأول قبل ما يعمل clip/toDataURL —
+  // فمعادش فيه خطر تجميد التاب حتى مع Sentinel-1/Cop-DEM/Sentinel-5P اللي
+  // الباك بيرجعلها الـ scene كاملة (مش مقصوصة بالـ bbox). عشان كده الـ clip
+  // شغال دلوقتي لكل المصادر مش بس البصرية.
+  if (clipToShape && polygonRing && previewUrl) {
     try {
       previewUrl = await clipImageToPolygon(previewUrl, sceneBounds, polygonRing);
     } catch {

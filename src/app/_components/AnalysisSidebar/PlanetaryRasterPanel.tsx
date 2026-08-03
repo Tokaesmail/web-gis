@@ -430,7 +430,6 @@ const [chartSeries, setChartSeries] = useState<
 >(null);
 // ── فتح/قفل شاشة الشارت الكبيرة (fullscreen) + مستوى الزووم بتاعها ──
 const [chartModalOpen, setChartModalOpen] = useState(false);
-const [chartZoom, setChartZoom] = useState(1);
 
 const bbox = useMemo(
   () => getFeatureBBox(selectedFeature, fallbackCoords, true),
@@ -1251,7 +1250,6 @@ const runChart = async () => {
               <button
                 type="button"
                 onClick={() => {
-                  setChartZoom(1);
                   setChartModalOpen(true);
                 }}
                 title="Open fullscreen"
@@ -1291,8 +1289,6 @@ const runChart = async () => {
           title={activePreset || "Expression"}
           sensor={pickedScene?.collection ?? "sentinel-2-l2a"}
           period={`${dateFrom} → ${dateTo}`}
-          zoom={chartZoom}
-          onZoomChange={setChartZoom}
           onClose={() => setChartModalOpen(false)}
         />
       )}
@@ -1734,16 +1730,15 @@ function TimeSeriesChart({
 }
 
 // ── شاشة الشارت الكبيرة (fullscreen) — نفس ديزاين EO Browser: خلفية
-// داكنة، شريط Min/Max ظليل، خط Mean أبيض منقّط، تواريخ مايلة تحت المحور،
-// وأزرار Zoom in / Zoom out / Close زي الصورة اللي بعتها بالظبط ──────
+// داكنة، شريط Min/Max ظليل، خط Mean أبيض منقّط، تواريخ مايلة تحت المحور.
+// مفيش زووم — الكارت بيتحدد بحجم الجراف نفسه بالظبط (max-h/max-w بس
+// كحد أقصى أمان لو الجراف أكبر من الشاشة، مش مساحة فاضية ثابتة حواليه) ──
 function TimeSeriesChartModal({
   series,
   color,
   title,
   sensor,
   period,
-  zoom,
-  onZoomChange,
   onClose,
 }: {
   series: { date: string; value: number; min?: number; max?: number }[];
@@ -1751,8 +1746,6 @@ function TimeSeriesChartModal({
   title: string;
   sensor: string;
   period: string;
-  zoom: number;
-  onZoomChange: (z: number) => void;
   onClose: () => void;
 }) {
   // نفس الإصلاح: لون ثابت للخط والـ band بدل ما نقرأ أول hex في الـ
@@ -1766,9 +1759,9 @@ function TimeSeriesChartModal({
   const padLeft = 46;
   const padRight = 16;
 
-  // الشارت بيترسم بمقاس ثابت دايمًا، والزووم بقى بيكبر/يصغر الصورة كلها
-  // (زي أي PNG viewer عادي) بدل ما يمط المحور السيني بس — أي عنصر في
-  // الشارت (خطوط، نقط، تواريخ) بيكبر مع بعضه بنفس النسبة
+  // الشارت بيترسم بمقاس ثابت واحد بس (مفيش زووم) — أي عنصر (خطوط، نقط،
+  // تواريخ) بيتحسب مرة واحدة على المقاس الحقيقي، والكارت حواليه بيتحدد
+  // بنفس المقاس ده بالظبط
   const basePerPoint = 34;
   const perPoint = basePerPoint;
   const plotWidth = Math.max(600, perPoint * Math.max(1, series.length - 1));
@@ -1814,9 +1807,6 @@ function TimeSeriesChartModal({
   // ده اللي بيحقق "يوم أو يومين على حسب اللي موجود"
   const minLabelGapPx = 34;
   const labelStep = Math.max(1, Math.ceil(minLabelGapPx / perPoint));
-
-  const zoomMin = 0.5;
-  const zoomMax = 4;
 
   // ── بيتغلق بـ Escape، بالظبط زي أي image viewer عادي ──
   useEffect(() => {
@@ -1891,7 +1881,7 @@ function TimeSeriesChartModal({
       }}
     >
       <div
-        className="flex h-full max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl shadow-2xl"
+        className="flex max-h-[92vh] max-w-[96vw] flex-col overflow-hidden rounded-xl shadow-2xl"
         style={{
           backgroundColor: "#0a1220",
           border: "1px solid rgba(255,255,255,0.1)",
@@ -1915,42 +1905,6 @@ function TimeSeriesChartModal({
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Zoom out */}
-            <button
-              type="button"
-              onClick={() => onZoomChange(Math.max(zoomMin, +(zoom - 0.5).toFixed(2)))}
-              disabled={zoom <= zoomMin}
-              title="Zoom out"
-              className="flex h-9 w-9 items-center justify-center rounded-md text-slate-200 transition-colors hover:bg-cyan-400/15 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-35"
-              style={{ backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}
-            >
-              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2}>
-                <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35M8 11h6" strokeLinecap="round" />
-              </svg>
-            </button>
-            {/* Zoom in */}
-            <button
-              type="button"
-              onClick={() => onZoomChange(Math.min(zoomMax, +(zoom + 0.5).toFixed(2)))}
-              disabled={zoom >= zoomMax}
-              title="Zoom in"
-              className="flex h-9 w-9 items-center justify-center rounded-md text-slate-200 transition-colors hover:bg-cyan-400/15 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-35"
-              style={{ backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}
-            >
-              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2}>
-                <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35M11 8v6M8 11h6" strokeLinecap="round" />
-              </svg>
-            </button>
-            {/* Reset zoom */}
-            <button
-              type="button"
-              onClick={() => onZoomChange(1)}
-              title="Reset zoom"
-              className="h-9 rounded-md px-3 text-[0.68rem] font-semibold text-slate-200 transition-colors hover:bg-cyan-400/15 hover:text-cyan-300"
-              style={{ backgroundColor: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}
-            >
-              Reset
-            </button>
             {/* Download — بينزل الشارت PNG، زي زرار "Graph Image" في الصورة */}
             <button
               type="button"
@@ -1979,23 +1933,15 @@ function TimeSeriesChartModal({
           </div>
         </div>
 
-        {/* Chart body — الزووم بيكبر/يصغر الصورة كلها زي أي PNG viewer،
-            و scroll في أي اتجاه لما الصورة تبقى أكبر من مساحة العرض */}
-        <div
-          className="flex-1 overflow-auto px-2 py-4"
-          onWheel={(e) => {
-            // Ctrl/⌘ + scroll wheel = zoom, زي أي image viewer عادي
-            if (!e.ctrlKey && !e.metaKey) return;
-            e.preventDefault();
-            const step = e.deltaY > 0 ? -0.25 : 0.25;
-            onZoomChange(Math.min(zoomMax, Math.max(zoomMin, +(zoom + step).toFixed(2))));
-          }}
-        >
+        {/* Chart body — بيتعرض بمقاس الجراف الحقيقي، والكارت اللي حواليه
+            بيتحدد بنفس المقاس ده (مفيش padding/مساحة فاضية ثابتة)؛ scroll
+            بيظهر بس لو الجراف فعلاً أكبر من الشاشة (max-h/max-w) */}
+        <div className="overflow-auto px-2 py-4">
           <svg
             ref={svgRef}
             viewBox={`0 0 ${width} ${height}`}
-            width={width * zoom}
-            height={height * zoom}
+            width={width}
+            height={height}
             style={{ display: "block" }}
           >
             <defs>
@@ -2064,7 +2010,7 @@ function TimeSeriesChartModal({
             </span>
           </div>
           <span className="text-[0.6rem] text-slate-600">
-            {series.length} scene{series.length === 1 ? "" : "s"} · zoom {zoom.toFixed(2)}×
+            {series.length} scene{series.length === 1 ? "" : "s"}
           </span>
         </div>
       </div>

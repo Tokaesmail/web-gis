@@ -84,6 +84,17 @@ interface Props {
     bounds: [[number, number], [number, number]];
     coords: { lat: number; lng: number };
   } | null) => void) => void;
+  /** register a real, georeferenced points overlay directly on the map — used for
+   *  "points" render style (e.g. Palm Trees: one CircleMarker per detected palm,
+   *  colored by density/value) as the exclusive alternative to a raster heatmap.
+   *  Call the registered handler with `null` to clear it. */
+  onPointsOverlayRegister?: (handler: (config: {
+    name: string;
+    indexKey: string;
+    date: string;
+    points: { lat: number; lng: number; value: number; color: string }[];
+    opacity: number;
+  } | null) => void) => void;
   onCapture?:     (capture: CaptureResult) => void;
   /** callback لما يضغط على GeoJSON feature */
   onFeatureClick?: (feature: GeoJSON.Feature) => void;
@@ -171,6 +182,7 @@ export default function LeafletMap({
   onRasterOverlayRegister,
   onSwipeOverlayRegister,
   onSuperResOverlayRegister,
+  onPointsOverlayRegister,
   extrusionGeoJson,
   extrusionConfig,
   initialFeatures,
@@ -220,6 +232,7 @@ export default function LeafletMap({
   const imagePaneReadyRef = useRef(false);
   const imageOverlaysRef = useRef<{ id: string; name: string; src: string; bounds: [[number, number], [number, number]]; layer: any }[]>([]);
   const rasterOverlayRef = useRef<Map<string, any>>(new Map());
+  const pointsOverlayRef = useRef<Map<string, any>>(new Map());
   const superResOverlayRef = useRef<{ layer: any; marker: any } | null>(null);
   const swipeOverlayRef = useRef<{ cleanup: () => void } | null>(null);
   const placingImageRef = useRef<{
@@ -463,6 +476,12 @@ useEffect(() => {
         try { map.removeLayer(oldLayer); } catch (_) {}
         rasterOverlayRef.current.delete(key);
       });
+      // ⚠️ عشان لو المستخدم كان في "Points" mode وبدّل لـ "Heatmap"، نقط
+      // النخل القديمة تتشال من على الخريطة مش تفضل واقفة تحت الهيت ماب.
+      pointsOverlayRef.current.forEach((oldLayer, key) => {
+        try { map.removeLayer(oldLayer); } catch (_) {}
+        pointsOverlayRef.current.delete(key);
+      });
 
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
       // ملحوظة: config.tileUrl لازم يكون XYZ template حقيقي (فيه {z}/{x}/{y}).
@@ -515,6 +534,53 @@ useEffect(() => {
       });
     });
   }, [onRasterOverlayRegister, mapReady]);
+
+  // ── Points render style (Palm Trees "points" mode): نفس فكرة raster
+  // overlay بالظبط لكن بدل صورة واحدة، كل نقطة (نخلة) بتتحط كـ CircleMarker
+  // منفصلة ملوّنة على حسب الكثافة/القيمة بتاعتها، كلهم جوه LayerGroup واحد
+  // عشان يتشالوا/يتحطوا مع بعض بسهولة. ده اللي كان ناقص فعليًا — كانت
+  // مسجّلة بس مفيش حد بيسمعها، فـ "Points" مكنش بيظهر على الخريطة الأساسية
+  // خالص، كان بيرجع لـ fallback SVG جوه السايد بار بس.
+  useEffect(() => {
+    if (!onPointsOverlayRegister) return;
+    onPointsOverlayRegister((config) => {
+      const map = mapInstanceRef.current;
+      const L = LRef.current;
+      if (!map || !L) return;
+
+      // امسحي أي raster overlay قديم (زي هيت ماب النخل) وأي points overlay
+      // قديم قبل ما ترسمي الجديد — بنفس منطق raster overlay: تحليل واحد بس
+      // ظاهر فوق الخريطة في نفس اللحظة.
+      rasterOverlayRef.current.forEach((oldLayer, key) => {
+        try { map.removeLayer(oldLayer); } catch (_) {}
+        rasterOverlayRef.current.delete(key);
+      });
+      pointsOverlayRef.current.forEach((oldLayer, key) => {
+        try { map.removeLayer(oldLayer); } catch (_) {}
+        pointsOverlayRef.current.delete(key);
+      });
+
+      if (!config || !config.points?.length) return;
+
+      const overlayKey = `${config.indexKey}_${config.date}`;
+      const group = L.layerGroup(
+        config.points.map((p) =>
+          L.circleMarker([p.lat, p.lng], {
+            radius: 4,
+            color: p.color,
+            fillColor: p.color,
+            fillOpacity: config.opacity,
+            opacity: config.opacity,
+            weight: 1,
+          }).bindPopup(
+            `<b>${config.name}</b><br/>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<br/>value: ${p.value.toFixed(3)}`
+          )
+        )
+      ).addTo(map);
+
+      pointsOverlayRef.current.set(overlayKey, group);
+    });
+  }, [onPointsOverlayRegister, mapReady]);
 
   // ── Super Resolution: نتيجة الـ SR بتتحط كـ imageOverlay حقيقي فوق التايلز
   // بنفس bbox الطلب — بالظبط زي الـ raster overlay، فرق واحد إن ده overlay
