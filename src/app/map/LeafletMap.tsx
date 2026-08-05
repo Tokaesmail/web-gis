@@ -45,6 +45,10 @@ interface Props {
   onCoordsUpdate: (lat: number, lng: number) => void;
   flyToRef:       React.MutableRefObject<((lat: number, lng: number) => void) | null>;
   clearRef:       React.MutableRefObject<(() => void) | null>;
+  /** clears ONLY the analysis layers (raster overlays + super-resolution
+   * overlay) — leaves the drawn AOI shape/marker untouched. Used by the
+   * dedicated "Delete Analysis" button in the toolbar. */
+  clearAnalysisRef?: React.MutableRefObject<(() => void) | null>;
   /** Captures whatever shape is currently drawn (lastCoordsRef/lastToolRef)
    * WITHOUT requiring the user to draw a new one. Used by panels (like Palm
    * Trees) that want to reuse the shape the user already selected instead of
@@ -176,7 +180,7 @@ function circleToPolygonLatLng(centerLat: number, centerLng: number, radiusMeter
 
 export default function LeafletMap({
   activeTool, captureTarget, onAreaSelected, onCoordsUpdate,
-  flyToRef, clearRef, captureCurrentRef, onSatChange, onOpacityChangeRegister, onCapture,
+  flyToRef, clearRef, clearAnalysisRef, captureCurrentRef, onSatChange, onOpacityChangeRegister, onCapture,
   geoJsonData, extraGeoJsonData, latestGeoJson, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
   onImagePlacerRegister,
   onRasterOverlayRegister,
@@ -235,6 +239,35 @@ export default function LeafletMap({
   const pointsOverlayRef = useRef<Map<string, any>>(new Map());
   const superResOverlayRef = useRef<{ layer: any; marker: any } | null>(null);
   const swipeOverlayRef = useRef<{ cleanup: () => void } | null>(null);
+  // ✅ دالة موحّدة بتمسح كل أنواع overlays التحليل (raster / palm points /
+  // super resolution / change-detection swipe) من على الخريطة مرة واحدة.
+  // مستخدمة في كل مكان بيحتاج يمسح تحليل قديم قبل ما يحط واحد جديد —
+  // زرار "Delete Analysis"، وكمان جوه كل handler بتاع overlay جديد، عشان
+  // لو المستخدم بدّل من نوع تحليل لنوع تاني (مثلاً من Raster لـ Super
+  // Resolution أو من Palm Points لـ Swipe)، القديم يتشال أول ما الجديد
+  // يتحط بدل ما يترسموا فوق بعض.
+  const clearAllAnalysisOverlaysRef = useRef<() => void>(() => {});
+  clearAllAnalysisOverlaysRef.current = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    rasterOverlayRef.current.forEach((layer) => {
+      try { map.removeLayer(layer); } catch (_) {}
+    });
+    rasterOverlayRef.current.clear();
+    pointsOverlayRef.current.forEach((layer) => {
+      try { map.removeLayer(layer); } catch (_) {}
+    });
+    pointsOverlayRef.current.clear();
+    if (superResOverlayRef.current) {
+      try { map.removeLayer(superResOverlayRef.current.layer); } catch (_) {}
+      try { map.removeLayer(superResOverlayRef.current.marker); } catch (_) {}
+      superResOverlayRef.current = null;
+    }
+    if (swipeOverlayRef.current) {
+      try { swipeOverlayRef.current.cleanup(); } catch (_) {}
+      swipeOverlayRef.current = null;
+    }
+  };
   const placingImageRef = useRef<{
     file: File;
     src: string; // data URL (persistent across refresh)
@@ -465,23 +498,12 @@ useEffect(() => {
       // كل analysis ليه key فريد — name + date عشان نعرض نفس الـ analysis مع update
       const overlayKey = `${config.indexKey}_${config.date}`;
 
-      // ⚠️ FIX: كنا بنمسح بس الـ overlay اللي نفس overlayKey (نفس band+date).
-      // ده معناه إن لو بدّلتي من NDVI لـ FIRE على MODIS مثلًا، الـ tile layer
-      // القديم بتاع NDVI كان فاضل موجود على الخريطة تحت الجديد (لأن الـ key
-      // اختلف)، فلو الجديد فشل يحمّل tiles أو كان شفاف في جزء من الشاشة، القديم
-      // كان بيبان تحته — وده اللي كان بيدّي إحساس إن "كل التحليلات شكلها واحد".
-      // الحل: نمسح كل الـ raster overlays القديمة قبل ما نضيف الجديد، عشان
-      // يفضل دايمًا تحليل واحد بس ظاهر فوق الخريطة في نفس اللحظة.
-      rasterOverlayRef.current.forEach((oldLayer, key) => {
-        try { map.removeLayer(oldLayer); } catch (_) {}
-        rasterOverlayRef.current.delete(key);
-      });
-      // ⚠️ عشان لو المستخدم كان في "Points" mode وبدّل لـ "Heatmap"، نقط
-      // النخل القديمة تتشال من على الخريطة مش تفضل واقفة تحت الهيت ماب.
-      pointsOverlayRef.current.forEach((oldLayer, key) => {
-        try { map.removeLayer(oldLayer); } catch (_) {}
-        pointsOverlayRef.current.delete(key);
-      });
+      // ⚠️ لازم نمسح أي تحليل قديم أيًا كان نوعه (raster تاني، Points، Super
+      // Resolution، Swipe) قبل ما نحط الجديد — مش بس نفس النوع — عشان محدش
+      // يفضل واقف تحت الجديد على الخريطة. clearAllAnalysisOverlaysRef هي نفس
+      // الدالة اللي زرار "Delete Analysis" بيستخدمها، فسلوك المسح واحد ومتسق
+      // في كل مكان.
+      clearAllAnalysisOverlaysRef.current();
 
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
       // ملحوظة: config.tileUrl لازم يكون XYZ template حقيقي (فيه {z}/{x}/{y}).
@@ -548,17 +570,10 @@ useEffect(() => {
       const L = LRef.current;
       if (!map || !L) return;
 
-      // امسحي أي raster overlay قديم (زي هيت ماب النخل) وأي points overlay
-      // قديم قبل ما ترسمي الجديد — بنفس منطق raster overlay: تحليل واحد بس
-      // ظاهر فوق الخريطة في نفس اللحظة.
-      rasterOverlayRef.current.forEach((oldLayer, key) => {
-        try { map.removeLayer(oldLayer); } catch (_) {}
-        rasterOverlayRef.current.delete(key);
-      });
-      pointsOverlayRef.current.forEach((oldLayer, key) => {
-        try { map.removeLayer(oldLayer); } catch (_) {}
-        pointsOverlayRef.current.delete(key);
-      });
+      // امسحي أي تحليل قديم أيًا كان نوعه قبل ما ترسمي الجديد — تحليل واحد
+      // بس ظاهر فوق الخريطة في نفس اللحظة (نفس الدالة اللي زرار Delete
+      // Analysis بيستخدمها).
+      clearAllAnalysisOverlaysRef.current();
 
       if (!config || !config.points?.length) return;
 
@@ -592,13 +607,9 @@ useEffect(() => {
       const L = LRef.current;
       if (!map || !L) return;
 
-      // امسحي أي overlay/marker قديم قبل ما تحطي الجديد (أو لو config جايه null)
-      const existing = superResOverlayRef.current;
-      if (existing) {
-        try { map.removeLayer(existing.layer); } catch (_) {}
-        try { map.removeLayer(existing.marker); } catch (_) {}
-        superResOverlayRef.current = null;
-      }
+      // امسحي أي تحليل قديم أيًا كان نوعه قبل ما تحطي الجديد (أو لو config
+      // جايه null) — نفس الدالة اللي زرار Delete Analysis بيستخدمها.
+      clearAllAnalysisOverlaysRef.current();
       if (!config || !config.dataUrl) return;
 
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
@@ -634,11 +645,9 @@ useEffect(() => {
       const map = mapInstanceRef.current;
       const L = LRef.current;
 
-      // Always clear whatever swipe overlay exists first (update or teardown).
-      if (swipeOverlayRef.current) {
-        swipeOverlayRef.current.cleanup();
-        swipeOverlayRef.current = null;
-      }
+      // امسحي أي تحليل قديم أيًا كان نوعه الأول (update أو teardown) — نفس
+      // الدالة اللي زرار Delete Analysis بيستخدمها.
+      clearAllAnalysisOverlaysRef.current();
       if (!config || !map || !L) return;
 
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
@@ -1737,21 +1746,22 @@ if (!restoredRef.current) {
           try { map.removeLayer(ov.layer); } catch (_) {}
         });
         imageOverlaysRef.current = [];
-        // امسح كل الـ raster analysis overlays
-        rasterOverlayRef.current.forEach((layer) => {
-          try { map.removeLayer(layer); } catch (_) {}
-        });
-        rasterOverlayRef.current.clear();
-        // امسح overlay السوبر ريزوليوشن لو موجود
-        if (superResOverlayRef.current) {
-          try { map.removeLayer(superResOverlayRef.current.layer); } catch (_) {}
-          try { map.removeLayer(superResOverlayRef.current.marker); } catch (_) {}
-          superResOverlayRef.current = null;
-        }
+        // امسح كل أنواع overlays التحليل (raster / palm points / super
+        // resolution / change-detection swipe) بنفس الدالة الموحّدة.
+        clearAllAnalysisOverlaysRef.current();
         try { localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY); } catch (_) {}
         refreshOverlaysUi();
         stopImagePlacement();
       };
+
+      // ✅ زرار "Delete Analysis" المستقل — بيمسح overlays التحليل بس
+      // (raster / palm points / super resolution / change-detection swipe)
+      // وبيسيب الـ AOI/الشكل المرسوم زي ما هو من غير ما يلمسه.
+      if (clearAnalysisRef) {
+        clearAnalysisRef.current = () => {
+          clearAllAnalysisOverlaysRef.current();
+        };
+      }
 
       // ── Capture the shape that's ALREADY drawn (lastCoordsRef/lastToolRef)
       // on demand, without requiring the user to draw a new one. Used by

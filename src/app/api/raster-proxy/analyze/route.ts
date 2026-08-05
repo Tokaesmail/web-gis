@@ -190,9 +190,19 @@ type AnalysisType =
   | "vv_vh_ratio" | "sar_rgb"
   // Copernicus DEM
   | "elevation" | "slope" | "hillshade" | "aspect" 
-  // Sentinel-5P (Atmosphere) — ⚠️ مش متاحين فعليًا لسه، بيرجعوا 501، شوفي الكومنت
-  // فوق renderDemProduct/GET تحت
-  | "no2" | "so2" | "co" | "ozone";
+  // Sentinel-5P (Atmosphere) — ✅ حقيقية دلوقتي عن طريق /gis/sentinel5p/decode
+  // (شوفي sentinelDecode.ts في الفرونت). "o3" alias جديد لنفس "ozone" القديمة
+  // (الـ endpoint الجديد بيرجّع اسم المتغير "O3" مش "OZONE").
+  | "no2" | "so2" | "co" | "ozone" | "o3" | "ch4" | "hcho" | "cloud"
+  // Sentinel-3 SST — عن طريق نفس الـ decode endpoint (شوفي الكومنت فوق no2/so2/co/ozone تحت)
+  | "sst"
+  // ⚠️ (2026-08-04) تلاتة Sentinel-3 analyses جداد بقوا يعدّوا على نفس
+  // مسار SST/الغازات (decode → COG → هنا) بدل TiTiler المباشر بتاع Planetary
+  // Computer، اللي كان بيفشل مع NetCDF+variable= ويرجّع RGB overview بدل
+  // heatmap ملوّن (شوفي sentinelDecode.ts للتفاصيل). أسماء الـ type هنا هي
+  // variable.toLowerCase() اللي buildRasterProxyAnalyzeUrl بتبعته:
+  // LST→"lst", FRP_MWIR→"frp_mwir", CHL_NN→"chl_nn".
+  | "lst" | "frp_mwir" | "chl_nn";
 
 type CompositeConfig = { kind: "composite"; bandCount: 3; label: string };
 type IndexConfig = {
@@ -202,6 +212,18 @@ type IndexConfig = {
   /** Applied per-pixel with each band's value as one arg, in the order listed in the type's `urls` doc. */
   formula: (...values: number[]) => number;
   defaultColormap: string;
+  // ⚠️ اختياري: fallback rescale range (لو ?min=/?max= مفيش في الـ query).
+  // الـ default العام تحت في GET (-1/1) مبني على افتراض إن القيمة index
+  // معياري (NDVI/NDWI/...) — ده غلط تمامًا لغازات Sentinel-5P/SST اللي
+  // قيمها الحقيقية بعيدة كل البعد عن مدى -1..1 (مثلاً NO2 ~1e-5..1e-4).
+  // لو استُخدم الـ default العام لغاز بالغلط (مثلاً لو /statistics فشلت
+  // ورجعت null)، كل بكسل كان بيقع جوه منطقة الشفافية القريبة من الصفر
+  // وتطلع الصورة شفافة بالكامل — "مفيش حاجة بتظهر". القيم هنا تقريبية
+  // (نطاق نموذجي معروف للمنتج ده) — أفضل بكتير لسه إنها تيجي من
+  // /api/raster-proxy/statistics (p2/p98 حقيقيين لنفس الملف)، ده بس شبكة
+  // أمان لو الـ statistics مش متاحة لأي سبب.
+  defaultMin?: number;
+  defaultMax?: number;
 };
 type ChangeConfig = {
   kind: "change";
@@ -426,28 +448,87 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     product: "aspect", defaultColormap: "rdylbu_r",
   },
 
-  // ── Sentinel-5P (Atmosphere) ────────────────────────────────────────────
-  // ✅ اتحلت: الفرونت بقى بيكلم sentinel5p_cog.py الأول (GET /api/sentinel5p/cog)
-  // ويحول أصل الـ NetCDF لـ COG حقيقي، وبعدين بيبعت رابط الـ COG ده هنا في
-  // "urls" — يعني ده بقى GeoTIFF عادي بالنسبالنا (band واحد، قيمة العمود
-  // الفعلية جاهزة من غير أي حساب formula، فـ identity function). rMin/rMax
-  // بييجوا من ?min=/?max= (الفرونت بيبعتهم من stats الراجعة من الـ converter
-  // نفسه لو التحويل كان fresh، وإلا بيقع على defaults محلية).
+  // ── Sentinel-5P (Atmosphere) + Sentinel-3 (SST) ─────────────────────────
+  // ✅ اتحلت (تاني): الفرونت بقى بيكلم /gis/sentinel5p/decode (JWT-protected،
+  // شوفي sentinelDecode.ts) بدل sentinel5p_cog.py القديم — endpoint واحد
+  // موحّد شغّال للـ 9 غازات دول مع بعض *و* Sentinel-3 SST، وبياخد item_id
+  // مباشرة من غير ما الفرونت يجيب رابط NetCDF الأصلي بنفسه. بيرجّع GeoTIFF
+  // عادي (band واحد، قيمة العمود الفعلية جاهزة، فـ identity function زي
+  // قبل). rMin/rMax بييجوا من ?min=/?max= — الفرونت بقى بيجيبهم من
+  // /api/raster-proxy/statistics (p2/p98 حقيقيين لكل متغير) قبل ما يبني
+  // الرابط ده، مش أرقام ثابتة مخمّنة، عشان كل غاز/SST يتلوّن بمداه الطبيعي.
   no2: {
     kind: "index", bandCount: 1, label: "NO2 tropospheric column (mol/m², single band from COG)",
     formula: (v) => v, defaultColormap: "inferno",
+    defaultMin: 0, defaultMax: 0.0001,
   },
   so2: {
     kind: "index", bandCount: 1, label: "SO2 column density (mol/m², single band from COG)",
     formula: (v) => v, defaultColormap: "rdylbu_r",
+    defaultMin: 0, defaultMax: 0.001,
   },
   co: {
     kind: "index", bandCount: 1, label: "CO column density (mol/m², single band from COG)",
     formula: (v) => v, defaultColormap: "greens",
+    defaultMin: 0.01, defaultMax: 0.05,
   },
   ozone: {
     kind: "index", bandCount: 1, label: "Total column ozone (mol/m², single band from COG)",
     formula: (v) => v, defaultColormap: "rdbu_r",
+    defaultMin: 0.002, defaultMax: 0.008,
+  },
+  // "o3" == "ozone" بالظبط — alias عشان الـ decode endpoint بيرجّع اسم
+  // المتغير "O3" (مش "OZONE")، فـ sentinelDecode.ts بيبعت type=o3.
+  o3: {
+    kind: "index", bandCount: 1, label: "Total column ozone (mol/m², single band from COG)",
+    formula: (v) => v, defaultColormap: "rdbu_r",
+    defaultMin: 0.002, defaultMax: 0.008,
+  },
+  ch4: {
+    kind: "index", bandCount: 1, label: "CH4 column-averaged mixing ratio (ppb, single band from COG)",
+    formula: (v) => v, defaultColormap: "magma",
+    defaultMin: 1700, defaultMax: 1950,
+  },
+  hcho: {
+    kind: "index", bandCount: 1, label: "HCHO (formaldehyde) tropospheric column (mol/m², single band from COG)",
+    formula: (v) => v, defaultColormap: "spectral",
+    defaultMin: 0, defaultMax: 0.0002,
+  },
+  cloud: {
+    kind: "index", bandCount: 1, label: "Cloud fraction (0-1, single band from COG)",
+    formula: (v) => v, defaultColormap: "spectral",
+    defaultMin: 0, defaultMax: 1,
+  },
+  sst: {
+    kind: "index", bandCount: 1, label: "Sea surface temperature (Kelvin, single band from COG)",
+    formula: (v) => v, defaultColormap: "rdylbu_r",
+    defaultMin: 270, defaultMax: 310,
+  },
+  // ⚠️ (2026-08-04) الأربعة دول defaultMin/defaultMax مبنيين على نفس نطاقات
+  // TITILER_STYLES القديمة (SatellitePipelines.ts) قبل ما ننقلهم لمسار
+  // decode ده — دي أرقام تقريبية نموذجية (product spec)، مش قياس فعلي لكل
+  // scene. زي باقي الغازات، الفرونت المفروض يبعت ?min=/?max= حقيقيين من
+  // /api/raster-proxy/statistics (p2/p98) لو الـ endpoint ده اتفعّل معاهم،
+  // فـ defaultMin/Max هنا بس fallback لو الـ statistics فشلت.
+  // ⚠️ colormap: مستخدمة هنا بس أسماء موجودة أصلًا في RAMPS (lib/rasterColor)
+  // زي باقي الأنواع فوق — لو "turbo"/"hot" (المستخدمين في TITILER_STYLES
+  // القديمة) مش معرّفين جوه RAMPS، الكود هيقع تلقائيًا على fallback الـ
+  // ramp الافتراضي (rdylgn/rdbu_r حسب مكان الاستخدام) بدل error — لسه محتاج
+  // تتأكدي من محتوى lib/rasterColor.ts.
+  lst: {
+    kind: "index", bandCount: 1, label: "SLSTR land surface temperature (Kelvin, single band from COG)",
+    formula: (v) => v, defaultColormap: "inferno",
+    defaultMin: 250, defaultMax: 330,
+  },
+  frp_mwir: {
+    kind: "index", bandCount: 1, label: "SLSTR fire radiative power, MWIR channel (MW, single band from COG)",
+    formula: (v) => v, defaultColormap: "inferno",
+    defaultMin: 0, defaultMax: 100,
+  },
+  chl_nn: {
+    kind: "index", bandCount: 1, label: "OLCI chlorophyll-a concentration, neural-net algorithm (mg/m³, single band from COG)",
+    formula: (v) => v, defaultColormap: "greens",
+    defaultMin: 0, defaultMax: 10,
   },
 };
 
@@ -1568,8 +1649,13 @@ export async function GET(req: NextRequest) {
     stats = result.stats;
   } else if (config.kind === "index") {
     const colormap = searchParams.get("colormap") ?? config.defaultColormap;
-    const rMin = parseFloat(searchParams.get("min") ?? "-1");
-    const rMax = parseFloat(searchParams.get("max") ?? "1");
+    // ⚠️ لو ?min=/?max= مش موجودين في الـ query (يعني /statistics فشلت أو
+    // اتخطّيت)، بنستخدم defaultMin/defaultMax بتاع الـ type نفسه (لو موجودين
+    // — الغازات وSST عندهم قيم واقعية دلوقتي) بدل ما نقع في -1/1 اللي
+    // مصمم لـ NDVI/NDWI/... بس. ده اللي كان بيخلي preview الغازات يطلع
+    // شفاف بالكامل لما /statistics بترجع فشل.
+    const rMin = parseFloat(searchParams.get("min") ?? String(config.defaultMin ?? -1));
+    const rMax = parseFloat(searchParams.get("max") ?? String(config.defaultMax ?? 1));
     const zeroVal = parseFloat(searchParams.get("zero") ?? "0");
     const alphaLow = parseFloat(searchParams.get("alphaLow") ?? "0.12");
     const alphaHigh = parseFloat(searchParams.get("alphaHigh") ?? "0.45");

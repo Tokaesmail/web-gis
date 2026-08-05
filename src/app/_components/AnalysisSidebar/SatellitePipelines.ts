@@ -32,13 +32,12 @@ export type SatelliteAnalysisType =
   // ASTER-only
   | "MINERALS"
   | "THERMAL"
-  // Sentinel-3 (OLCI / SLSTR / SYNERGY)
+  // Sentinel-3 (OLCI / SLSTR)
   | "SST"
   | "S3_LST"
   | "OCEAN_COLOR"
   | "CHLOROPHYLL"
-  | "FRP"
-  | "AEROSOL";
+  | "FRP";
 
 // ─── Satellite Sources ────────────────────────────────────────────────────────
 // كل مصدر قمر صناعي له الـ indices الخاصة بيه بس (SOURCE_INDICES) — ده اللي
@@ -70,9 +69,9 @@ export const SOURCE_INDICES: Record<SatSource, SatelliteAnalysisType[]> = {
   // (شغال أصلًا 100%) بدل ما تحاولي تجيبها من ASTER.
   "aster":  ["RGB", "MINERALS", "THERMAL"],
   // Sentinel-3: زي MODIS، كل تحليل هنا (SST/Land LST/Ocean Color/Chlorophyll/
-  // FRP/Aerosol) جاي من STAC collection مختلف تمامًا على Planetary Computer
+  // FRP) جاي من STAC collection مختلف تمامًا على Planetary Computer
   // (مش نفس الـ collection زي Sentinel-2). شوفي SOURCE_ANALYSIS_COLLECTIONS تحت.
-  "sentinel-3": ["SST", "S3_LST", "OCEAN_COLOR", "CHLOROPHYLL", "FRP", "AEROSOL"],
+  "sentinel-3": ["SST", "S3_LST", "CHLOROPHYLL", "FRP"],
 };
 
 // ⚠️ الـ collection IDs دي أسماء الـ STAC collections على Planetary Computer.
@@ -134,7 +133,6 @@ export const SOURCE_ANALYSIS_COLLECTIONS: Partial<
     OCEAN_COLOR:  "sentinel-3-olci-wfr-l2-netcdf",       // OLCI Water Full Resolution (ocean color / reflectance)
     CHLOROPHYLL:  "sentinel-3-olci-wfr-l2-netcdf",       // نفس الـ collection — بس متغير الكلوروفيل (chl_nn/chl_oc4me)
     FRP:          "sentinel-3-slstr-frp-l2-netcdf",     // SLSTR Fire Radiative Power
-    AEROSOL:      "sentinel-3-synergy-aod-l2-netcdf",   // SYNERGY Global Aerosol Optical Depth
   },
 };
 
@@ -164,7 +162,7 @@ export type TitilerStyle = {
   rescale: string;           // "min,max"
   colormapName?: string;     // titiler colormap_name (matplotlib/rio-tiler names)
   colorFormula?: string;     // rio-color formula، بديل لو مفيش colormap مناسب
-  variable?: string;         // NetCDF variable name (xarray tiler) — لازم لـ SST/AEROSOL
+  variable?: string;         // NetCDF variable name (xarray tiler) — لازم لـ SST
   bidx?: number | number[];  // band index (1-based) — لازم لو الـ asset راجع بيه أكتر من band وTiTiler مش عارف يفهم لوحده أي واحد يعرض (زي MODIS FireMask). Array = كذا bidx= param (RGB composite من ملف multi-band واحد، زي ASTER VNIR).
   dynamicRescale?: boolean;  // true = متجيبش rescale ثابت من هنا، دي بس fallback. نجيب الـ min/max الحقيقي من TiTiler /item/statistics على نفس الـ scene وقت العرض (شوفي fetchDynamicRescale تحت). لازم للمصادر اللي قيمها raw DN مش معايرة (زي ASTER TIR/SWIR).
 };
@@ -218,15 +216,15 @@ export const TITILER_STYLES: Partial<Record<SatelliteAnalysisType, TitilerStyle>
   // ⚠️ الأسطر دي اتصلحت بعد فحص مباشر (2026-08-01) لـ item_assets الحقيقية
   // بتاعة الـ 4 collections دول عن طريق GET على /api/stac/v1/collections/<id>
   // (مش تخمين زي أول مرة). اللي اكتشفناه:
-  //   • WST (SST) و AOD (Aerosol): كل الـ variables متجمّعة في ملف NetCDF
-  //     واحد بس لكل item (asset key واحد: "l2p" أو "ntc-aod")، فمحتاجين
-  //     "variable=" كمان جنب "assets=" عشان نحدد أي متغير جوه الملف نعرضه.
+  //   • WST (SST): كل الـ variables متجمّعة في ملف NetCDF واحد بس لكل item
+  //     (asset key واحد: "l2p")، فمحتاجين "variable=" كمان جنب "assets="
+  //     عشان نحدد أي متغير جوه الملف نعرضه.
   //   • LST (lst-in) وFRP (frp-in) وOLCI WFR (oa0X-reflectance / chl-nn):
   //     كل واحد فيهم ملف NetCDF منفصل خاص بيه (زي MODIS تقريبًا)، فمش
   //     محتاجين "variable=" غالبًا لإن الملف الواحد بيحتوي متغير القياس
   //     الأساسي بس (لسه محتاج تأكيد نهائي بفحص /tilejson.json فعلي).
-  // أسماء الـ variables (sea_surface_temperature, LST, FRP_MWIR, AOD_0550)
-  // جايه من الـ product spec الرسمي (GHRSST/SLSTR/SYNERGY User Guides) —
+  // أسماء الـ variables (sea_surface_temperature, LST, FRP_MWIR)
+  // جايه من الـ product spec الرسمي (GHRSST/SLSTR User Guides) —
   // دي أضعف نقطة لسه محتاجة تأكيد مباشر، على عكس أسماء الـ assets فوق.
   SST: {
     assets: ["l2p"],
@@ -258,12 +256,6 @@ export const TITILER_STYLES: Partial<Record<SatelliteAnalysisType, TitilerStyle>
     variable: "FRP_MWIR",
     rescale: "0,100",
     colormapName: "hot",
-  },
-  AEROSOL: {
-    assets: ["ntc-aod"],
-    variable: "AOD_0550",
-    rescale: "0,1.5",
-    colormapName: "turbo",
   },
 };
 
@@ -366,7 +358,7 @@ export async function buildTitilerTileUrl(
   params.set("assets", style.assets.join(","));
   if (style.expression) params.set("expression", style.expression);
   // ⚠️ لازم بس للـ Sentinel-3 collections اللي بتجمع كذا متغير في NetCDF واحد
-  // (SST/Aerosol). لو الـ tiler بتاع PC مش بيقبل "variable=" بنفس الاسم ده،
+  // (SST). لو الـ tiler بتاع PC مش بيقبل "variable=" بنفس الاسم ده،
   // ده أول باراميتر تتأكدي منه لو الصورة رجعت فاضية/خطأ.
   if (style.variable) params.set("variable", style.variable);
   // ⚠️ bidx ممكن يبقى array دلوقتي (زي ASTER RGB: VNIR asset واحد فيه 3
@@ -702,13 +694,19 @@ export const SATELLITE_LEGENDS: Record<SatelliteAnalysisType, {
     max: "330K / 57°C",
     meaning: ["SLSTR Land Surface Temperature (skin temperature of the ground, not air temperature).", "Wider dynamic range than sea surface because land heats/cools faster."],
   },
+  // ⚠️ (2026-08-05) اتحوّلت من true-color composite (3 قنوات RGB مع بعض) لـ
+  // heatmap بقناة واحدة (Oa08 reflectance ~665nm، مؤشّر شائع للعكارة/الرواسب
+  // العالقة) — الـ composite القديم كان بيفشل (400) على مسار TiTiler المباشر
+  // لإن كل قناة NetCDF منفصلة محتاجة "variable=" خاصة بيها، ومسار الـ decode
+  // بيدّي متغير واحد بس لكل طلب. شوفي usesDecodeHeatmapPath في
+  // SatelliteDataPanel.tsx.
   OCEAN_COLOR: {
-    label: "Ocean color true-color composite",
-    gradient: "linear-gradient(90deg,#022c43,#04628a,#1f9bb5,#7fd1c9,#e8f6dc)",
-    min: "dark / turbid",
-    mid: "mixed",
-    max: "bright / clear",
-    meaning: ["R/G/B from OLCI's red (~665nm), green (~560nm), and blue (~490nm) reflectance channels.", "Useful for spotting sediment plumes, algal blooms, and general water clarity by eye."],
+    label: "Ocean turbidity / reflectance (Oa08, ~665nm)",
+    gradient: "linear-gradient(90deg,#022c43,#04628a,#1f9bb5,#7fd1c9,#fef0d9,#fdae61,#d73027)",
+    min: "clear / low reflectance",
+    mid: "moderate turbidity",
+    max: "high turbidity / sediment",
+    meaning: ["Single-band OLCI red reflectance (~665nm), a common visual proxy for suspended sediment and turbidity — not a true-color image anymore.", "High values near coasts/river mouths usually mean sediment plumes rather than algae; compare with CHLOROPHYLL for blooms specifically."],
   },
   CHLOROPHYLL: {
     label: "Chlorophyll-a concentration",
@@ -725,13 +723,5 @@ export const SATELLITE_LEGENDS: Record<SatelliteAnalysisType, {
     mid: "moderate MW",
     max: "high MW",
     meaning: ["SLSTR-detected active fire pixels with radiative power in megawatts, not a temperature map.", "Coarser detection grid than MODIS FIRE; small/cool fires can be missed."],
-  },
-  AEROSOL: {
-    label: "Aerosol optical depth (550nm)",
-    gradient: "linear-gradient(90deg,#30123b,#4662d7,#36aaf9,#1ae4b6,#a2fc3c,#fabb31,#e4460a,#7a0403)",
-    min: "clean atmosphere",
-    mid: "moderate haze",
-    max: "heavy smoke/dust",
-    meaning: ["SYNERGY (OLCI+SLSTR) global AOD product, 4.5km super-pixel resolution.", "Snow/ice-covered and high-cloud-fraction pixels are excluded from retrieval."],
   },
 };

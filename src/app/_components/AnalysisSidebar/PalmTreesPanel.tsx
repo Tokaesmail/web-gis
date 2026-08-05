@@ -102,6 +102,20 @@ const VALUE_FIELDS: { key: string; label: string }[] = [
   { key: "Crown Area (m2)", label: "Crown Area (m2)" },
 ];
 
+// ─── Index presets — نفس فكرة "INDEX PRESET" اللي في Raster Calc، بس هنا كل
+// preset مربوط بـ condition جاهزة تتحط في الـ Formula/condition box لوحدها
+// أول ما اليوزر يدوس عليها (بدل ما يكتبها يدوي من الصفر). اليوزر لسه يقدر
+// يعدّل النص بعد كده عادي — الـ textarea مش readonly ────────────────────────
+const INDEX_PRESETS: { key: string; label: string; desc: string; dot: string; formula: string }[] = [
+  { key: "ndvi", label: "NDVI", desc: "Vegetation vigor",          dot: "linear-gradient(135deg,#f46d43,#1a9850)", formula: "(B08-B04)/(B08+B04)" },
+  { key: "ndwi", label: "NDWI", desc: "Water content",             dot: "linear-gradient(135deg,#2166ac,#66c2a5)", formula: "(B03-B08)/(B03+B08)" },
+  { key: "ndmi", label: "NDMI", desc: "Moisture / drought stress", dot: "linear-gradient(135deg,#e7e600,#02a402)", formula: "(B08-B11)/(B08+B11)" },
+  { key: "ndbi", label: "NDBI", desc: "Built-up / urban areas",    dot: "linear-gradient(135deg,#2166ac,#b2182b)", formula: "(B11-B08)/(B11+B08)" },
+  { key: "savi", label: "SAVI", desc: "Soil-adjusted vegetation",  dot: "linear-gradient(135deg,#fdae61,#1a9850)", formula: "((B08-B04)/(B08+B04+0.5))*1.5" },
+  { key: "evi",  label: "EVI",  desc: "Enhanced vegetation",       dot: "linear-gradient(135deg,#a52c60,#238b45)", formula: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)" },
+  { key: "bsi",  label: "BSI",  desc: "Bare soil index",           dot: "linear-gradient(135deg,#2166ac,#d73027)", formula: "((B11+B04)-(B08+B02))/((B11+B04)+(B08+B02))" },
+];
+
 // نفس شكل RasterPreviewConfig المستخدم في PlanetaryRasterPanel.tsx —
 // عشان لو الـ parent (MapClient) عنده onPreview overlay logic جاهز، الهيت
 // ماب بتاع النخل يشتغل عليه "زيها بالظبط" من غير أي تعديل هناك.
@@ -432,6 +446,12 @@ export default function PalmTreesPanel({
   const [dateFrom, setDateFrom] = useState(daysAgo(30));
   const [dateTo, setDateTo] = useState(todayStr);
   const [expression, setExpression] = useState("");
+  // preset المختار حاليًا في dropdown الـ Formula/condition (زي INDEX PRESET
+  // بتاع Raster Calc) — null لحد ما اليوزر يدوس على واحد، أو لو عدّل النص
+  // يدويًا بحيث بقى مش مطابق لأي preset (بيرجع "custom")
+  const [indexPresetKey, setIndexPresetKey] = useState<string | null>(null);
+  const [presetMenuOpen, setPresetMenuOpen] = useState(false);
+  const presetMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [status, setStatus] = useState<"idle" | "capturing" | "loading" | "error" | "success">("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -800,6 +820,18 @@ export default function PalmTreesPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingCapture, status]);
 
+  // ── يقفل dropdown الـ INDEX PRESET لو اليوزر دوس بره الصندوق ──────────────
+  useEffect(() => {
+    if (!presetMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (presetMenuRef.current && !presetMenuRef.current.contains(e.target as Node)) {
+        setPresetMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [presetMenuOpen]);
+
   const runPalmAnalysis = () => {
     if (!canRun) return;
     if (pendingCapture?.blob) {
@@ -878,16 +910,91 @@ export default function PalmTreesPanel({
       </div>
 
       {/* Expression box */}
-      <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
-        <p className="mb-1.5 text-[0.62rem] uppercase tracking-wider text-slate-500">Formula / condition</p>
+      <div className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-3 space-y-2">
+        {/* Index preset — زي INDEX PRESET بتاع Raster Calc بالظبط: دوس على
+            preset فيتحط formula بتاعه في الـ textarea تحت على طول. لسه تقدري
+            تعدّلي النص يدوي بعد كده — مفيش أي قفل عليه */}
+        <div>
+          <p className="mb-1.5 text-[0.62rem] uppercase tracking-wider text-slate-500">Index preset</p>
+          <div className="relative" ref={presetMenuRef}>
+            <button
+              type="button"
+              onClick={() => setPresetMenuOpen((v) => !v)}
+              className="flex w-full items-center gap-2.5 rounded-lg border border-white/[0.08] bg-[#020817]/70 px-3 py-2 text-left outline-none focus:border-cyan-400/40 hover:border-cyan-400/25"
+            >
+              <span
+                className="h-3.5 w-3.5 shrink-0 rounded-full"
+                style={{
+                  background: indexPresetKey
+                    ? INDEX_PRESETS.find((p) => p.key === indexPresetKey)?.dot
+                    : "linear-gradient(135deg,#334155,#1e293b)",
+                }}
+              />
+              <span className="flex-1 min-w-0">
+                <span className="block text-xs font-bold text-slate-100">
+                  {indexPresetKey ? INDEX_PRESETS.find((p) => p.key === indexPresetKey)?.label : "Choose an index…"}
+                </span>
+                <span className="block truncate text-[0.6rem] text-slate-500">
+                  {indexPresetKey
+                    ? INDEX_PRESETS.find((p) => p.key === indexPresetKey)?.desc
+                    : "Tap a preset to fill the formula below"}
+                </span>
+              </span>
+              <svg
+                className={`h-3 w-3 shrink-0 text-slate-500 transition-transform ${presetMenuOpen ? "rotate-180" : ""}`}
+                viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+              >
+                <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+
+            {presetMenuOpen && (
+              <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-lg border border-white/10 bg-[#0d1b2e] shadow-xl">
+                {INDEX_PRESETS.map((p) => (
+                  <button
+                    key={p.key}
+                    type="button"
+                    onClick={() => {
+                      setIndexPresetKey(p.key);
+                      setExpression(p.formula);
+                      setPresetMenuOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors cursor-pointer ${
+                      indexPresetKey === p.key ? "bg-cyan-400/[0.12] text-cyan-300" : "text-slate-300 hover:bg-white/[0.06]"
+                    }`}
+                  >
+                    <span className="h-3.5 w-3.5 shrink-0 rounded-full" style={{ background: p.dot }} />
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-xs font-bold">{p.label}</span>
+                      <span className="block text-[0.58rem] text-slate-500">{p.desc}</span>
+                    </span>
+                    {indexPresetKey === p.key && (
+                      <svg className="h-3.5 w-3.5 shrink-0 text-cyan-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <p className="text-[0.62rem] uppercase tracking-wider text-slate-500">Formula / condition</p>
         <textarea
           value={expression}
-          onChange={(e) => setExpression(e.target.value)}
+          onChange={(e) => {
+            setExpression(e.target.value);
+            // لو اليوزر عدّل النص يدوي بحيث بقى مختلف عن الـ preset المختار،
+            // نشيل التحديد عشان الـ dropdown ميفضلش شكله "متزامن" غلط
+            const active = indexPresetKey ? INDEX_PRESETS.find((p) => p.key === indexPresetKey) : null;
+            if (active && e.target.value !== active.formula) setIndexPresetKey(null);
+          }}
           rows={3}
           placeholder="e.g. NDVI > 0.35 AND height > 3"
           className="w-full resize-none rounded-lg border border-white/[0.08] bg-[#020817]/80 px-3 py-2 font-mono text-xs leading-relaxed text-cyan-200 outline-none focus:border-cyan-400/40"
         />
-        <p className="mt-1.5 text-[0.58rem] text-slate-500">
+        <p className="text-[0.58rem] text-slate-500">
           This formula is sent as-is to the backend, which applies it to the palm imagery (same idea as Raster Calc).
         </p>
       </div>

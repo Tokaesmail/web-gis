@@ -130,6 +130,7 @@ export default function MapPage() {
 
   const flyToRef               = useRef<((lat: number, lng: number) => void) | null>(null);
   const clearRef               = useRef<(() => void) | null>(null);
+  const clearAnalysisRef       = useRef<(() => void) | null>(null);
   // Captures the currently-drawn shape on demand (no redraw required) —
   // used by Palm Trees so it can reuse whatever shape is already selected.
   const captureCurrentRef      = useRef<(() => Promise<boolean>) | null>(null);
@@ -546,6 +547,12 @@ useEffect(() => {
     localStorage.removeItem(EXTRUSION_CFG_STORAGE_KEY);
     setUploadedGeoJsonMap({});
     setExtrusionCfg(null);
+  }, []);
+
+  // ✅ يمسح التحليل (raster overlays + super resolution) بس — من غير ما يمسح
+  // الـ AOI/الشكل المرسوم على الخريطة.
+  const handleClearAnalysis = useCallback(() => {
+    clearAnalysisRef.current?.();
   }, []);
 
   const handleToggleView = useCallback(() => {
@@ -1380,6 +1387,7 @@ useEffect(() => {
               onCapture={handleCapture}
             flyToRef={flyToRef}
             clearRef={clearRef}
+            clearAnalysisRef={clearAnalysisRef}
             captureCurrentRef={captureCurrentRef}
             onSatChange={(h) => { changeSatRef.current = h; }}
               onOpacityChangeRegister={(h) => { changeOpacityRef.current = h; }}
@@ -1477,6 +1485,7 @@ useEffect(() => {
               activeTool={activeTool}
               onToolChange={setActiveTool}
               onClear={handleClear}
+              onClearAnalysis={handleClearAnalysis}
               isRTL={isRTL}
               globalExportData={{
                 title: "GeoSense AI — Comprehensive Global Report",

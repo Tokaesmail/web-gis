@@ -18,6 +18,13 @@ import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
 import { clipImageToPolygon, getPolygonRing } from "./geoClipUtils";
 import { setSelectedScene, openRasterCalculatorPanel } from "./sharedSceneSelection";
 import { useSharedDateRange } from "./sharedDateRange";
+import { useSession } from "next-auth/react";
+import {
+  decodeAndBuildHeatmapUrl,
+  SentinelDecodeError,
+  UI_BAND_TO_SENTINEL_VARIABLE,
+  type SentinelDecodeSource,
+} from "./sentinelDecode";
 
 export type SatellitePreviewConfig = {
   source: SatSource;
@@ -573,52 +580,12 @@ async function getSignedPlanetaryComputerUrl(url: string) {
   }
 }
 
-// ── Sentinel-5P (Atmosphere) — real backend (sentinel5p_cog.py) ────────────
-// شكل الـ endpoint الحقيقي (من sentinel5p_cog.py):
-//   GET /api/sentinel5p/cog?asset_url=<NetCDF href من STAC item>&variable=<var>
-//       &bbox=west,south,east,north&min_qa=0.5
-//   → { url: "/cog-cache/<hash>.tif", cached: bool, stats?: {min,max,mean,...} }
-// ده بيرجّع COG (GeoTIFF عادي) — مش صورة جاهزة — فبعد ما ناخده بنبعته لـ
-// /api/raster-proxy/analyze زي أي GeoTIFF تاني (نفس فكرة باقي المصادر)،
-// عشان يطبّق عليه الـ colormap/stretch (route.ts بقى بيعامل no2/so2/co/ozone
-// كـ index عادي bandCount:1 — شوفي ANALYSIS_CONFIG هناك).
-// ⚠️ الـ base URL بتاع sentinel5p_cog.py (المايكروسيرفس ده) مش نفس /gis/*
-// العادي — هو FastAPI منفصل شغّال (حسب تعليمات التشغيل جوه الملف) على بورت
-// 8001. حطيت افتراض https://webgiss.duckdns.org:8001 تحت — أكدي لو
-// الدومين/البورت مختلف (مثلاً لو معمول reverse-proxy تحت مسار مختلف).
-const SENTINEL5P_CONVERTER_BASE_URL = "https://webgiss.duckdns.org:8001";
-
-const SENTINEL5P_VARIABLES: Record<"NO2" | "SO2" | "CO" | "OZONE", string> = {
-  NO2: "nitrogendioxide_tropospheric_column",
-  SO2: "sulfurdioxide_total_vertical_column",
-  CO: "carbonmonoxide_total_column",
-  OZONE: "ozone_total_vertical_column",
-};
-
-async function fetchSentinel5pCog(params: {
-  assetUrl: string;
-  variable: string;
-  bbox: [number, number, number, number]; // west, south, east, north
-  minQa?: number;
-}): Promise<{ url: string; stats?: { min?: number; max?: number; mean?: number } }> {
-  const { assetUrl, variable, bbox, minQa = 0.5 } = params;
-  const qs = new URLSearchParams({
-    asset_url: assetUrl,
-    variable,
-    bbox: bbox.join(","),
-    min_qa: String(minQa),
-  });
-  const res = await fetch(`${SENTINEL5P_CONVERTER_BASE_URL}/api/sentinel5p/cog?${qs.toString()}`);
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Sentinel-5P COG conversion failed (${res.status}). ${text.slice(0, 160)}`);
-  }
-  const data = await res.json().catch(() => null);
-  const cogUrl = typeof data?.url === "string" ? data.url : null;
-  if (!cogUrl) throw new Error("Sentinel-5P converter returned no COG url — check its response shape.");
-  const absoluteUrl = cogUrl.startsWith("http") ? cogUrl : `${SENTINEL5P_CONVERTER_BASE_URL}${cogUrl}`;
-  return { url: absoluteUrl, stats: data?.stats };
-}
+// ── Sentinel-5P / Sentinel-3 (Atmosphere + SST) — real backend ────────────
+// المايكروسيرفس القديم (sentinel5p_cog.py على بورت 8001، GET، من غير auth،
+// ومحتاج assetUrl نازل من STAC الأول) اتلغى. دلوقتي فيه endpoint واحد موحّد
+// شغّال لـ Sentinel-5P (9 متغيرات) و Sentinel-3 (SST) مع بعض، محمي بـ JWT،
+// وبياخد item_id مباشرة من غير ما نجيب رابط الـ NetCDF الأصلي بنفسنا —
+// شوفي sentinelDecode.ts (decodeSentinelDataset + buildRasterProxyAnalyzeUrl).
 
 async function downloadExternalFile(url: string, fileName: string) {
   try {
@@ -646,6 +613,11 @@ export function SatelliteDataPanel({
   selectedFeature?: GeoJSON.Feature | null;
   onPreview?: (config: SatellitePreviewConfig) => void;
 }) {
+  // نفس الـ pattern المستخدم في MapClient.tsx مع /gis/contours — الـ JWT ده
+  // هو اللي بيتبعت كـ Bearer token لـ /gis/sentinel5p/decode.
+  const { data: session } = useSession();
+  const sentinelDecodeToken = (session?.user as any)?.accessToken as string | undefined;
+
   const [source, setSource] = useState<SatSource>("sentinel-2");
   // التاريخ بقى مشترك بين البانلز (sharedDateRange.ts) بدل local state —
   // كده لو غيرتي التاريخ هنا وبعدين فتحتي Raster Calculator (أو الباند اتقفل
@@ -741,10 +713,8 @@ const displayVertices = useMemo(() => {
     // Sentinel-3
     { key: "SST", label: "Sea Surface Temp", desc: "SLSTR sea surface temperature", color: "#22d3ee" },
     { key: "S3_LST", label: "Land Surface Temp", desc: "SLSTR land surface temperature", color: "#fb923c" },
-    { key: "OCEAN_COLOR", label: "Ocean Color", desc: "OLCI true-color water composite", color: "#0ea5e9" },
     { key: "CHLOROPHYLL", label: "Chlorophyll", desc: "OLCI chlorophyll-a concentration", color: "#4ade80" },
     { key: "FRP", label: "Fire Radiative Power", desc: "SLSTR active fire radiative power", color: "#ef4444" },
-    { key: "AEROSOL", label: "Aerosol", desc: "SYNERGY aerosol optical depth", color: "#a855f7" },
   ];
 
   // الـ indices اللي المفروض تظهر فعليًا للمصدر الحالي بس (مش كل الليستة فوق)
@@ -780,7 +750,7 @@ const displayVertices = useMemo(() => {
     // scenes القديمة (من collection/asset قديم) لازم تتمسح وتتطلب fetchScenes
     // جديدة، مش مجرد إعادة عرض نفس الـ scene.
     // ⚠️ نفس المنطق بينطبق على Sentinel-3 (زي MODIS): كل analysis (SST/Land
-    // LST/Ocean Color/Chlorophyll/FRP/Aerosol) عبارة عن STAC collection مختلف
+    // LST/Ocean Color/Chlorophyll/FRP) عبارة عن STAC collection مختلف
     // تمامًا، مش نفس الـ collection الواحد.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, (source === "modis" || source === "aster" || source === "sentinel-3") ? activeAnalysis : null]);
@@ -1498,6 +1468,18 @@ useEffect(() => {
         // خالص هنا عشان مفيش معنى حقيقي لتطبيقه على مصدر مالوش القيمة دي أصلًا
         // (وعشان أي قيمة غريبة/undefined متتحولش لصفر scenes بالغلط تاني).
         .filter((scene: SatelliteScene) => source === "sentinel-3" || scene.cloud <= cloudCover)
+        // ⚠️ sentinel-5p-l2-netcdf بيرجّع item منفصل لكل غاز لنفس الأوربيت
+        // (S5P_L2_NO2___..., S5P_L2_SO2___..., S5P_L2_CO____...، إلخ) — كل
+        // item فيه asset واحد بس، بتاع الغاز ده تحديدًا (شوفي firstFeatureAssetsKeys
+        // في اللوج: Array(1)). من غير الفلتر ده كانت الليست بتطلع فيها كل الـ
+        // 9 items مع بعض (NO2, SO2, CO, O3, ...) بغض النظر عن الـ analysis
+        // المختار، فكان ممكن يتحطّ في الليست item مالوش أصلًا الـ asset
+        // المطلوب → "This scene does not include the required asset(s)".
+        // دلوقتي بنستبعد أي item مش حامل asset الـ activeAnalysis الحالي من
+        // أول ما الـ scenes بتتجاب، فالليست بتفضل فيها بس النوع المختار.
+        .filter((scene: SatelliteScene) =>
+          source !== "sentinel-5p" || sceneHasVisualizationAssets(scene, activeAnalysis)
+        )
         .sort((a: SatelliteScene, b: SatelliteScene) => b.score - a.score)
         .slice(0, 6);
 
@@ -1514,7 +1496,24 @@ useEffect(() => {
           : landOnly
           ? " This analysis only has data over land — check your AOI isn't entirely over water."
           : "";
-        setSceneError(`No matching scenes from the external STAC API for this AOI/date/cloud filter.${coverageHint}`);
+        // ⚠️ ليه مفيش نتايج غالبًا لـ OCEAN_COLOR/CHLOROPHYLL/S3_LST/FRP
+        // تحديدًا مع تواريخ حديثة (على عكس SST اللي بيلاقي نتايج عادةً): كل
+        // الـ collections دول (olci-wfr, slstr-lst, slstr-frp)
+        // معالجتها على Planetary Computer بمستوى "NT" (Non-Time-Critical) —
+        // ده معناه فرق شهور بين تاريخ الالتقاط الفعلي وتاريخ ظهور الـ item في
+        // الـ STAC catalog. مش باگ في الكود ولا في الـ AOI، ده تأخير معالجة
+        // حقيقي من مصدر البيانات نفسه (ESA/Copernicus)، فلو بتدوّري على
+        // تواريخ من آخر شهرين مثلًا هتلاقي 0 نتايج دايمًا مهما كانت الـ AOI.
+        const isNtTimeliness =
+          source === "sentinel-3" &&
+          (activeAnalysis === "OCEAN_COLOR" ||
+            activeAnalysis === "CHLOROPHYLL" ||
+            activeAnalysis === "S3_LST" ||
+            activeAnalysis === "FRP");
+        const timelinessHint = isNtTimeliness
+          ? " Sentinel-3 OLCI/SLSTR L2 products (processing timeliness: NT) typically take months to appear in the catalog. If you're not seeing results for recent dates, try a date range from 6+ months ago."
+          : "";
+        setSceneError(`No matching scenes from the external STAC API for this AOI/date/cloud filter.${coverageHint}${timelinessHint}`);
       }
     } catch (error: unknown) {
       setApiScenes([]);
@@ -1548,7 +1547,47 @@ useEffect(() => {
   // ⚠️ Sentinel-3 items هنا NetCDF مش COG (على عكس MODIS/ASTER) — لو
   // buildTitilerTileUrl رجّع صورة فاضية/كسرت، أول حاجة تتفحص هي إن كان الـ
   // tiler محتاج "variable=" بدل "assets=" (شوفي التعليق في SatellitePipelines.ts).
-  if (source === "modis" || source === "aster" || source === "sentinel-3") {
+  // ⚠️ SST (Sentinel-3) اتشال من هنا: بقى بياخد نفس مسار Sentinel-5P تحت
+  // (decodeSentinelDataset → /api/raster-proxy/analyze) بدل TiTiler المباشر،
+  // عشان يتلوّن كـ heatmap بنفس pipeline الـ colormap/stretch بتاعتنا احنا
+  // مش الـ default render بتاع Planetary Computer.
+  //
+  // ⚠️ (2026-08-04) نفس المنطق دلوقتي بينطبق كمان على S3_LST/CHLOROPHYLL/
+  // FRP: دول التلاتة كانوا لسه ماشيين على buildTitilerTileUrl/
+  // buildTitilerBboxUrl (TiTiler المباشر بتاع Planetary Computer)، لكن ده مش
+  // بيشتغل صح مع NetCDF+"variable=" فعليًا — rio-tiler/PC tiler الافتراضي
+  // بيرجع إما error أو fallback لصورة غير ملوّنة (مش heatmap)، فكان بيقع
+  // على scene.thumbnail (RGB overview) في fallback chain الـ previewUrl
+  // (شوفي bboxUrl ?? scene.thumbnail ?? scene.previewUrl فوق) — ده سبب إن
+  // اللي كان بيظهر فعليًا "RGB composite" مش الألوان المتوقعة (turbo/hot)،
+  // مع إن الـ scenes نفسها كانت موجودة. SST بس كان شغال لإنه
+  // الوحيد اللي كان بيعدي على الـ decode backend بتاعنا (مش على PC tiler).
+  // الحل: نفس الأربعة دول بقوا يعدوا على نفس مسار SST تحت (decode → GeoTIFF
+  // → /api/raster-proxy/analyze بالـ colormap الصح)، بدل TiTiler المباشر.
+  // ⚠️ (2026-08-05) OCEAN_COLOR اتنقلت هنا كمان بعد ما ثبت إن مسار TiTiler
+  // المباشر (buildTitilerBboxUrl بـ 3 assets مع بعض: oa08/oa06/oa04-reflectance)
+  // بيرجع 400 Bad Request من Planetary Computer نفسها — على الأرجح لإن كل
+  // asset من التلات دول ملف NetCDF منفصل وكل واحد فيهم محتاج "variable="
+  // خاصة بيه (مش قيمة واحدة مشتركة زي ما بتدعم TITILER_STYLES دلوقتي)،
+  // فالـ tiler مش عارف يفهم الطلب المجمّع ده. لما الطلب ده بيفشل، الكود كان
+  // بيقع على "bboxUrl ?? scene.thumbnail" — وscene.thumbnail هنا رابط
+  // Azure Blob مباشر (browse.jpg) على container خاص، فبيرجع 409 "Public
+  // access is not permitted" بدل ما يعرض حاجة.
+  // الحل: نفس منطق SST/CHLOROPHYLL — نعديها على مسار decode (GeoTIFF -> raster-
+  // proxy/analyze بالـ colormap بتاعنا) باستخدام قناة واحدة (مثلاً Oa08
+  // reflectance ~665nm) كمؤشّر heatmap عن العكارة/الرواسب بدل true-color
+  // composite. ⚠️ ده محتاج UI_BAND_TO_SENTINEL_VARIABLE["OCEAN_COLOR"] يتضاف
+  // في sentinelDecode.ts (الملف ده مش متاح عندي دلوقتي — ابعتيهولي عشان أضيف
+  // المابنج فعليًا، وإلا هيرمي "No Sentinel decode mapping configured" تحت).
+  const usesDecodeHeatmapPath =
+    source === "sentinel-5p" ||
+    (source === "sentinel-3" &&
+      (analysis === "SST" ||
+        analysis === "S3_LST" ||
+        analysis === "OCEAN_COLOR" ||
+        analysis === "CHLOROPHYLL" ||
+        analysis === "FRP"));
+  if (source === "modis" || source === "aster" || (source === "sentinel-3" && !usesDecodeHeatmapPath)) {
     // ⚠️ الاتنين بقوا async دلوقتي (شوفي SatellitePipelines.ts) — styles
     // زي ASTER THERMAL/MINERALS معلّمين dynamicRescale: true، فبيستنوا رد
     // /item/statistics الأول قبل ما يرجعوا الرابط، عشان الـ rescale يتبني
@@ -1660,40 +1699,62 @@ useEffect(() => {
   // الـ asset الصح بتاعه فعلًا.
   let previewUrl = rawPreviewUrl;
 
-  // ── Sentinel-5P: assets["no2"/"so2"/"co"/"o3"] بيبقوا NetCDF خام —
-  // route.ts محتاج GeoTIFF. بنحول الأول عن طريق sentinel5p_cog.py (COG
-  // conversion)، وبعدين بنبعت رابط الـ COG الناتج لـ /api/raster-proxy/analyze
-  // زي أي GeoTIFF تاني (بنفس pipeline الـ colormap/stretch).
-  if (source === "sentinel-5p") {
+  // ── Sentinel-5P (كل الـ 9 متغيرات) + Sentinel-3 SST: عن طريق الـ endpoint
+  // الموحّد الجديد /gis/sentinel5p/decode (JWT-protected). مش محتاجين نجيب
+  // رابط NetCDF الأصلي من STAC بنفسنا زي الطريقة القديمة — بس بنبعت
+  // scene.id (item_id) والـ variable والـ bbox، والباك يرجّع رابط GeoTIFF
+  // جاهز نلوّنه بنفس pipeline الـ colormap/stretch العادي بتاعنا
+  // (/api/raster-proxy/analyze) عشان يظهر كـ heatmap فوق الخريطة الأساسية.
+  if (usesDecodeHeatmapPath) {
     try {
-      const visualization = getVisualization(analysis, scene.collection);
-      const assetKey = visualization.assets[0]; // "no2" | "so2" | "co" | "o3"
-      const rawAssetUrl = getSceneAssetUrls(scene, analysis)[assetKey];
-      if (!rawAssetUrl) {
-        throw new Error(`This scene doesn't include the ${assetKey.toUpperCase()} NetCDF asset.`);
+      const decodeSource: SentinelDecodeSource = source === "sentinel-5p" ? "sentinel-5p" : "sentinel-3";
+      const variable = UI_BAND_TO_SENTINEL_VARIABLE[analysis];
+      if (!variable) {
+        throw new Error(`No Sentinel decode mapping configured for "${analysis}" yet.`);
       }
-      const variable = SENTINEL5P_VARIABLES[analysis as "NO2" | "SO2" | "CO" | "OZONE"];
-      const { url: cogUrl, stats } = await fetchSentinel5pCog({
-        assetUrl: rawAssetUrl,
+      if (!sentinelDecodeToken) {
+        throw new Error("You need to be signed in to decode Sentinel data (missing JWT).");
+      }
+
+      // ⚠️ decodeAndBuildHeatmapUrl بتعمل 3 حاجات مع بعض:
+      //   1) تفك الـ scene (decodeSentinelDataset) وتجيب رابط GeoTIFF خام.
+      //   2) تنادي /api/raster-proxy/statistics على نفس الرابط ده وتجيب
+      //      p2/p98 حقيقيين (مش min/max الخام عشان الـ outliers) لتباين
+      //      أوضح — كل غاز (NO2/SO2/O3/...) وSST بمداهم الطبيعي المختلف.
+      //   3) تبني رابط /api/raster-proxy/analyze بالـ min/max دول جاهز.
+      // لو خطوة الإحصائيات فشلت (شبكة/timeout)، بتكمل من غير ما توقف الـ
+      // preview كله — route.ts هيرجع للـ default rescale بتاعه بدل كده.
+      // 👇 دي الـ collection الحقيقي اللي الـ scene دي جايه منه فعليًا (من
+      // STAC search نفسه) — قارنيها بـ requestBody اللي هيتطبع من
+      // sentinelDecode.ts. لو الـ backend مش بياخد "collection" في الـ
+      // body، مفيش طريقة يعرف بيها إن item_id ده جاي من "sentinel-3-slstr-
+      // lst-l2-netcdf" مثلًا مش "sentinel-3-slstr-wst-l2-netcdf" (SST).
+      console.log("[handlePreviewScene] decoding scene →", {
+        itemId: scene.id,
+        sceneCollection: scene.collection,
+        variable: UI_BAND_TO_SENTINEL_VARIABLE[analysis],
+      });
+      const { tileUrl: builtUrl } = await decodeAndBuildHeatmapUrl({
+        token: sentinelDecodeToken,
+        source: decodeSource,
+        itemId: scene.id,
+        collection: scene.collection,
         variable,
         bbox: [west, south, east, north],
       });
-
-      const params = new URLSearchParams();
-      params.set("type", visualization.type);
-      params.set("urls", cogUrl);
-      params.set("bbox", `${west},${south},${east},${north}`);
-      // stats بترجع بس لما التحويل يكون fresh (مش cache hit) — لو مش موجودة
-      // (cached:true من غير stats)، renderIndex في route.ts بيقع على
-      // -1/1 الافتراضي، فمش هيكسر حاجة، بس الألوان ممكن تبان مسطحة لحد ما
-      // يتحدد min/max حقيقي لكل غاز.
-      if (typeof stats?.min === "number" && typeof stats?.max === "number") {
-        params.set("min", String(stats.min));
-        params.set("max", String(stats.max));
-      }
-      previewUrl = `/api/raster-proxy/analyze?${params.toString()}`;
+      previewUrl = builtUrl;
     } catch (err) {
-      setSceneError(err instanceof Error ? err.message : "Sentinel-5P request failed.");
+      // ⚠️ لو الـ decode client قال إن السبب هو "مفيش بيانات صالحة" لهذا
+      // الـ bbox/scene تحديدًا (شوفي SentinelDecodeError.isNoDataForArea في
+      // sentinelDecode.ts) بنعرض رسالة ودّية بدل نص الخطأ الخام بتاع الباك،
+      // عشان المستخدم يفهم إنه يجرب منطقة أو مشهد تاني — مش إن الموقع اتعطّل.
+      const message =
+        err instanceof SentinelDecodeError && err.isNoDataForArea
+          ? `No valid data found for "${analysis}" in this area/scene — try moving the AOI or picking another scene.`
+          : err instanceof Error
+            ? err.message
+            : "Sentinel decode request failed.";
+      setSceneError(message);
       setPreviewingSceneId(null);
       return;
     }
@@ -1953,10 +2014,11 @@ function openImageUrlSafely(url: string) {
       <div className="space-y-2">
         <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Band selector</p>
 
-        {source === "sentinel-5p" && (
+        {(source === "sentinel-5p" || (source === "sentinel-3" && activeAnalysis === "SST")) && (
           <div className="rounded-lg border border-cyan-400/18 bg-cyan-400/[0.05] px-3 py-2 text-[0.6rem] text-cyan-200">
-            Sentinel-5P previews go through a NetCDF → COG conversion step (sentinel5p_cog.py) before
-            rendering — the first preview of a new scene/gas may take a bit longer while it converts.
+            {source === "sentinel-5p" ? "Sentinel-5P" : "Sentinel-3 SST"} previews go through a
+            decoding service before rendering — the first preview of a new scene/variable
+            may take a bit longer while it decodes.
           </div>
         )}
 
@@ -2293,24 +2355,35 @@ function openImageUrlSafely(url: string) {
               </button>
             </div>
 
-            <div className="mt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedScene({
-                    id: scene.id,
-                    collection: scene.collection,
-                    date: scene.date,
-                    cloud: scene.cloud,
-                  });
-                  openRasterCalculatorPanel();
-                }}
-                className="h-7 w-full rounded-md border border-emerald-400/25 bg-emerald-400/[0.08] px-2 text-[0.62rem] font-semibold text-emerald-200 transition-colors hover:border-emerald-400/45 hover:bg-emerald-400/15"
-                title="Sends this exact scene to Raster Calculator, skipping its own date/cloud search"
-              >
-                Use this scene in Raster Calculator
-              </button>
-            </div>
+            {/* ⚠️ Raster Calculator (band math / spectral indices بالمعادلات
+                الحرة) شغّال بس على Sentinel-2/Landsat فعليًا — دول اللي عندهم
+                bands منفصلة (B02, B03, B04, B08...) كـ assets حقيقية يقدر
+                المستخدم يكتب معادلة عليها. باقي المصادر (MODIS/ASTER/
+                Sentinel-1 SAR/Copernicus DEM/Sentinel-3/Sentinel-5P) بترجع
+                إما NetCDF بمتغير واحد أو indices جاهزة (زي VV/VH أو NO2) —
+                مفيش "bands" بالمعنى ده يتحسب عليها معادلة، فمش منطقي نبعتها
+                لهناك. isOpticalSource = source === "sentinel-2" || "landsat"
+                (متعرّفة فوق مع scenes/fallbackScenes، مش لازم نكررها هنا). */}
+            {isOpticalSource && (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedScene({
+                      id: scene.id,
+                      collection: scene.collection,
+                      date: scene.date,
+                      cloud: scene.cloud,
+                    });
+                    openRasterCalculatorPanel();
+                  }}
+                  className="h-7 w-full rounded-md border border-emerald-400/25 bg-emerald-400/[0.08] px-2 text-[0.62rem] font-semibold text-emerald-200 transition-colors hover:border-emerald-400/45 hover:bg-emerald-400/15"
+                  title="Sends this exact scene to Raster Calculator, skipping its own date/cloud search"
+                >
+                  Use this scene in Raster Calculator
+                </button>
+              </div>
+            )}
 
             {activePreviewSceneId === scene.id && (
               <div className="mt-2 rounded-md border border-cyan-400/16 bg-cyan-400/[0.05] p-2 text-[0.58rem] text-cyan-100">
