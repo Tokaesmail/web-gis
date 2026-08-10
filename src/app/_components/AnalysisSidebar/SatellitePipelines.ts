@@ -8,6 +8,14 @@ export type SatelliteAnalysisType =
   | "SAVI"
   | "EVI"
   | "BSI"
+  // Agriculture add-ons (2026-08-09)
+  | "NDRE"
+  | "GNDVI"
+  | "MSAVI2"
+  | "CCCI"
+  | "NDDI"
+  | "SI"
+  | "CVI"
   // Sentinel-1 (Radar / SAR)
   | "VV"
   | "VH"
@@ -51,8 +59,11 @@ export type SatelliteAnalysisType =
 export type SatSource = "sentinel-2" | "landsat" | "sentinel-1" | "cop-dem" | "sentinel-5p" | "modis" | "aster" | "sentinel-3";
 
 export const SOURCE_INDICES: Record<SatSource, SatelliteAnalysisType[]> = {
-  "sentinel-2": ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI"],
-  "landsat":    ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI"],
+  // ⚠️ NDRE و CCCI محتاجين red-edge band (B05) — موجود بس في Sentinel-2 (MSI)،
+  // Landsat (OLI) معندوش red-edge بالمرة فمينفعش يتضافوا لـ landsat هنا.
+  // GNDVI و MSAVI2 عادي، متوفرين في المصدرين لإنهم بس Green/Red+NIR.
+  "sentinel-2": ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "NDRE", "GNDVI", "MSAVI2", "CCCI", "NDDI", "SI", "CVI"],
+  "landsat":    ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "GNDVI", "MSAVI2", "NDDI", "SI", "CVI"],
   "sentinel-1": ["VV", "VH", "RATIO", "SAR_RGB", "FLOOD", "CHANGE"],
   "cop-dem":    ["ELEVATION", "SLOPE", "HILLSHADE", "ASPECT", "CONTOURS"],
   "sentinel-5p": ["NO2", "SO2", "CO", "OZONE"],
@@ -521,6 +532,79 @@ export const SATELLITE_LEGENDS: Record<SatelliteAnalysisType, {
     min: "vegetated",
     mid: "mixed",
     max: "bare soil",
+  },
+  NDRE: {
+    label: "NDRE red-edge chlorophyll",
+    // ⚠️ (2026-08-09) الألوان الفعلية على الخريطة اتسابت زي ما هي (colormap
+    // "spectral_r" في getIndexPreviewStyle، مش متغيّرة) — التدرّج هنا بس
+    // اتصلح عشان يطابق فعليًا اللي بيتعرض (أحمر/برتقالي منخفض -> أصفر متوسط
+    // -> أزرق مرتفع)، بدل التدرّج الأحمر/أخضر القديم اللي كان بيخالفه.
+    gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#4575b4,#313695)",
+    min: "low chlorophyll (red/orange)",
+    mid: "moderate (yellow)",
+    max: "high chlorophyll (blue)",
+    meaning: ["Stays sensitive to canopy chlorophyll later in the growth cycle, when NDVI saturates near +1 on dense/mature canopy.", "Most useful mid-to-late season; less informative on very young or sparse crops."],
+  },
+  GNDVI: {
+    label: "GNDVI green-band vegetation",
+    // ⚠️ (2026-08-09) لون جديد بطلب المستخدم (colormap "gndvi_warm" في
+    // getIndexPreviewStyle) — برتقالي (stressed) -> أصفر -> أخضر (vigorous).
+    gradient: "linear-gradient(90deg,#d94801,#fd8d3c,#fed976,#78c679,#238443)",
+    min: "stressed / sparse",
+    mid: "moderate",
+    max: "vigorous, high N/water uptake",
+    meaning: ["Green replaces Red vs. standard NDVI, giving better sensitivity to nitrogen and water uptake in mid/late growth stages.", "Useful for aged or advanced-stage crop canopies where NDVI has already saturated."],
+  },
+  MSAVI2: {
+    label: "MSAVI2 soil-adjusted vegetation",
+    gradient: "linear-gradient(90deg,#8b0000,#e31a1c,#fd8d3c,#ffe600,#a6d96a,#31a354,#006837)",
+    min: "bare soil / sparse",
+    mid: "moderate cover",
+    max: "dense canopy",
+    meaning: ["Self-adjusting soil correction (no fixed L constant like SAVI), so it's most accurate on early-season or sparse canopy where soil background dominates.", "Behaves like NDVI/SAVI once vegetation cover is moderate-to-dense."],
+  },
+  CCCI: {
+    label: "CCCI canopy chlorophyll / nitrogen",
+    // ⚠️ (2026-08-09) الألوان الفعلية على الخريطة اتسابت زي ما هي (colormap
+    // "rdbu" في getIndexPreviewStyle، مش متغيّرة — ده اللي كنتِ شايفاه فعليًا
+    // في الصورة: أحمر/أزرق). التدرّج هنا بس اتصلح عشان يطابق الحقيقي بدل
+    // التدرّج الأحمر/أخضر القديم اللي كان بيخالفه.
+    gradient: "linear-gradient(90deg,#67001f,#b2182b,#d6604d,#fddbc7,#d1e5f0,#4393c3,#053061)",
+    min: "likely N-deficient (red)",
+    mid: "moderate",
+    max: "healthy chlorophyll/N status (blue)",
+    meaning: ["Ratio of NDRE to NDVI — combines red-edge chlorophyll sensitivity with overall greenness for nitrogen-status mapping.", "Best read alongside NDRE/NDVI directly rather than in isolation; extreme low-NDVI areas can produce noisy ratios."],
+  },
+  NDDI: {
+    label: "NDDI drought index",
+    // ⚠️ (2026-08-09) الألوان الفعلية على الخريطة اتسابت زي ما هي (colormap
+    // "greens" في getIndexPreviewStyle، مش متغيّرة) — sequential فاتح->غامق،
+    // مش ديفيرجينج أزرق/أحمر زي ما كان متكتوب هنا غلط قبل كده.
+    gradient: "linear-gradient(90deg,#ffffe5,#f7fcb9,#d9f0a3,#78c679,#238443,#005a32)",
+    min: "low drought signal",
+    mid: "moderate",
+    max: "high drought stress",
+    meaning: ["Combines NDVI and NDWI into a single drought signal — high values mean vegetation is present but the water signal is low relative to it.", "Most informative over vegetated land; open water or fully bare soil pixels are less meaningful to read on this scale."],
+  },
+  SI: {
+    label: "SI soil salinity",
+    // ⚠️ (2026-08-09) لون جديد بطلب المستخدم (colormap "salinity_clear" في
+    // getIndexPreviewStyle) — تيل (healthy) -> ذهبي -> أحمر واضح (risk).
+    gradient: "linear-gradient(90deg,#0891b2,#67e8f9,#fde68a,#f59e0b,#dc2626)",
+    min: "healthy / low salinity",
+    mid: "moderate",
+    max: "high salinity risk",
+    meaning: ["Normalized-difference formulation (Red,NIR) — one of several published Salinity Index variants, chosen here to stay scale-invariant like NDVI/NDWI.", "Best used as a relative screening signal within one AOI/date, then verified against soil sampling before drawing conclusions."],
+  },
+  CVI: {
+    label: "CVI chlorophyll vegetation",
+    // ⚠️ (2026-08-09) لون جديد بطلب المستخدم (colormap "cvi_ocean" في
+    // getIndexPreviewStyle) — أزرق غامق (low) -> تيل -> أخضر حيوي (high).
+    gradient: "linear-gradient(90deg,#1e3a8a,#0891b2,#22c55e,#15803d)",
+    min: "low chlorophyll",
+    mid: "moderate",
+    max: "high chlorophyll",
+    meaning: ["NIR × (Red / Green²) — most useful from early-to-mid crop growth across a wide range of soils and sowing conditions.", "⚠️ Not a normalized ratio like NDVI: its scale depends on the raw reflectance magnitude of the input bands, so its useful range shifts more between scenes/sensors than NDVI-style indices."],
   },
 
   // ── Sentinel-1 (Radar) ──────────────────────────────────────────────────

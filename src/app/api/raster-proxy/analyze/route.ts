@@ -13,7 +13,7 @@
 //
 // Usage:
 //   GET /api/raster-proxy/analyze
-//       ?type=rgb|swir|ndvi|ndwi|ndmi|ndbi|savi|evi|bsi|change_rgb|change_swir|change_ndvi|change_ndwi|change_ndbi|change_ndmi|change_savi|change_evi|change_bsi
+//       ?type=rgb|swir|ndvi|ndwi|ndmi|ndbi|savi|evi|bsi|ndre|gndvi|change_rgb|change_swir|change_ndvi|change_ndwi|change_ndbi|change_ndmi|change_savi|change_evi|change_bsi
 //       &urls=<url1>,<url2>[,...]      ← بالترتيب المطلوب لكل نوع (تحت)
 //       &bbox=west,south,east,north     ← إلزامي (WGS84) — بيحدد الـ pixel window
 //                                          المطلوب قراءته بدل تحميل الـ scene كاملة
@@ -28,6 +28,14 @@
 //   savi → urls = B08,B04         (NIR, Red) — L=0.5 مبني جوه المعادلة
 //   evi  → urls = B08,B04,B02     (NIR, Red, Blue)
 //   bsi  → urls = B11,B04,B08,B02 (SWIR1, Red, NIR, Blue)
+//   ndre  → urls = B08,B05         (NIR, RedEdge) — Sentinel-2 only، Landsat معندوش red-edge band
+//   gndvi → urls = B08,B03         (NIR, Green)
+//   msavi2 → urls = B08,B04        (NIR, Red)
+//   ccci   → urls = B08,B05,B04    (NIR, RedEdge, Red) — Sentinel-2 only، بيبني على NDRE فمحتاج red-edge
+//   nddi   → urls = B08,B04,B03    (NIR, Red, Green) — بيبني على NDVI و NDWI جوه المعادلة
+//   si     → urls = B04,B08        (Red, NIR) — Normalized Difference Salinity Index
+//   cvi    → urls = B08,B04,B03    (NIR, Red, Green) — ⚠️ مش normalized-difference زي الباقي،
+//                                   قيمته بتتأثر بمقياس الـ DN الخام (شوفي الكومنت جوه ANALYSIS_CONFIG.cvi)
 //
 //   change_<index> → urls = [...نفس بانداتات الـ index بتاعته لـ Before, ...نفس البانداتات لـ After]
 //     مثال change_evi → urls = beforeB08,beforeB04,beforeB02,afterB08,afterB04,afterB02
@@ -182,6 +190,13 @@ async function signPlanetaryComputerUrl(url: string): Promise<string> {
 type AnalysisType =
   | "rgb" | "swir"
   | "ndvi" | "ndwi" | "ndmi" | "ndbi" | "savi" | "evi" | "bsi"
+  // Agriculture add-ons (2026-08-09): NDRE (red-edge chlorophyll, late-season
+  // — Sentinel-2 only, Landsat has no red-edge band) و GNDVI (green-band NDVI
+  // variant، أدق للنيتروجين/المية في مراحل النمو المتقدمة، شغال لـ Sentinel-2
+  // ولاندسات لإنه محتاج بس Green+NIR).
+  | "ndre" | "gndvi"
+  | "msavi2" | "ccci"
+  | "nddi" | "si" | "cvi"
   | "change_rgb" | "change_swir"
   | "change_ndvi" | "change_ndwi" | "change_ndbi" | "change_ndmi"
   | "change_savi" | "change_evi" | "change_bsi"
@@ -310,6 +325,101 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     formula: (swir1, red, nir, blue) =>
       ((swir1 + red) - (nir + blue)) / ((swir1 + red) + (nir + blue) || 1e-6),
     defaultColormap: "rdbu_r",
+  },
+  ndre: {
+    // Red-edge chlorophyll index — same normalized-difference shape as NDVI
+    // but swaps Red for the red-edge band (B05), which stays sensitive to
+    // chlorophyll later in the season when NDVI saturates near +1 and stops
+    // discriminating dense/mature canopy.
+    kind: "index", bandCount: 2, label: "NDRE (NIR,RedEdge — e.g. B08,B05)",
+    formula: (nir, redEdge) => (nir - redEdge) / (nir + redEdge || 1e-6),
+    defaultColormap: "spectral_r",
+  },
+  gndvi: {
+    // Green NDVI — swaps Red for Green vs. standard NDVI. Less prone to
+    // saturation than NDVI in mid/late growth stages, commonly used to
+    // estimate nitrogen and water uptake into the canopy.
+    kind: "index", bandCount: 2, label: "GNDVI (NIR,Green — e.g. B08,B03)",
+    formula: (nir, green) => (nir - green) / (nir + green || 1e-6),
+    // ⚠️ (2026-08-09) لون جديد بطلب المستخدم صراحة — واضح وحيوي (برتقالي->
+    // أخضر) بدل "rdylbu_r" القديم (كان فعليًا Blues sequential باهت).
+    defaultColormap: "gndvi_warm",
+  },
+  msavi2: {
+    // Modified Soil-Adjusted Vegetation Index 2 — like SAVI but solves for
+    // the soil-brightness correction algebraically per-pixel instead of a
+    // fixed L constant, so it self-adjusts and is more accurate than SAVI on
+    // very sparse/early-season canopy where soil background dominates.
+    kind: "index", bandCount: 2, label: "MSAVI2 (NIR,Red — e.g. B08,B04)",
+    formula: (nir, red) => {
+      const term = 2 * nir + 1;
+      const inner = term * term - 8 * (nir - red);
+      return (term - Math.sqrt(Math.max(0, inner))) / 2;
+    },
+    defaultColormap: "rdylgn",
+  },
+  ccci: {
+    // Canopy Chlorophyll Content Index — ratio of NDRE to NDVI. NDRE tracks
+    // deeper canopy chlorophyll while NDVI captures overall greenness, so the
+    // ratio is more sensitive to nitrogen deficiency and within-field
+    // chlorophyll variability than either index alone. Same red-edge
+    // dependency as NDRE — Sentinel-2 only.
+    kind: "index", bandCount: 3, label: "CCCI (NIR,RedEdge,Red — e.g. B08,B05,B04)",
+    formula: (nir, redEdge, red) => {
+      const ndre = (nir - redEdge) / (nir + redEdge || 1e-6);
+      const ndvi = (nir - red) / (nir + red || 1e-6);
+      return ndre / (ndvi || 1e-6);
+    },
+    defaultColormap: "rdbu",
+  },
+  nddi: {
+    // Normalized Difference Drought Index — combines NDVI (vegetation) and
+    // NDWI (water) into a single drought signal: high NDDI means vegetation
+    // is present but the water signal is low relative to it (drought
+    // stress), while low/negative NDDI means water dominates or vegetation
+    // and water track together normally.
+    kind: "index", bandCount: 3, label: "NDDI (NIR,Red,Green — e.g. B08,B04,B03)",
+    formula: (nir, red, green) => {
+      const ndvi = (nir - red) / (nir + red || 1e-6);
+      const ndwi = (green - nir) / (green + nir || 1e-6);
+      return (ndvi - ndwi) / (ndvi + ndwi || 1e-6);
+    },
+    defaultColormap: "greens",
+  },
+  si: {
+    // Salinity Index — normalized-difference formulation (Red,NIR), one of
+    // several published SI variants (others use sqrt(Blue*Red) etc. on raw
+    // reflectance, which isn't scale-invariant like a ratio). This one keeps
+    // the same -1..1 normalized-difference shape as NDVI/NDWI so it slots
+    // into the existing rescale/alpha pipeline without a custom range.
+    kind: "index", bandCount: 2, label: "SI (Red,NIR — e.g. B04,B08)",
+    formula: (red, nir) => (red - nir) / (red + nir || 1e-6),
+    // ⚠️ (2026-08-09) لون جديد بطلب المستخدم صراحة — تيل->ذهبي->أحمر واضح
+    // بدل "inferno" القديم.
+    defaultColormap: "salinity_clear",
+  },
+  cvi: {
+    // Chlorophyll Vegetation Index — NIR * (Red / Green²). ⚠️ Unlike every
+    // other index above, this is NOT a normalized difference, so it does NOT
+    // sit in a -1..1 range. It's also NOT scale-invariant like a ratio: the
+    // raw DN inputs here (Sentinel-2/Landsat SR, ~0..10000) must first be
+    // converted to true reflectance (÷10000) before squaring Green, or the
+    // Green² term explodes into the millions and crushes every pixel's
+    // output down near 0 — invisible against a 0..6000-style rescale. Fixed
+    // (2026-08-09): normalize each band to 0..1 reflectance first, which
+    // brings CVI back into its literature-typical ~0..15 range.
+    kind: "index", bandCount: 3, label: "CVI (NIR,Red,Green — e.g. B08,B04,B03)",
+    formula: (nir, red, green) => {
+      const n = nir / 10000;
+      const r = red / 10000;
+      const g = green / 10000 || 1e-6;
+      return n * (r / (g * g || 1e-6));
+    },
+    // ⚠️ (2026-08-09) لون جديد بطلب المستخدم صراحة — أزرق غامق->تيل->أخضر
+    // حيوي بدل "spectral" القديم (rainbow multi-hue).
+    defaultColormap: "cvi_ocean",
+    defaultMin: 0,
+    defaultMax: 15,
   },
   change_rgb: {
     // True-color composite has no normalized index, so "before"/"after" are

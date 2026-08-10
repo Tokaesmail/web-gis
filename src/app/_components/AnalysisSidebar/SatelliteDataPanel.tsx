@@ -689,6 +689,13 @@ const displayVertices = useMemo(() => {
     { key: "SAVI", label: "SAVI", desc: "Soil-adjusted vegetation", color: "#14b8a6" },
     { key: "EVI", label: "EVI", desc: "Enhanced vegetation", color: "#ec4899" },
     { key: "BSI", label: "BSI", desc: "Bare soil index", color: "#9333ea" },
+    { key: "NDRE", label: "NDRE", desc: "Red-edge chlorophyll (late season)", color: "#65a30d" },
+    { key: "GNDVI", label: "GNDVI", desc: "Green-band vegetation / nitrogen", color: "#16a34a" },
+    { key: "MSAVI2", label: "MSAVI2", desc: "Soil-adjusted vegetation (self-correcting)", color: "#0d9488" },
+    { key: "CCCI", label: "CCCI", desc: "Canopy chlorophyll / nitrogen status", color: "#84cc16" },
+    { key: "NDDI", label: "NDDI", desc: "Drought index (NDVI + NDWI)", color: "#f97316" },
+    { key: "SI", label: "SI", desc: "Soil salinity", color: "#dc2626" },
+    { key: "CVI", label: "CVI", desc: "Chlorophyll vegetation (early-mid season)", color: "#22c55e" },
     // Sentinel-1 (Radar)
     { key: "VV", label: "VV", desc: "Co-polarized backscatter", color: "#818cf8" },
     { key: "VH", label: "VH", desc: "Cross-polarized backscatter", color: "#c084fc" },
@@ -943,6 +950,50 @@ const scenes = useMemo(
             type: "bsi",
           };
 
+        case "GNDVI":
+          return {
+            assets: ["nir08", "green"],
+            expression: "(nir08-green)/(nir08+green)",
+            type: "gndvi",
+          };
+
+        case "MSAVI2":
+          return {
+            assets: ["nir08", "red"],
+            expression: "(2*nir08+1-sqrt((2*nir08+1)*(2*nir08+1)-8*(nir08-red)))/2",
+            type: "msavi2",
+          };
+          // ⚠️ NDRE و CCCI مش موجودين هنا عن قصد — Landsat (OLI) معندوش
+          // red-edge band خالص، فمش هيظهروا أصلًا في dropdown بتاعت landsat
+          // (شوفي SOURCE_INDICES في SatellitePipelines.ts).
+
+        case "NDDI":
+          return {
+            assets: ["nir08", "red", "green"],
+            expression: "(((nir08-red)/(nir08+red))-((green-nir08)/(green+nir08)))/(((nir08-red)/(nir08+red))+((green-nir08)/(green+nir08)))",
+            type: "nddi",
+          };
+
+        case "SI":
+          return {
+            assets: ["red", "nir08"],
+            expression: "(red-nir08)/(red+nir08)",
+            type: "si",
+          };
+
+        case "CVI":
+          // ⚠️ نفس تطبيع الـ /10000 المستخدم في Sentinel-2 (شوفي case CVI في
+          // فرع sentinel-2 تحت). ملحوظة: Landsat C2 L2 رسميًا بيستخدم scale
+          // factor مختلف شوية (0.0000275, offset -0.2) مش /10000 المباشر بتاع
+          // Sentinel-2 — هنا بنستخدم نفس /10000 كتقريب بسيط (زي باقي الكود
+          // اللي مبيفرقش بين المصدرين لإن باقي المؤشرات كلها ratios بتلغي أي
+          // فرق scale). لو حسيتي القيم غلط بالظبط على Landsat، ده مكان البداية.
+          return {
+            assets: ["nir08", "red", "green"],
+            expression: "(nir08/10000)*((red/10000)/((green/10000)*(green/10000)))",
+            type: "cvi",
+          };
+
         default:
           return {
             assets: ["red", "green", "blue"],
@@ -1007,6 +1058,58 @@ const scenes = useMemo(
           assets: ["B11", "B04", "B08", "B02"],
           expression: "((B11+B04)-(B08+B02))/((B11+B04)+(B08+B02))",
           type: "bsi",
+        };
+
+      case "NDRE":
+        return {
+          assets: ["B08", "B05"],
+          expression: "(B08-B05)/(B08+B05)",
+          type: "ndre",
+        };
+
+      case "GNDVI":
+        return {
+          assets: ["B08", "B03"],
+          expression: "(B08-B03)/(B08+B03)",
+          type: "gndvi",
+        };
+
+      case "MSAVI2":
+        return {
+          assets: ["B08", "B04"],
+          expression: "(2*B08+1-sqrt((2*B08+1)*(2*B08+1)-8*(B08-B04)))/2",
+          type: "msavi2",
+        };
+
+      case "CCCI":
+        return {
+          assets: ["B08", "B05", "B04"],
+          expression: "((B08-B05)/(B08+B05))/((B08-B04)/(B08+B04))",
+          type: "ccci",
+        };
+
+      case "NDDI":
+        return {
+          assets: ["B08", "B04", "B03"],
+          expression: "(((B08-B04)/(B08+B04))-((B03-B08)/(B03+B08)))/(((B08-B04)/(B08+B04))+((B03-B08)/(B03+B08)))",
+          type: "nddi",
+        };
+
+      case "SI":
+        return {
+          assets: ["B04", "B08"],
+          expression: "(B04-B08)/(B04+B08)",
+          type: "si",
+        };
+
+      case "CVI":
+        // ⚠️ لازم نقسم كل باند على 10000 (نحوّل DN لانعكاس حقيقي 0..1) قبل
+        // الحساب — من غيرها Green² بتتضخم بالملايين والناتج يطلع كسور
+        // متناهية الصغر تختفي في الشفافية حوالين الصفر (كانت المشكلة الأصلية).
+        return {
+          assets: ["B08", "B04", "B03"],
+          expression: "(B08/10000)*((B04/10000)/((B03/10000)*(B03/10000)))",
+          type: "cvi",
         };
 
       default:
@@ -1152,6 +1255,35 @@ useEffect(() => {
       case "BSI":
         // -0.3 (نبات كثيف) → 0.4 (تربة عارية)
         return { rescale: "-0.3,0.4", colormap: "rdbu_r", alphaLow: "0.02", alphaHigh: "0.18" };
+      case "NDRE":
+        // نطاق أضيق من NDVI (0 → 0.4 تقريبًا)، أدق في تمييز الكلوروفيل آخر الموسم
+        return { rescale: "0,0.4", colormap: "spectral_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "GNDVI":
+        // ⚠️ (2026-08-09) لون جديد بطلب المستخدم صراحة — واضح وحيوي، مختلف
+        // تمامًا عن "rdylbu_r" القديم. هنا هو المكان الحقيقي اللي بيتحكم في
+        // لون الخريطة الفعلي (مش defaultColormap في route.ts، اللي بيتبقى
+        // fallback بس مش بيتستخدم لإن الـ colormap بيتبعت صريح هنا دايمًا).
+        return { rescale: "-0.2,0.8", colormap: "gndvi_warm", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "MSAVI2":
+        // زي NDVI/SAVI تقريبًا لكن أدق في الغطاء الضعيف/بداية الموسم
+        return { rescale: "-0.2,0.9", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "CCCI":
+        // نسبة NDRE/NDVI — مداها عادة 0 → ~1.2، مش -1..1 زي باقي المؤشرات
+        return { rescale: "0,1.2", colormap: "rdbu", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "NDDI":
+        // -1 (مية/رطوبة مسيطرة) → +1 (إجهاد جفاف)
+        return { rescale: "-1,1", colormap: "greens", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "SI":
+        // ⚠️ (2026-08-09) لون جديد بطلب المستخدم صراحة — تيل->ذهبي->أحمر
+        // واضح بدل "inferno" القديم. نفس ملحوظة GNDVI: هنا هو مصدر اللون
+        // الحقيقي على الخريطة.
+        return { rescale: "-0.3,0.3", colormap: "salinity_clear", alphaLow: "0.02", alphaHigh: "0.18" };
+      case "CVI":
+        // ⚠️ (2026-08-09) لون جديد بطلب المستخدم صراحة — أزرق غامق->تيل->
+        // أخضر حيوي بدل "spectral" القديم (rainbow متعدد الألوان).
+        // بعد التطبيع لانعكاس حقيقي (÷10000)، CVI بيقع في مدى نموذجي ~0..15
+        // (مش normalized-difference -1..1 زي باقي المؤشرات).
+        return { rescale: "0,15", colormap: "cvi_ocean", alphaLow: "0.03", alphaHigh: "0.22" };
 
       // ⚠️ القيم تحت (rescale) placeholder مبني على مدى نظري للبيانات —
       // لازم تتظبط لما نشوف قيم حقيقية راجعة من الباك بعد ما تبعتي الـ route.

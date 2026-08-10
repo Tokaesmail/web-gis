@@ -91,6 +91,29 @@ export const RAMPS: Record<string, Stop[]> = {
   inferno: [
     "#000004","#1b0c41","#4a0c6b","#781c6d","#a52c60","#cf4446","#ed6925","#fb9b06","#f7d13d","#fcffa4"
   ].map((c, i, a) => { const [r,g,b] = vivid(c, 1.45, 0.14); return { pos: i/(a.length-1), r, g, b }; }),
+
+  // ── الـ 3 ramps الجديدة دول (2026-08-09) لـ GNDVI/SI/CVI بس، بطلب المستخدم
+  // صراحة: ألوان واضحة/حيوية ومريحة للعين، من غير بنفسجي خالص، وكل واحد
+  // فيهم بلون مختلف عن التاني عشان يتفرقوا بصريًا بسهولة على الخريطة.
+  // ⚠️ ملحوظة: باقي المؤشرات (NDRE/CCCI/NDDI/MSAVI2) اتسابت زي ما هي بالظبط —
+  // مفيش أي تعديل عليهم هنا أو في route.ts، الإصلاح بتاعهم كان في الـ legend
+  // بس (SatellitePipelines.ts) مش في الألوان الفعلية.
+
+  // GNDVI: برتقالي دافئ (stressed) -> أصفر فاتح -> أخضر حيوي (vigorous).
+  gndvi_warm: [
+    "#d94801","#fd8d3c","#fed976","#78c679","#238443"
+  ].map((c, i, a) => { const [r,g,b] = vivid(c, 1.3, 0.1); return { pos: i/(a.length-1), r, g, b }; }),
+
+  // SI: تيل صافي (healthy) -> ذهبي (moderate) -> أحمر واضح (salinity risk).
+  salinity_clear: [
+    "#0891b2","#67e8f9","#fde68a","#f59e0b","#dc2626"
+  ].map((c, i, a) => { const [r,g,b] = vivid(c, 1.3, 0.1); return { pos: i/(a.length-1), r, g, b }; }),
+
+  // CVI: أزرق غامق (low) -> تيل -> أخضر حيوي (high chlorophyll) — بلا بنفسجي
+  // خالص، ومختلف بصريًا عن GNDVI وSI.
+  cvi_ocean: [
+    "#1e3a8a","#0891b2","#22c55e","#15803d"
+  ].map((c, i, a) => { const [r,g,b] = vivid(c, 1.3, 0.1); return { pos: i/(a.length-1), r, g, b }; }),
 };
 
 export function applyColormap(stops: Stop[], t: number): [number, number, number] {
