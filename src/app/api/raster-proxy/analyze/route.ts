@@ -13,7 +13,7 @@
 //
 // Usage:
 //   GET /api/raster-proxy/analyze
-//       ?type=rgb|swir|ndvi|ndwi|ndmi|ndbi|savi|evi|bsi|ndre|gndvi|change_rgb|change_swir|change_ndvi|change_ndwi|change_ndbi|change_ndmi|change_savi|change_evi|change_bsi
+//       ?type=rgb|swir|ndvi|ndwi|ndmi|ndbi|savi|evi|bsi|ndre|gndvi|reci|sipi|gci|change_rgb|change_swir|change_ndvi|change_ndwi|change_ndbi|change_ndmi|change_savi|change_evi|change_bsi
 //       &urls=<url1>,<url2>[,...]      ← بالترتيب المطلوب لكل نوع (تحت)
 //       &bbox=west,south,east,north     ← إلزامي (WGS84) — بيحدد الـ pixel window
 //                                          المطلوب قراءته بدل تحميل الـ scene كاملة
@@ -36,6 +36,13 @@
 //   si     → urls = B04,B08        (Red, NIR) — Normalized Difference Salinity Index
 //   cvi    → urls = B08,B04,B03    (NIR, Red, Green) — ⚠️ مش normalized-difference زي الباقي،
 //                                   قيمته بتتأثر بمقياس الـ DN الخام (شوفي الكومنت جوه ANALYSIS_CONFIG.cvi)
+//   reci   → urls = B08,B05        (NIR, RedEdge) — Sentinel-2 only، simple-ratio زي cvi (مش -1..1)
+//   sipi   → urls = B08,B02,B04    (NIR, Blue, Red)
+//   gci    → urls = B08,B03        (NIR, Green) — simple-ratio زي reci (مش -1..1)
+//   psri   → urls = B04,B02,B06    (Red, Blue, RedEdge2) — Sentinel-2 only، عكس اتجاه NDVI (عالي = إجهاد/شيخوخة)
+//   rendvi → urls = B06,B05        (RedEdge2, RedEdge1) — Sentinel-2 only، زي NDRE بس الاتنين red-edge
+//   reip   → urls = B04,B05,B06,B07 (Red, RedEdge1, RedEdge2, RedEdge3) — Sentinel-2 only، زي red_edge (S2REP)
+//                                   بس معادلة Guyot & Baret 1988 الكلاسيكية بدل Frampton 2013
 //
 //   change_<index> → urls = [...نفس بانداتات الـ index بتاعته لـ Before, ...نفس البانداتات لـ After]
 //     مثال change_evi → urls = beforeB08,beforeB04,beforeB02,afterB08,afterB04,afterB02
@@ -197,6 +204,10 @@ type AnalysisType =
   | "ndre" | "gndvi"
   | "msavi2" | "ccci"
   | "nddi" | "si" | "cvi"
+  // Pigment/chlorophyll add-ons (2026-08-11) — Sentinel-2 only (reci needs
+  // the red-edge band B05, same as ndre/ccci; sipi/gci technically work on
+  // any source with the same bands, added S2-only here like vari/grvi/tvi)
+  | "reci" | "sipi" | "gci" | "psri"
   | "change_rgb" | "change_swir"
   | "change_ndvi" | "change_ndwi" | "change_ndbi" | "change_ndmi"
   | "change_savi" | "change_evi" | "change_bsi"
@@ -217,7 +228,18 @@ type AnalysisType =
   // heatmap ملوّن (شوفي sentinelDecode.ts للتفاصيل). أسماء الـ type هنا هي
   // variable.toLowerCase() اللي buildRasterProxyAnalyzeUrl بتبعته:
   // LST→"lst", FRP_MWIR→"frp_mwir", CHL_NN→"chl_nn".
-  | "lst" | "frp_mwir" | "chl_nn";
+  | "lst" | "frp_mwir" | "chl_nn"
+  // Visible-only + Red-Edge add-ons (2026-08-11) — Sentinel-2 only
+  | "vari" | "red_edge"
+  // Triangular/visible vegetation add-ons (2026-08-11) — Sentinel-2 only
+  | "mtvi" | "tvi" | "grvi"
+  // Burn severity add-on (2026-08-13) — NIR+SWIR2, works on Sentinel-2 and Landsat
+  | "nbri"
+  // Moisture/snow/oil add-ons (2026-08-14) — Sentinel-2 only, see SatellitePipelines.ts SOURCE_INDICES note
+  | "msi" | "ndsi" | "osi"
+  // Red-edge NDVI + classic red-edge inflection point add-ons (2026-08-14) —
+  // Sentinel-2 only, see SatellitePipelines.ts SOURCE_INDICES note
+  | "rendvi" | "reip";
 
 type CompositeConfig = { kind: "composite"; bandCount: 3; label: string };
 type IndexConfig = {
@@ -420,6 +442,228 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     defaultColormap: "cvi_ocean",
     defaultMin: 0,
     defaultMax: 15,
+  },
+  vari: {
+    // Visible Atmospherically Resistant Index — vegetation index built ONLY
+    // from visible bands (Green/Red/Blue), no NIR needed. Same normalized-
+    // difference shape as NDVI (so it's scale-invariant, DN or reflectance
+    // both work), just with Blue subtracted from the denominator instead of
+    // added, which is what gives it partial atmospheric-haze resistance.
+    kind: "index", bandCount: 3, label: "VARI (Green,Red,Blue — e.g. B03,B04,B02)",
+    formula: (green, red, blue) => (green - red) / (green + red - blue || 1e-6),
+    defaultColormap: "rdylgn",
+  },
+  red_edge: {
+    // Sentinel-2 Red-Edge Position (S2REP, Frampton et al. 2013) — linearly
+    // interpolates the wavelength (nm) where the red-edge reflectance rises
+    // fastest, using B04 (Red), B05/B06 (RedEdge1/2), B07 (NIR-edge/RedEdge3).
+    // ⚠️ Output is a wavelength in nm (~700-740), NOT a -1..1 normalized
+    // difference like NDRE — despite the name overlap this is a different
+    // quantity with a different scale/rescale range.
+    // ⚠️ Still scale-invariant like NDVI: multiplying every band by the same
+    // constant (raw DN vs. true reflectance) cancels out in the ratio, so no
+    // ÷10000 normalization is needed here (unlike CVI's Green² term).
+    kind: "index", bandCount: 4, label: "S2REP Red Edge Position (Red,RedEdge1,RedEdge2,RedEdge3 — e.g. B04,B05,B06,B07)",
+    formula: (red, re1, re2, re3) => 705 + 35 * (((re3 + red) / 2 - re1) / (re2 - re1 || 1e-6)),
+    defaultColormap: "spectral_r",
+    defaultMin: 700,
+    defaultMax: 740,
+  },
+  grvi: {
+    // Green-Red Vegetation Index — same normalized-difference shape as NDVI
+    // but built only from visible bands (Green/Red), no NIR needed. Simpler
+    // than VARI (no Blue correction term), so it's more haze-sensitive but
+    // scale-invariant (DN or reflectance both work) just like NDVI.
+    kind: "index", bandCount: 2, label: "GRVI (Green,Red — e.g. B03,B04)",
+    formula: (green, red) => (green - red) / (green + red || 1e-6),
+    defaultColormap: "rdylgn",
+  },
+  tvi: {
+    // Triangular Vegetation Index (Broge & Leblanc 2000) — estimates the
+    // area of the triangle formed by Green/Red/NIR reflectance points. Needs
+    // reflectance as a percentage (0..100), not raw DN (~0..10000) or the
+    // area scales up by 10000x, so each band is normalized (÷10000 → 0..1,
+    // ×100 → 0..100 "percent reflectance") before applying the formula —
+    // same reasoning as CVI's ÷10000 normalization above.
+    kind: "index", bandCount: 3, label: "TVI (NIR,Red,Green — e.g. B08,B04,B03)",
+    formula: (nir, red, green) => {
+      const n = (nir / 10000) * 100;
+      const r = (red / 10000) * 100;
+      const g = (green / 10000) * 100;
+      return 0.5 * (120 * (n - g) - 200 * (r - g));
+    },
+    defaultColormap: "spectral",
+    defaultMin: 0,
+    defaultMax: 50,
+  },
+  mtvi: {
+    // Modified Triangular Vegetation Index 2 (Haboudane et al. 2004) — same
+    // triangular-area idea as TVI, but normalized so it self-corrects for
+    // soil background and canopy density (closer in spirit to MSAVI2 than
+    // to TVI). Needs true 0..1 reflectance (÷10000), same as CVI/TVI above.
+    kind: "index", bandCount: 3, label: "MTVI2 (NIR,Red,Green — e.g. B08,B04,B03)",
+    formula: (nir, red, green) => {
+      const n = nir / 10000;
+      const r = red / 10000;
+      const g = green / 10000;
+      const num = 1.5 * (1.2 * (n - g) - 2.5 * (r - g));
+      const denom = Math.sqrt(Math.max(0, (2 * n + 1) * (2 * n + 1) - (6 * n - 5 * Math.sqrt(Math.max(0, r))) - 0.5));
+      return num / (denom || 1e-6);
+    },
+    defaultColormap: "rdylgn",
+    defaultMin: -1,
+    defaultMax: 1,
+  },
+  reci: {
+    // Red-Edge Chlorophyll Index (Gitelson et al.) — simple ratio (NOT a
+    // normalized difference like NDRE), same red-edge dependency as
+    // NDRE/CCCI so it's Sentinel-2 only (Landsat has no red-edge band).
+    // Scale-invariant like a normalized-difference index: multiplying both
+    // bands by the same constant cancels in the ratio, so raw DN or true
+    // reflectance both work — no ÷10000 normalization needed here.
+    kind: "index", bandCount: 2, label: "RECI (NIR,RedEdge — e.g. B08,B05)",
+    formula: (nir, redEdge) => (nir / (redEdge || 1e-6)) - 1,
+    defaultColormap: "spectral_r",
+    defaultMin: 0,
+    defaultMax: 3,
+  },
+  sipi: {
+    // Structure Insensitive Pigment Index — ratio of carotenoid to
+    // chlorophyll absorption (NIR,Blue,Red), used as a canopy-stress signal
+    // that's comparatively insensitive to canopy structure/LAI vs. NDVI.
+    // Scale-invariant like reci/gci above: numerator and denominator are
+    // both differences against the same NIR band, so a constant DN-vs-
+    // reflectance scale factor cancels out — no ÷10000 normalization needed.
+    // ⚠️ colormap: "rdbu_r" (نفس المستخدم في bsi فوق) مش "rdylgn_r" — الأخير
+    // مش متأكد إنه معرّف جوه RAMPS (lib/rasterColor.ts، الملف ده مش متاح هنا
+    // للفحص المباشر)، فبنستخدم اسم موجود بالفعل ومتأكد منه بدل ما نخمّن اسم
+    // جديد ممكن يقع فجأة على fallback مختلف بصمت.
+    kind: "index", bandCount: 3, label: "SIPI (NIR,Blue,Red — e.g. B08,B02,B04)",
+    formula: (nir, blue, red) => (nir - blue) / (nir - red || 1e-6),
+    defaultColormap: "rdbu_r",
+    defaultMin: 0,
+    defaultMax: 2,
+  },
+  gci: {
+    // Green Chlorophyll Index — simple ratio (NOT normalized-difference like
+    // GNDVI), same Green+NIR bands as GNDVI but without the -1..1 bounding.
+    // Scale-invariant like reci above (raw DN or reflectance both work).
+    kind: "index", bandCount: 2, label: "GCI (NIR,Green — e.g. B08,B03)",
+    formula: (nir, green) => (nir / (green || 1e-6)) - 1,
+    defaultColormap: "greens",
+    defaultMin: 0,
+    defaultMax: 4,
+  },
+  psri: {
+    // Plant Senescence Reflectance Index (Merzlyak et al. 1999) — (Red-Blue)/
+    // RedEdge2, tracks carotenoid:chlorophyll ratio as a senescence/stress
+    // signal. Needs B06 (RedEdge2), so Sentinel-2 only, same red-edge
+    // dependency as reci/ndre/ccci. Sign convention is INVERTED vs. NDVI-
+    // style indices: negative = healthy/high chlorophyll, positive = under
+    // stress or senescing — opposite of "higher is healthier".
+    // Scale-invariant like reci/gci: multiplying all three bands by the same
+    // constant cancels out (numerator and denominator both scale together),
+    // so raw DN or true reflectance both work — no ÷10000 needed.
+    // ⚠️ colormap: "rdbu_r" (زي BSI/SIPI فوق) — نفس منطق قيمة منخفضة=أخضر
+    // صحي/قيمة عالية=إجهاد، اسم متأكد إنه موجود جوه RAMPS بدل تخمين اسم جديد.
+    kind: "index", bandCount: 3, label: "PSRI (Red,Blue,RedEdge2 — e.g. B04,B02,B06)",
+    formula: (red, blue, redEdge2) => (red - blue) / (redEdge2 || 1e-6),
+    defaultColormap: "rdbu_r",
+    defaultMin: -0.2,
+    defaultMax: 0.2,
+  },
+  nbri: {
+    // Normalized Burn Ratio — (NIR-SWIR2)/(NIR+SWIR2), Sentinel-2 B08/B12 or
+    // Landsat nir08/swir22. Same normalized-difference shape/scale-invariance
+    // as NDVI/NDMI, so no ÷10000 normalization needed.
+    // ⚠️ colormap/range kept identical to the panel's getIndexPreviewStyle
+    // ("rdylgn", -0.5..0.7) so this fallback never disagrees with the actual
+    // map color — low/negative = burned or bare ground, high = healthy veg.
+    kind: "index", bandCount: 2, label: "NBRI (NIR,SWIR2 — e.g. B08,B12)",
+    formula: (nir, swir2) => (nir - swir2) / (nir + swir2 || 1e-6),
+    defaultColormap: "rdylgn",
+    defaultMin: -0.5,
+    defaultMax: 0.7,
+  },
+  msi: {
+    // Moisture Stress Index — SWIR1/NIR simple ratio (B11/B08). Same two
+    // bands as NDMI but NOT a normalized difference — this is a plain ratio
+    // so it's NOT bounded to -1..1, and scale-invariant like RECI/GCI (raw
+    // DN or reflectance both work, no ÷10000 needed).
+    // ⚠️ colormap/range kept identical to the panel's getIndexPreviewStyle
+    // ("rdbu_r", 0.2..2) so this fallback never disagrees with the actual
+    // map color — low = wet/healthy (blue), high = water-stressed (red).
+    kind: "index", bandCount: 2, label: "MSI (SWIR1,NIR — e.g. B11,B08)",
+    formula: (swir1, nir) => swir1 / (nir || 1e-6),
+    defaultColormap: "rdbu_r",
+    defaultMin: 0.2,
+    defaultMax: 2,
+  },
+  ndsi: {
+    // Normalized Difference Snow Index — (Green-SWIR1)/(Green+SWIR1), B03/B11.
+    // Same normalized-difference shape as NDWI/NDVI. Literature threshold for
+    // confident snow/ice presence is typically NDSI > 0.4.
+    // ⚠️ colormap/range kept identical to the panel's getIndexPreviewStyle
+    // ("rdbu", -0.2..0.6) — high (snow/ice) reads blue, same convention as
+    // NDWI for water.
+    kind: "index", bandCount: 2, label: "NDSI (Green,SWIR1 — e.g. B03,B11)",
+    formula: (green, swir1) => (green - swir1) / (green + swir1 || 1e-6),
+    defaultColormap: "rdbu",
+    defaultMin: -0.2,
+    defaultMax: 0.6,
+  },
+  osi: {
+    // ⚠️ Oil Spill Index (2026-08-14) — visible-only heuristic (Blue,Green,Red
+    // — B02,B03,B04), NOT a validated/standardized index like NDVI: there is
+    // no single agreed optical OSI formula in the literature, and optical
+    // (Sentinel-2) oil-spill detection is fundamentally weaker/noisier than
+    // SAR (sun-glint, foam, algae, and turbid shallow water all mimic an oil
+    // sheen's visible signature). This is a normalized-difference-style ratio
+    // of (Red+Blue) vs Green — a thin oil film raises visible reflectance and
+    // flattens the water's usual blue>green>red spectral slope, which this
+    // picks up as a positive shift. Treat as a quick optical screening layer
+    // only; cross-check anything it flags against a same-date SAR pass
+    // (vv/vh/sar_rgb — already in this pipeline) before trusting it.
+    kind: "index", bandCount: 3, label: "OSI (Red,Blue,Green — e.g. B04,B02,B03)",
+    formula: (red, blue, green) => ((red + blue) - green) / ((red + blue) + green || 1e-6),
+    defaultColormap: "rdbu_r",
+    defaultMin: -0.3,
+    defaultMax: 0.3,
+  },
+  rendvi: {
+    // Red-Edge NDVI — same normalized-difference shape as NDRE, but built
+    // entirely from the two red-edge bands (RedEdge2,RedEdge1 — B06,B05)
+    // instead of swapping NIR in for one of them. Stays sensitive to early
+    // chlorophyll/nitrogen stress even earlier than NDRE, at the cost of a
+    // narrower dynamic range. Same red-edge dependency as NDRE/RECI/CCCI —
+    // Sentinel-2 only (Landsat has no red-edge band).
+    // Scale-invariant like NDVI/NDRE: raw DN or true reflectance both work,
+    // no ÷10000 normalization needed.
+    kind: "index", bandCount: 2, label: "RENDVI (RedEdge2,RedEdge1 — e.g. B06,B05)",
+    formula: (re2, re1) => (re2 - re1) / (re2 + re1 || 1e-6),
+    defaultColormap: "spectral_r",
+    defaultMin: -1,
+    defaultMax: 1,
+  },
+  reip: {
+    // Red Edge Inflection Point (Guyot & Baret 1988) — the classic linear
+    // formulation of the same quantity as "red_edge" (S2REP, Frampton et al.
+    // 2013): the wavelength (nm) where red-edge reflectance rises fastest,
+    // using B04 (Red), B05/B06 (RedEdge1/2), B07 (NIR-edge/RedEdge3). Same
+    // four bands, same output scale (~700-740nm) as red_edge above, but
+    // different coefficients (700+40×... vs 705+35×...) — the two indices
+    // will NOT return identical values on the same scene even though they
+    // estimate the same physical quantity.
+    // ⚠️ Output is a wavelength in nm, NOT a -1..1 normalized difference —
+    // same caveat as red_edge above.
+    // ⚠️ Still scale-invariant like NDVI/red_edge: a constant DN-vs-
+    // reflectance scale factor cancels out in the ratio, so no ÷10000
+    // normalization is needed here.
+    kind: "index", bandCount: 4, label: "REIP Red Edge Inflection Point, classic (Red,RedEdge1,RedEdge2,RedEdge3 — e.g. B04,B05,B06,B07)",
+    formula: (red, re1, re2, re3) => 700 + 40 * (((red + re3) / 2 - re1) / (re2 - re1 || 1e-6)),
+    defaultColormap: "spectral_r",
+    defaultMin: 700,
+    defaultMax: 740,
   },
   change_rgb: {
     // True-color composite has no normalized index, so "before"/"after" are
@@ -1759,11 +2003,6 @@ export async function GET(req: NextRequest) {
     stats = result.stats;
   } else if (config.kind === "index") {
     const colormap = searchParams.get("colormap") ?? config.defaultColormap;
-    // ⚠️ لو ?min=/?max= مش موجودين في الـ query (يعني /statistics فشلت أو
-    // اتخطّيت)، بنستخدم defaultMin/defaultMax بتاع الـ type نفسه (لو موجودين
-    // — الغازات وSST عندهم قيم واقعية دلوقتي) بدل ما نقع في -1/1 اللي
-    // مصمم لـ NDVI/NDWI/... بس. ده اللي كان بيخلي preview الغازات يطلع
-    // شفاف بالكامل لما /statistics بترجع فشل.
     const rMin = parseFloat(searchParams.get("min") ?? String(config.defaultMin ?? -1));
     const rMax = parseFloat(searchParams.get("max") ?? String(config.defaultMax ?? 1));
     const zeroVal = parseFloat(searchParams.get("zero") ?? "0");
@@ -1788,9 +2027,7 @@ export async function GET(req: NextRequest) {
     const rMin = parseFloat(searchParams.get("min") ?? "0");
     const rMax = parseFloat(searchParams.get("max") ?? "1500");
     const contourInterval = parseFloat(searchParams.get("contourInterval") ?? "50");
-    // زي index بالظبط: ?transparent=0 بيقفل فلتر "v===0 يبقى nodata" (مفيدة
-    // لـ elevation/slope/aspect/hillshade فوق مناطق قريبة من الصفر فعليًا،
-    // مش contours — هناك الشفافية جزء من الرسم نفسه).
+    
     const demTransparent = (searchParams.get("transparent") ?? "1") !== "0";
     const result = await renderDemProduct(
       bands[0], config.product, colormap, rMin, rMax, contourInterval, !demTransparent
@@ -1820,9 +2057,7 @@ export async function GET(req: NextRequest) {
   const renderMs = performance.now() - tRenderStart;
   const totalMs = performance.now() - tRequestStart;
 
-  // debug timing — بتبان في الـ Network tab (Response Headers) من غير ما تحتاجي
-  // تدخلي لوجات السيرفر. لو عايزة تشوفيها بسرعة: افتحي DevTools → Network →
-  // اضغطي على طلب /api/raster-proxy/analyze → Headers → دوّري على X-Debug-Timing.
+  
   const debugTiming = {
     totalMs: Math.round(totalMs),
     bandsMs: Math.round(bandsMs),

@@ -16,6 +16,28 @@ export type SatelliteAnalysisType =
   | "NDDI"
   | "SI"
   | "CVI"
+  // Visible-only + Red-Edge add-ons (2026-08-11)
+  | "VARI"
+  | "RED_EDGE"
+  // Triangular/visible vegetation add-ons (2026-08-11) — Sentinel-2 only
+  | "MTVI"
+  | "TVI"
+  | "GRVI"
+  // Pigment/chlorophyll add-ons (2026-08-11) — Sentinel-2 only
+  | "RECI"
+  | "SIPI"
+  | "GCI"
+  | "PSRI"
+  // Burn severity add-on (2026-08-13) — NIR+SWIR2, works on Sentinel-2 and Landsat
+  | "NBRI"
+  // Moisture/snow/oil add-ons (2026-08-14) — Sentinel-2 only, see SOURCE_INDICES note
+  | "MSI"
+  | "NDSI"
+  | "OSI"
+  // Red-edge NDVI + classic red-edge inflection point add-ons (2026-08-14) —
+  // Sentinel-2 only, see SOURCE_INDICES note below (needs B05/B06[/B07]).
+  | "RENDVI"
+  | "REIP"
   // Sentinel-1 (Radar / SAR)
   | "VV"
   | "VH"
@@ -62,8 +84,38 @@ export const SOURCE_INDICES: Record<SatSource, SatelliteAnalysisType[]> = {
   // ⚠️ NDRE و CCCI محتاجين red-edge band (B05) — موجود بس في Sentinel-2 (MSI)،
   // Landsat (OLI) معندوش red-edge بالمرة فمينفعش يتضافوا لـ landsat هنا.
   // GNDVI و MSAVI2 عادي، متوفرين في المصدرين لإنهم بس Green/Red+NIR.
-  "sentinel-2": ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "NDRE", "GNDVI", "MSAVI2", "CCCI", "NDDI", "SI", "CVI"],
-  "landsat":    ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "GNDVI", "MSAVI2", "NDDI", "SI", "CVI"],
+  // ⚠️ VARI و RED_EDGE (S2REP) اتضافوا هنا بس لـ sentinel-2 (2026-08-11).
+  // VARI (Green,Red,Blue) أصلًا ممكن تتحسب من أي مصدر فيه visible bands
+  // (تقنيًا كانت تشتغل على Landsat كمان)، لكن اتضافت هنا بس بناءً على الطلب.
+  // RED_EDGE (S2REP) محتاج B05/B06/B07 — زي NDRE/CCCI، Sentinel-2 (MSI) بس.
+  // ⚠️ MTVI/TVI/GRVI اتضافوا هنا بس لـ sentinel-2 (2026-08-11) بناءً على
+  // الطلب. GRVI (Green,Red) وTVI (NIR,Red,Green) تقنيًا ممكن تتحسب من أي
+  // مصدر فيه نفس الباندات (تشتغل على Landsat كمان)، لكن اتضافت هنا بس زي
+  // VARI. MTVI2 (NIR,Red,Green) نفس الكلام.
+  // ⚠️ RECI/SIPI/GCI اتضافوا هنا بس لـ sentinel-2 (2026-08-11) بناءً على
+  // الطلب. RECI محتاج B05 (red-edge) زي NDRE/CCCI فمينفعش يتضاف لـ landsat
+  // (معندوش red-edge band). SIPI (NIR,Blue,Red) وGCI (NIR,Green) تقنيًا
+  // ممكن تتحسبوا من أي مصدر فيه نفس الباندات (تشتغل على Landsat كمان)، لكن
+  // اتضافوا هنا بس زي VARI/GRVI/TVI.
+  // ⚠️ PSRI اتضاف هنا بس لـ sentinel-2 (2026-08-11) — محتاج B06 (red-edge 2)
+  // زي RECI/NDRE/CCCI فمينفعش يتضاف لـ landsat (معندوش red-edge band).
+  // ⚠️ NBRI (2026-08-13) — محتاج بس NIR+SWIR2 (زي NDMI/NDBI)، الاتنين
+  // موجودين في Sentinel-2 (B08/B12) وLandsat (nir08/swir22)، فاتضاف للمصدرين.
+  // ⚠️ MSI/NDSI/OSI (2026-08-14) — اتضافوا هنا بس لـ sentinel-2 بناءً على
+  // الطلب (نفس نمط MTVI/TVI/GRVI/RECI/... فوق). MSI (B11/B08) وNDSI
+  // (B03/B11) تقنيًا ممكن تتحسبوا على Landsat (عنده SWIR1 برضه) لكن اتضافوا
+  // Sentinel-2 بس هنا. OSI (Oil Spill Index) heuristic بصري من visible bands
+  // بس (B02/B03/B04) — شوفي التحذير في ANALYSIS_CONFIG (route.ts) عن حدود
+  // كشف بقع الزيت بالـ optical مقارنة بالـ SAR.
+  // ⚠️ RENDVI/REIP (2026-08-14) — اتضافوا هنا بس لـ sentinel-2 (زي
+  // NDRE/CCCI/RECI/RED_EDGE فوق) لإن الاتنين محتاجين red-edge band(s)
+  // (B05[/B06/B07]) — Landsat (OLI) معندوش red-edge بالمرة. RENDVI (B06,B05)
+  // نفس فكرة NDRE بس بتستخدم الـ red-edge bands نفسها بدل NIR/RedEdge.
+  // REIP محتاج B04/B05/B06/B07 زي RED_EDGE (S2REP) بالظبط، لكنه معادلة
+  // مختلفة (Guyot & Baret 1988 الكلاسيكية بدل Frampton et al. 2013) —
+  // شوفي التعليق جوه ANALYSIS_CONFIG.reip (route.ts) للفرق بين الاتنين.
+  "sentinel-2": ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "NDRE", "GNDVI", "MSAVI2", "CCCI", "NDDI", "SI", "CVI", "VARI", "RED_EDGE", "MTVI", "TVI", "GRVI", "RECI", "SIPI", "GCI", "PSRI", "NBRI", "MSI", "NDSI", "OSI", "RENDVI", "REIP"],
+  "landsat":    ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "GNDVI", "MSAVI2", "NDDI", "SI", "CVI", "NBRI"],
   "sentinel-1": ["VV", "VH", "RATIO", "SAR_RGB", "FLOOD", "CHANGE"],
   "cop-dem":    ["ELEVATION", "SLOPE", "HILLSHADE", "ASPECT", "CONTOURS"],
   "sentinel-5p": ["NO2", "SO2", "CO", "OZONE"],
@@ -528,10 +580,15 @@ export const SATELLITE_LEGENDS: Record<SatelliteAnalysisType, {
   },
   BSI: {
     label: "BSI bare soil index",
-    gradient: "linear-gradient(90deg,#b35806,#fdb863,#f7f7f7,#998ec3,#40004b)",
-    min: "vegetated",
-    mid: "mixed",
-    max: "bare soil",
+    // ⚠️ (2026-08-14) اتصلح: كان متكتوب هنا تدرّج برتقالي->أبيض->بنفسجي
+    // ("PuOr") بينما الكولورماب الحقيقي المستخدم فعليًا لـ BSI في
+    // getIndexPreviewStyle هو "rdbu_r" (زي SIPI/PSRI فوق) — ديفيرجينج
+    // أزرق->أبيض->أحمر. التدرّج هنا اتصلح عشان يطابق فعليًا اللي بيتلوّن
+    // على الخريطة.
+    gradient: "linear-gradient(90deg,#053061,#2166ac,#4393c3,#d1e5f0,#fddbc7,#f4a582,#d6604d,#b2182b,#67001f)",
+    min: "vegetated (blue)",
+    mid: "mixed (white/tan)",
+    max: "bare soil (red)",
   },
   NDRE: {
     label: "NDRE red-edge chlorophyll",
@@ -605,6 +662,167 @@ export const SATELLITE_LEGENDS: Record<SatelliteAnalysisType, {
     mid: "moderate",
     max: "high chlorophyll",
     meaning: ["NIR × (Red / Green²) — most useful from early-to-mid crop growth across a wide range of soils and sowing conditions.", "⚠️ Not a normalized ratio like NDVI: its scale depends on the raw reflectance magnitude of the input bands, so its useful range shifts more between scenes/sensors than NDVI-style indices."],
+  },
+  VARI: {
+    label: "VARI visible vegetation (no NIR)",
+    gradient: "linear-gradient(90deg,#8b0000,#e31a1c,#fd8d3c,#ffe600,#a6d96a,#31a354,#006837)",
+    min: "-1",
+    mid: "0",
+    max: "+1",
+    meaning: ["(Green-Red)/(Green+Red-Blue) — built only from visible bands (no NIR), so it works on true-color-only imagery where NDVI-style indices can't.", "More sensitive to atmospheric haze and less standardized than NDVI; best as a quick visual-only vegetation check, not a substitute for NDVI where NIR is available."],
+  },
+  RED_EDGE: {
+    label: "S2REP red-edge position (nm)",
+    // ⚠️ (2026-08-11) مش normalized-difference زي NDRE — دي قيمة "طول موجي"
+    // فعلية بالنانومتر (~700-740nm)، فمداها مختلف تمامًا. القيمة كل ما تعلى
+    // (تتحرك نحو 720-740) كل ما يبقى فيه كلوروفيل/نيتروجين أكتر في المحصول.
+    gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#4575b4,#313695)",
+    min: "~700nm (stressed/sparse)",
+    mid: "~715nm (moderate)",
+    max: "~730-740nm (dense, high chlorophyll)",
+    meaning: ["S2REP: interpolates the wavelength (nm) where reflectance rises fastest between Red and NIR, using B04/B05/B06/B07. Distinct from NDRE (which is a normalized ratio, not a wavelength).", "Sensitive to canopy chlorophyll/nitrogen status, and — unlike NDVI/NDRE — tends not to saturate on dense mature canopy, so it stays informative later in the season too."],
+  },
+  MTVI: {
+    label: "MTVI2 modified triangular vegetation",
+    gradient: "linear-gradient(90deg,#8b0000,#e31a1c,#fd8d3c,#ffe600,#a6d96a,#31a354,#006837)",
+    min: "bare soil / sparse",
+    mid: "moderate cover",
+    max: "dense, high chlorophyll",
+    meaning: ["MTVI2 (Haboudane et al. 2004): normalized triangular-area index built from NIR/Red/Green reflectance, sensitive to leaf area/chlorophyll while staying resistant to soil background and — like MSAVI2 — mostly self-correcting for canopy density.", "Similar -1..1-ish normalized scale to NDVI-family indices, but built on a different geometric (triangle-area) formulation instead of a normalized difference."],
+  },
+  TVI: {
+    label: "TVI triangular vegetation",
+    // ⚠️ (2026-08-14) اتصلح: كان متكتوب هنا تدرّج "OrRd" (تسلسلي فاتح->غامق)
+    // بينما الكولورماب الحقيقي المستخدم فعليًا في getIndexPreviewStyle
+    // (SatelliteDataPanel.tsx) هو "spectral" (rainbow ديفيرجينج: أحمر->
+    // برتقالي->أصفر->أخضر->أزرق->بنفسجي) — ده اللي كان بيخلي الألوان على
+    // الخريطة (أحمر/أخضر/أزرق متبعثرة) تبان "غلط" بالمقارنة باللجند اللي
+    // كان بيوعد بتدرّج واحد بس من الفاتح للأحمر الغامق. التدرّج هنا اتصلح
+    // عشان يطابق فعليًا الـ "spectral" (نفس تدرّج SAVI اللي بيستخدم نفس
+    // الكولورماب فوق).
+    gradient: "linear-gradient(90deg,#9e0142,#f46d43,#fee08b,#abdda4,#3288bd,#5e4fa2)",
+    min: "0 = low canopy chlorophyll (red)",
+    mid: "~25 = moderate (yellow-green)",
+    max: "50 = high canopy chlorophyll (blue/purple)",
+    meaning: ["Broge & Leblanc (2000): estimates the area of the triangle formed by the Green, Red and NIR reflectance points — a larger triangle area means more chlorophyll absorption in Red and more NIR reflectance from canopy structure.", "⚠️ Not a normalized ratio like NDVI: its scale depends on the raw reflectance magnitude of the input bands, so treat the range as relative within one AOI/date rather than a fixed universal scale."],
+  },
+  GRVI: {
+    label: "GRVI green-red vegetation (no NIR)",
+    gradient: "linear-gradient(90deg,#8b0000,#e31a1c,#fd8d3c,#ffe600,#a6d96a,#31a354,#006837)",
+    min: "-1",
+    mid: "0",
+    max: "+1",
+    meaning: ["(Green-Red)/(Green+Red) — visible-only vegetation greenness, no NIR needed, so it works on true-color-only imagery same as VARI.", "Simpler and more haze-sensitive than VARI (no Blue correction term); best as a quick relative greenness check, not a substitute for NDVI where NIR is available."],
+  },
+  RECI: {
+    label: "RECI red-edge chlorophyll (simple ratio)",
+    gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#4575b4,#313695)",
+    min: "low chlorophyll",
+    mid: "moderate",
+    max: "high chlorophyll",
+    meaning: ["(NIR/RedEdge) − 1 — a simple-ratio red-edge chlorophyll index, same B05 dependency as NDRE so it's Sentinel-2 only (Landsat has no red-edge band).", "Unlike NDRE's normalized-difference shape, RECI is a ratio and is NOT bounded to -1..1 — its useful range is typically ~0..3 on vegetated canopy."],
+  },
+  SIPI: {
+    label: "SIPI pigment ratio (carotenoid/chlorophyll)",
+    // ⚠️ (2026-08-14) اتصلح: كان متكتوب هنا تدرّج أحمر->برتقالي->أخضر بينما
+    // الكولورماب الحقيقي المستخدم فعليًا في getIndexPreviewStyle
+    // (SatelliteDataPanel.tsx) هو "rdbu_r" (ديفيرجينج أزرق->أبيض->أحمر،
+    // زي NDWI بس معكوس). التدرّج هنا اتصلح عشان يطابق فعليًا اللي بيتلوّن
+    // على الخريطة.
+    gradient: "linear-gradient(90deg,#053061,#2166ac,#4393c3,#d1e5f0,#fddbc7,#f4a582,#d6604d,#b2182b,#67001f)",
+    min: "0 = low ratio, high chlorophyll relative to carotenoids (blue)",
+    mid: "~1 = moderate (white/tan)",
+    max: "2 = high ratio, canopy/pigment stress (red)",
+    meaning: ["(NIR − Blue) / (NIR − Red) — Structure Insensitive Pigment Index, a ratio of carotenoid to chlorophyll absorption used as a canopy-stress signal that's less sensitive to canopy structure/LAI than NDVI.", "Typical literature range is roughly 0..2 on vegetation; values well outside that on this AOI usually mean sparse/mixed cover rather than pigment stress."],
+  },
+  GCI: {
+    label: "GCI green chlorophyll (simple ratio)",
+    // ⚠️ (2026-08-14) اتصلح: كان متكتوب هنا نفس تدرّج GNDVI (برتقالي->أصفر->
+    // أخضر، "gndvi_warm") بينما الكولورماب الحقيقي المستخدم فعليًا لـ GCI في
+    // getIndexPreviewStyle هو "greens" العادي (تسلسلي أصفر فاتح جدًا -> أخضر
+    // غامق، من غير أي برتقالي). التدرّج هنا اتصلح عشان يطابق فعليًا اللي
+    // بيتلوّن على الخريطة (نفس تدرّج "greens" المستخدم في NDMI فوق).
+    gradient: "linear-gradient(90deg,#ffffe5,#f7fcb9,#d9f0a3,#addd8e,#78c679,#41ab5d,#238443,#005a32)",
+    min: "0 = low chlorophyll (pale)",
+    mid: "~2 = moderate",
+    max: "4+ = high chlorophyll (dark green)",
+    meaning: ["(NIR/Green) − 1 — a simple-ratio chlorophyll index, same Green+NIR bands as GNDVI but without the normalized-difference bounding.", "Like RECI, this is a ratio and NOT bounded to -1..1 — its useful range is typically ~0..4+ on vegetated canopy, higher for denser/darker-green cover."],
+  },
+  PSRI: {
+    label: "PSRI plant senescence / stress",
+    // ⚠️ (2026-08-14) اتصلح: كان متكتوب هنا تدرّج أخضر->أصفر->أحمر (زي
+    // "RdYlGn" معكوس) بينما الكولورماب الحقيقي المستخدم فعليًا لـ PSRI في
+    // getIndexPreviewStyle هو "rdbu_r" (نفس المستخدم في SIPI فوق) —
+    // ديفيرجينج أزرق->أبيض->أحمر، من غير أي أخضر خالص. التدرّج هنا اتصلح
+    // عشان يطابق فعليًا اللي بيتلوّن على الخريطة.
+    gradient: "linear-gradient(90deg,#053061,#2166ac,#4393c3,#d1e5f0,#fddbc7,#f4a582,#d6604d,#b2182b,#67001f)",
+    min: "-0.2 = healthy, high chlorophyll (blue)",
+    mid: "~0 (white/tan)",
+    max: "+0.2 = senescent / stressed / low chlorophyll (red)",
+    meaning: ["(Red − Blue) / RedEdge2 (Merzlyak et al. 1999) — ratio of carotenoid- to chlorophyll-sensitive reflectance, tracking leaf senescence and fruit ripening. Needs B06 (RedEdge2), so Sentinel-2 only, same as RECI.", "Typical healthy-canopy range is roughly -0.1..0, rising toward +0.2 as leaves senesce or canopy is under stress — opposite sign convention from NDVI-style indices, where higher usually means healthier."],
+  },
+  NBRI: {
+    label: "NBRI burn severity",
+    // ⚠️ (2026-08-13) نفس "rdylgn" اللي NDVI/MSAVI2/VARI بتستخدمه — لازم
+    // تفضل مطابقة لـ colormap الحقيقي في getIndexPreviewStyle (SatelliteDataPanel.tsx)
+    // عشان اللون هنا في اللجند يطابق فعليًا اللي ظاهر على الخريطة.
+    gradient: "linear-gradient(90deg,#8b0000,#e31a1c,#fd8d3c,#ffe600,#a6d96a,#31a354,#006837)",
+    min: "burned / severe damage",
+    mid: "unburned baseline",
+    max: "healthy / dense vegetation",
+    meaning: ["(NIR − SWIR2) / (NIR + SWIR2) — same normalized-difference shape as NDVI, using B08/B12 (Sentinel-2) or nir08/swir22 (Landsat) instead of NIR/Red.", "Low/negative values flag recently burned or bare ground (low NIR, high SWIR2 from ash/exposed soil); high values indicate healthy, moisture-retaining vegetation. Comparing pre- and post-fire NBRI (dNBR) is the standard way to map burn severity, but this single-date version already highlights likely burn scars."],
+  },
+  MSI: {
+    label: "MSI moisture stress",
+    // colormap الحقيقي (getIndexPreviewStyle) هو "rdbu_r" زي RECI/GCI —
+    // ديفيرجينج أزرق(صحي)->أحمر(إجهاد)، مش تسلسلي.
+    gradient: "linear-gradient(90deg,#2166ac,#4393c3,#d1e5f0,#fddbc7,#f4a582,#d6604d,#b2182b)",
+    min: "0.2 = wet / low stress (blue)",
+    mid: "~1 = moderate",
+    max: "2+ = severe water stress (red)",
+    meaning: ["SWIR1/NIR simple ratio (B11/B08) — unlike NDMI (same two bands, normalized-difference shape), MSI is a plain ratio and is NOT bounded to -1..1.", "Rises as canopy/soil moisture drops (SWIR1 absorption weakens relative to NIR reflectance); best read alongside NDMI rather than in isolation."],
+  },
+  NDSI: {
+    label: "NDSI snow/ice cover",
+    // colormap الحقيقي "rdbu" (مش معكوس) — قيمة عالية (ثلج/جليد) = أزرق، زي NDWI للمية.
+    gradient: "linear-gradient(90deg,#67001f,#d6604d,#fddbc7,#d1e5f0,#4393c3,#2166ac)",
+    min: "-0.2 = no snow/ice",
+    mid: "~0.2 (mixed/ambiguous)",
+    max: "0.6+ = snow/ice cover (blue)",
+    meaning: ["(Green − SWIR1) / (Green + SWIR1), B03/B11 — snow/ice reflects strongly in visible but absorbs strongly in SWIR1, which drives the normalized difference up.", "Literature threshold for confident snow/ice presence is typically NDSI > 0.4; values below that are more likely clouds, bare rock, or mixed pixels."],
+  },
+  OSI: {
+    label: "OSI oil spill index (optical, heuristic)",
+    // colormap "rdbu_r" زي MSI/RECI — قيمة منخفضة = مية نضيفة (أزرق)، قيمة
+    // عالية = احتمال بقعة زيت/شريط سطحي (أحمر).
+    gradient: "linear-gradient(90deg,#2166ac,#4393c3,#d1e5f0,#fddbc7,#f4a582,#d6604d,#b2182b)",
+    min: "clean water (blue)",
+    mid: "ambiguous / sun-glint risk",
+    max: "possible oil sheen (red)",
+    meaning: ["Visible-only ratio (Blue,Green,Red — B02/B03/B04) built on the idea that a thin oil film raises visible reflectance and flattens the water's usual blue>green>red spectral slope. ⚠️ There isn't one single agreed optical OSI formula in the literature (unlike NDVI) — treat this as a heuristic screening layer, not a validated detector.", "⚠️ Optical (Sentinel-2) oil-spill detection is fundamentally weaker than SAR: sun-glint, foam, algae blooms, and shallow-water turbidity all produce a similar visible signature. Sentinel-1 VV/VH (already in this pipeline) is the more reliable source for actual spill mapping — use OSI only as a quick optical cross-check, and confirm anything it flags against a same-date SAR pass before reporting it."],
+  },
+  RENDVI: {
+    label: "RENDVI red-edge NDVI",
+    // نفس شكل normalized-difference زي NDRE (colormap "spectral_r" في
+    // getIndexPreviewStyle) — بس هنا الاتنين bands red-edge (B06,B05) مش
+    // NIR/RedEdge زي NDRE، فأدق حتى من NDRE في تمييز إجهاد الكلوروفيل المبكر.
+    gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#4575b4,#313695)",
+    min: "low chlorophyll (red/orange)",
+    mid: "moderate (yellow)",
+    max: "high chlorophyll (blue)",
+    meaning: ["(RedEdge2 − RedEdge1) / (RedEdge2 + RedEdge1) — B06/B05. Same normalized-difference shape as NDRE, but built entirely from the red-edge region instead of swapping in NIR, so it's even more sensitive to early chlorophyll/nitrogen stress before it shows up in NDVI or NDRE.", "Same B05/B06 dependency as NDRE/RED_EDGE — Sentinel-2 only, Landsat has no red-edge band."],
+  },
+  REIP: {
+    label: "REIP red-edge inflection point (nm, classic)",
+    // ⚠️ نفس فكرة RED_EDGE (S2REP) فوق — قيمة طول موجي بالنانومتر مش
+    // normalized-difference — لكن دي معادلة مختلفة (Guyot & Baret 1988
+    // الكلاسيكية) مش Frampton et al. 2013. نفس colormap/مدى زي RED_EDGE
+    // (spectral_r، ~700-740nm) عشان الاتنين بيتقروا بنفس المنطق.
+    gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#4575b4,#313695)",
+    min: "~700nm (stressed/sparse)",
+    mid: "~715nm (moderate)",
+    max: "~730-740nm (dense, high chlorophyll)",
+    meaning: ["Guyot & Baret (1988) classic linear formula: 700 + 40 × ((Red+RedEdge3)/2 − RedEdge1) / (RedEdge2 − RedEdge1), using B04/B05/B06/B07. Same four bands and output range as RED_EDGE (S2REP), but a different — older — set of coefficients, so the two won't produce identical pixel values even on the same scene.", "Same interpretation direction as RED_EDGE: higher wavelength (toward 730-740nm) means more canopy chlorophyll/nitrogen, and it tends not to saturate on dense mature canopy the way NDVI/NDRE do."],
   },
 
   // ── Sentinel-1 (Radar) ──────────────────────────────────────────────────

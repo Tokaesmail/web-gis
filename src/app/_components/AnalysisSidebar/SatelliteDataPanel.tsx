@@ -696,6 +696,21 @@ const displayVertices = useMemo(() => {
     { key: "NDDI", label: "NDDI", desc: "Drought index (NDVI + NDWI)", color: "#f97316" },
     { key: "SI", label: "SI", desc: "Soil salinity", color: "#dc2626" },
     { key: "CVI", label: "CVI", desc: "Chlorophyll vegetation (early-mid season)", color: "#22c55e" },
+    { key: "VARI", label: "VARI", desc: "Visible-only vegetation (no NIR needed)", color: "#4d7c0f" },
+    { key: "RED_EDGE", label: "Red Edge (S2REP)", desc: "Red-edge position, nm — chlorophyll/nitrogen", color: "#ca8a04" },
+    { key: "MTVI", label: "MTVI2", desc: "Modified triangular vegetation (soil/canopy corrected)", color: "#65a30d" },
+    { key: "TVI", label: "TVI", desc: "Triangular vegetation (chlorophyll)", color: "#e34a33" },
+    { key: "GRVI", label: "GRVI", desc: "Green-red vegetation (visible-only, no NIR)", color: "#2166ac" },
+    { key: "RECI", label: "RECI", desc: "Red-edge chlorophyll (simple ratio)", color: "#ca8a04" },
+    { key: "SIPI", label: "SIPI", desc: "Pigment ratio (carotenoid/chlorophyll stress)", color: "#e34a33" },
+    { key: "GCI", label: "GCI", desc: "Green chlorophyll (simple ratio)", color: "#16a34a" },
+    { key: "PSRI", label: "PSRI", desc: "Plant senescence / stress (inverted scale)", color: "#d73027" },
+    { key: "NBRI", label: "NBRI", desc: "Burn severity (NIR/SWIR2)", color: "#31a354" },
+    { key: "MSI", label: "MSI", desc: "Moisture stress (SWIR1/NIR ratio)", color: "#c2410c" },
+    { key: "NDSI", label: "NDSI", desc: "Snow / ice cover (Green,SWIR1)", color: "#2166ac" },
+    { key: "OSI", label: "OSI", desc: "Oil spill index (optical, heuristic — visible bands)", color: "#7c3aed" },
+    { key: "RENDVI", label: "RENDVI", desc: "Red-edge NDVI (early chlorophyll stress)", color: "#65a30d" },
+    { key: "REIP", label: "REIP", desc: "Red-edge inflection point, nm (classic formula)", color: "#ca8a04" },
     // Sentinel-1 (Radar)
     { key: "VV", label: "VV", desc: "Co-polarized backscatter", color: "#818cf8" },
     { key: "VH", label: "VH", desc: "Cross-polarized backscatter", color: "#c084fc" },
@@ -994,6 +1009,15 @@ const scenes = useMemo(
             type: "cvi",
           };
 
+        case "NBRI":
+          // Normalized Burn Ratio — same normalized-difference shape as
+          // NDMI/NDVI, just NIR vs SWIR2 (swir22) instead of SWIR1/Red.
+          return {
+            assets: ["nir08", "swir22"],
+            expression: "(nir08-swir22)/(nir08+swir22)",
+            type: "nbri",
+          };
+
         default:
           return {
             assets: ["red", "green", "blue"],
@@ -1110,6 +1134,135 @@ const scenes = useMemo(
           assets: ["B08", "B04", "B03"],
           expression: "(B08/10000)*((B04/10000)/((B03/10000)*(B03/10000)))",
           type: "cvi",
+        };
+
+      case "VARI":
+        return {
+          assets: ["B03", "B04", "B02"],
+          expression: "(B03-B04)/(B03+B04-B02)",
+          type: "vari",
+        };
+
+      case "RED_EDGE":
+        // S2REP — Sentinel-2 only (زي NDRE/CCCI محتاج B05/B06/B07)
+        return {
+          assets: ["B04", "B05", "B06", "B07"],
+          expression: "705+35*(((B07+B04)/2-B05)/(B06-B05))",
+          type: "red_edge",
+        };
+
+      case "GRVI":
+        return {
+          assets: ["B03", "B04"],
+          expression: "(B03-B04)/(B03+B04)",
+          type: "grvi",
+        };
+
+      case "TVI":
+        // ⚠️ لازم نحوّل الباندات لـ "percent reflectance" (÷10000 ثم ×100)
+        // قبل الحساب — زي نفس فكرة تطبيع CVI، من غيرها الناتج بيتضخم بمقياس
+        // خاطئ (شوفي case TVI في route.ts للتفاصيل).
+        return {
+          assets: ["B08", "B04", "B03"],
+          expression: "0.5*(120*((B08/10000)*100-(B03/10000)*100)-200*((B04/10000)*100-(B03/10000)*100))",
+          type: "tvi",
+        };
+
+      case "MTVI":
+        // MTVI2 — لازم انعكاس حقيقي 0..1 (÷10000) زي CVI/TVI فوق.
+        return {
+          assets: ["B08", "B04", "B03"],
+          expression:
+            "1.5*(1.2*((B08/10000)-(B03/10000))-2.5*((B04/10000)-(B03/10000)))/sqrt((2*(B08/10000)+1)*(2*(B08/10000)+1)-(6*(B08/10000)-5*sqrt(B04/10000))-0.5)",
+          type: "mtvi",
+        };
+
+      case "RECI":
+        // Red-Edge Chlorophyll Index — Sentinel-2 only (زي NDRE/CCCI محتاج B05)
+        return {
+          assets: ["B08", "B05"],
+          expression: "(B08/B05)-1",
+          type: "reci",
+        };
+
+      case "SIPI":
+        return {
+          assets: ["B08", "B02", "B04"],
+          expression: "(B08-B02)/(B08-B04)",
+          type: "sipi",
+        };
+
+      case "GCI":
+        return {
+          assets: ["B08", "B03"],
+          expression: "(B08/B03)-1",
+          type: "gci",
+        };
+
+      case "PSRI":
+        // Plant Senescence Reflectance Index — Sentinel-2 only (محتاج B06 red-edge2)
+        return {
+          assets: ["B04", "B02", "B06"],
+          expression: "(B04-B02)/B06",
+          type: "psri",
+        };
+
+      case "NBRI":
+        // Normalized Burn Ratio — (NIR-SWIR2)/(NIR+SWIR2), B08/B12. Same
+        // normalized-difference shape as NDVI/NDMI so no /10000 needed.
+        return {
+          assets: ["B08", "B12"],
+          expression: "(B08-B12)/(B08+B12)",
+          type: "nbri",
+        };
+
+      case "MSI":
+        // Moisture Stress Index — SWIR1/NIR simple ratio (NOT a normalized
+        // difference like NDMI, which uses the same two bands). No /10000
+        // needed — scale-invariant like a ratio.
+        return {
+          assets: ["B11", "B08"],
+          expression: "B11/B08",
+          type: "msi",
+        };
+
+      case "NDSI":
+        // Normalized Difference Snow Index — (Green-SWIR1)/(Green+SWIR1), B03/B11.
+        return {
+          assets: ["B03", "B11"],
+          expression: "(B03-B11)/(B03+B11)",
+          type: "ndsi",
+        };
+
+      case "OSI":
+        // ⚠️ Oil Spill Index — visible-only heuristic (Red,Blue,Green), NOT a
+        // validated/standardized index like NDVI. See SATELLITE_LEGENDS.OSI /
+        // route.ts osi config for the full caveat (optical detection is much
+        // weaker than SAR — cross-check against VV/VH before trusting it).
+        return {
+          assets: ["B04", "B02", "B03"],
+          expression: "((B04+B02)-B03)/((B04+B02)+B03)",
+          type: "osi",
+        };
+
+      case "RENDVI":
+        // Red-Edge NDVI — زي NDRE بس الاتنين bands red-edge (B06,B05) مش
+        // NIR/RedEdge — Sentinel-2 only (محتاج B05/B06 زي NDRE/RECI/CCCI)
+        return {
+          assets: ["B06", "B05"],
+          expression: "(B06-B05)/(B06+B05)",
+          type: "rendvi",
+        };
+
+      case "REIP":
+        // Red Edge Inflection Point (Guyot & Baret 1988 الكلاسيكية) — نفس
+        // بانداتات RED_EDGE (S2REP) فوق (B04/B05/B06/B07) بس معادلة مختلفة
+        // (700+40×... بدل 705+35×...)، فمش هتدّي نفس القيمة بالظبط رغم إنها
+        // بتقيس نفس الحاجة فعليًا.
+        return {
+          assets: ["B04", "B05", "B06", "B07"],
+          expression: "700+40*(((B04+B07)/2-B05)/(B06-B05))",
+          type: "reip",
         };
 
       default:
@@ -1284,6 +1437,76 @@ useEffect(() => {
         // بعد التطبيع لانعكاس حقيقي (÷10000)، CVI بيقع في مدى نموذجي ~0..15
         // (مش normalized-difference -1..1 زي باقي المؤشرات).
         return { rescale: "0,15", colormap: "cvi_ocean", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "VARI":
+        // زي NDVI تقريبًا (-1..+1) بس مبني على visible bands بس (من غير NIR)
+        return { rescale: "-0.3,0.6", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "RED_EDGE":
+        // ⚠️ (2026-08-11) S2REP: مش -1..1 زي باقي المؤشرات — دي قيمة طول موجي
+        // فعلية بالنانومتر (~700-740nm)، فمداها مختلف تمامًا. الـ colormap هنا
+        // هو مصدر اللون الحقيقي على الخريطة (defaultColormap في route.ts fallback بس).
+        return { rescale: "700,740", colormap: "spectral_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "GRVI":
+        // زي VARI/NDVI تقريبًا (-1..+1) بس visible-only، من غير Blue correction
+        return { rescale: "-0.3,0.5", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "TVI":
+        // ⚠️ (2026-08-11) مش normalized-difference — بعد تطبيع percent-reflectance
+        // (÷10000 ×100) بيقع في مدى نموذجي تقريبي ~0..50 (زي CVI، لازم تتظبط
+        // لو شوفتي قيم حقيقية مختلفة بعد ما تبعتي الـ route).
+        return { rescale: "0,50", colormap: "spectral", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "MTVI":
+        // MTVI2 — بعد التطبيع (÷10000) بيقع في مدى قريب من NDVI تقريبًا (-1..1)
+        return { rescale: "-1,1", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "RECI":
+        // ⚠️ (2026-08-11) simple ratio زي CVI — مش -1..1. مداه النموذجي على
+        // غطاء نباتي ~0..3.
+        return { rescale: "0,3", colormap: "spectral_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "SIPI":
+        // ⚠️ (2026-08-11) simple ratio (carotenoid/chlorophyll) — مداه
+        // النموذجي على غطاء نباتي ~0..2. "rdbu_r" (زي BSI) مش "rdylgn_r" —
+        // اسم مش متأكد إنه موجود جوه RAMPS. قيمة منخفضة = كلوروفيل صحي،
+        // قيمة عالية = إجهاد.
+        return { rescale: "0,2", colormap: "rdbu_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "GCI":
+        // ⚠️ (2026-08-11) simple ratio زي RECI — مش -1..1. مداه النموذجي على
+        // غطاء نباتي ~0..4+.
+        return { rescale: "0,4", colormap: "greens", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "PSRI":
+        // ⚠️ (2026-08-11) عكس اتجاه NDVI — سالب = صحي/كلوروفيل عالي، موجب =
+        // إجهاد/شيخوخة. "rdbu_r" (زي BSI/SIPI) عشان قيمة منخفضة=أخضر صحي.
+        return { rescale: "-0.2,0.2", colormap: "rdbu_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "NBRI":
+        // ⚠️ (2026-08-13) نفس اتجاه NDVI (normalized-difference -1..1) —
+        // "rdylgn" هنا زي NDVI/MSAVI2/VARI عمدًا، عشان اللون يطابق SATELLITE_LEGENDS.NBRI
+        // (أحمر=محروق/تلف شديد → أصفر=خط أساس → أخضر=غطاء نباتي صحي).
+        return { rescale: "-0.5,0.7", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "MSI":
+        // ⚠️ (2026-08-14) simple ratio زي RECI/GCI — مش -1..1. مداه النموذجي
+        // ~0.2 (رطب/صحي) لحد 2+ (إجهاد مائي شديد). "rdbu_r" زي BSI/PSRI —
+        // قيمة منخفضة=أزرق (صحي)، قيمة عالية=أحمر (إجهاد).
+        return { rescale: "0.2,2", colormap: "rdbu_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "NDSI":
+        // ⚠️ (2026-08-14) normalized-difference زي NDWI — "rdbu" (مش معكوس)
+        // عشان الثلج/الجليد (قيمة عالية) يطلع أزرق زي المية في NDWI. عتبة
+        // الأدبيات المعتادة لوجود ثلج/جليد هي NDSI > 0.4.
+        return { rescale: "-0.2,0.6", colormap: "rdbu", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "OSI":
+        // ⚠️ (2026-08-14) Oil Spill Index — heuristic visible-only ratio، مش
+        // -1..1 كامل زي NDVI (مداه العملي أضيق بكتير). "rdbu_r" زي MSI —
+        // قيمة منخفضة=مية نضيفة (أزرق)، قيمة عالية=احتمال شريط زيت (أحمر).
+        // ⚠️ ده كشف optical تقريبي بس — sun-glint/رغوة/طحالب ممكن تدّي نفس
+        // الإشارة. لازم يتأكد بمقارنة مع VV/VH (SAR) قبل ما يتقال إنه بقعة زيت فعلية.
+        return { rescale: "-0.3,0.3", colormap: "rdbu_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "RENDVI":
+        // ⚠️ (2026-08-14) normalized-difference زي NDRE بس الاتنين bands
+        // red-edge (B06,B05) — مداها العملي أضيق شوية من NDRE. "spectral_r"
+        // زي NDRE/RECI بالظبط عشان تتقري بنفس المنطق.
+        return { rescale: "0,0.3", colormap: "spectral_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "REIP":
+        // ⚠️ (2026-08-14) زي RED_EDGE (S2REP) بالظبط في المدى والـ colormap
+        // (طول موجي بالنانومتر ~700-740nm، مش -1..1) — بس معادلة Guyot &
+        // Baret 1988 الكلاسيكية بدل Frampton 2013، فمش هتدّي نفس القيمة
+        // بالظبط حتى على نفس الصورة.
+        return { rescale: "700,740", colormap: "spectral_r", alphaLow: "0.03", alphaHigh: "0.22" };
 
       // ⚠️ القيم تحت (rescale) placeholder مبني على مدى نظري للبيانات —
       // لازم تتظبط لما نشوف قيم حقيقية راجعة من الباك بعد ما تبعتي الـ route.

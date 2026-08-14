@@ -129,10 +129,6 @@ export async function GET(req: NextRequest) {
       { headers: { "Cache-Control": "public, max-age=300" } }
     );
   } catch (err) {
-    // 👇 (2) بنطبع تفاصيل الخطأ كاملة في السيرفر (terminal بتاع npm run dev)
-    // كمان، مش بس نرجعها في الـ response — أحيانًا err.cause بيحتوي معلومات
-    // إضافية (زي TLS/certificate errors) اللي مش دايمًا بتتسلسل صح جوه
-    // NextResponse.json.
     console.error("[raster-statistics] failed for", url, err);
     return NextResponse.json(
       { error: `Failed to read statistics: ${describeFetchError(err)}` },
