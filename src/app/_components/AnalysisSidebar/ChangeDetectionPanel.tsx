@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
 import { clipImageToPolygon, getPolygonRing } from "./geoClipUtils";
+import {
+  SOURCE_META,
+  SOURCE_INDICES,
+  SOURCE_COLLECTIONS,
+  type SatSource,
+} from "./SatellitePipelines";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // PreviewKey = every entry that shows up in the "Index to compare" list.
@@ -13,9 +19,53 @@ import { clipImageToPolygon, getPolygonRing } from "./geoClipUtils";
 //                   compare, but there's no single scalar index to classify a
 //                   pixel-level "change map" from, so Run Change Detection is
 //                   disabled for these and the UI explains why.
-type PreviewKey = "RGB" | "NDVI" | "NDWI" | "NDMI" | "NDBI" | "SAVI" | "EVI" | "BSI" | "SWIR";
+type PreviewKey =
+  | "RGB" | "NDVI" | "NDWI" | "NDMI" | "NDBI" | "SAVI" | "EVI" | "BSI" | "SWIR"
+  // ── Sentinel-2-only add-on indices (mirrors SOURCE_INDICES["sentinel-2"] /
+  // SatelliteDataPanel.tsx getVisualization()+getIndexPreviewStyle()) — added
+  // here as visual preview/swipe-compare options only. They are NOT added to
+  // ChangeIndexKey below because route.ts's change_* branch (search
+  // "change_ndvi") only implements server-side Gain/Loss classification for
+  // the original 7 (NDVI/NDWI/NDMI/NDBI/SAVI/EVI/BSI) — adding the type here
+  // without backend support would silently 400 on Run Change Detection.
+  | "NDRE" | "GNDVI" | "MSAVI2" | "CCCI" | "NDDI" | "SI" | "CVI"
+  | "VARI" | "RED_EDGE"
+  | "MTVI" | "TVI" | "GRVI"
+  | "RECI" | "SIPI" | "GCI" | "PSRI"
+  | "NBRI"
+  | "MSI" | "NDSI" | "OSI"
+  | "RENDVI" | "REIP"
+  | "NMDI_SOIL" | "NMDI_VEG" | "ARI" | "ARI2"
+  | "CMR" | "FMR" | "IOI" | "NDCI" | "FAI"
+  | "MNDWI" | "GEMI" | "MCARI" | "CRI1" | "CRI2"
+  | "CI" | "EVI2" | "MTCI" | "NDVI705" | "NDTI" | "TCARI"
+  // ── Cross-satellite add-ons (2026-08-18) — same "satellite picker" idea as
+  // SatelliteDataPanel.tsx: pick a satellite (SOURCE_META), then only that
+  // satellite's own indices show here (SOURCE_INDICES), same as the Satellite
+  // Data tab. VV/VH (Sentinel-1 SAR) and ELEVATION (Copernicus DEM) are the
+  // first non-optical sources wired end-to-end (route.ts already had
+  // change_vv/change_vh; change_elevation added alongside this). The rest of
+  // SOURCE_INDICES per source (RATIO/SAR_RGB/FLOOD/SLOPE/HILLSHADE/ASPECT/
+  // CONTOURS, and all of Sentinel-5P/MODIS/ASTER/Sentinel-3) render fine in
+  // Satellite Data (single-scene view) but aren't 2-date diffable here yet —
+  // several of them (Sentinel-3/5P/MODIS-non-COG assets) go through a
+  // different TiTiler-xarray pipeline entirely (see SatellitePipelines.ts
+  // TITILER_STYLES), not the /api/raster-proxy/analyze bandCount/formula
+  // pipeline this panel's diff (renderChange in route.ts) relies on — so they
+  // need that backend work first, not just a frontend PREVIEW_DEFS entry.
+  | "VV" | "VH" | "ELEVATION";
 // Subset that supports real server-side change classification.
-type ChangeIndexKey = "NDVI" | "NDWI" | "NDMI" | "NDBI" | "SAVI" | "EVI" | "BSI";
+// ⚠️ (2026-08-16) Added the 9 indices that used to be preview/swipe-only —
+// route.ts now has matching change_<index> branches for all of these too.
+type ChangeIndexKey =
+  | "NDVI" | "NDWI" | "NDMI" | "NDBI" | "SAVI" | "EVI" | "BSI"
+  | "NBRI" | "GCI" | "VARI" | "RED_EDGE" | "MTVI" | "TVI" | "GRVI" | "MSI" | "NDSI"
+  // (2026-08-16 batch 2) — the rest of the previously preview-only indices.
+  | "NDRE" | "GNDVI" | "MSAVI2" | "CCCI" | "NDDI" | "SI" | "CVI" | "RECI" | "SIPI"
+  | "PSRI" | "OSI" | "RENDVI" | "REIP" | "NMDI_SOIL" | "NMDI_VEG" | "ARI" | "ARI2"
+  | "CMR" | "FMR" | "IOI" | "NDCI" | "FAI" | "MNDWI" | "GEMI" | "MCARI" | "CRI1" | "CRI2"
+  | "CI" | "EVI2" | "MTCI" | "NDVI705" | "NDTI" | "TCARI"
+  | "VV" | "VH" | "ELEVATION";
 type ChangeDirection = "increase" | "decrease" | "both";
 
 export interface ChangeDetectionPreviewConfig {
@@ -122,7 +172,291 @@ const PREVIEW_DEFS: Record<PreviewKey, PreviewDef> = {
     label: "SWIR", desc: "False color (SWIR, NIR, Red)", kind: "composite",
     assets: ["B11", "B08", "B04"], color: "#f97316",
   },
+
+  // ── Sentinel-2-only add-on indices ──────────────────────────────────────
+  // All assets/expressions/rescale/colormap below are copied 1:1 from
+  // SatelliteDataPanel.tsx's Sentinel-2 getVisualization() switch and
+  // getIndexPreviewStyle() so the before/after heatmap here reads exactly
+  // like the single-scene Satellite Data heatmap for the same index.
+  NDRE: {
+    label: "NDRE", desc: "Red-edge chlorophyll (NIR, RedEdge1)", kind: "index",
+    assets: ["B08", "B05"], color: "#4575b4", rescale: "0,0.4", colormap: "spectral_r",
+  },
+  GNDVI: {
+    label: "GNDVI", desc: "Green-band vegetation (NIR, Green)", kind: "index",
+    assets: ["B08", "B03"], color: "#238443", rescale: "-0.2,0.8", colormap: "gndvi_warm",
+  },
+  MSAVI2: {
+    label: "MSAVI2", desc: "Self-adjusting soil vegetation (NIR, Red)", kind: "index",
+    assets: ["B08", "B04"], color: "#31a354", rescale: "-0.2,0.9", colormap: "rdylgn",
+    expression: ([nir, red]) => `(2*${nir}+1-sqrt((2*${nir}+1)*(2*${nir}+1)-8*(${nir}-${red})))/2`,
+  },
+  CCCI: {
+    label: "CCCI", desc: "Canopy chlorophyll/nitrogen (NIR, RedEdge1, Red)", kind: "index",
+    assets: ["B08", "B05", "B04"], color: "#4393c3", rescale: "0,1.2", colormap: "rdbu",
+    expression: ([nir, re1, red]) => `((${nir}-${re1})/(${nir}+${re1}))/((${nir}-${red})/(${nir}+${red}))`,
+  },
+  NDDI: {
+    label: "NDDI", desc: "Drought index (NDVI, NDWI combined)", kind: "index",
+    assets: ["B08", "B04", "B03"], color: "#238443", rescale: "-1,1", colormap: "greens",
+    expression: ([nir, red, green]) =>
+      `(((${nir}-${red})/(${nir}+${red}))-((${green}-${nir})/(${green}+${nir})))/(((${nir}-${red})/(${nir}+${red}))+((${green}-${nir})/(${green}+${nir})))`,
+  },
+  SI: {
+    label: "SI", desc: "Soil salinity (Red, NIR)", kind: "index",
+    assets: ["B04", "B08"], color: "#dc2626", rescale: "-0.3,0.3", colormap: "salinity_clear",
+  },
+  CVI: {
+    label: "CVI", desc: "Chlorophyll vegetation (NIR, Red, Green)", kind: "index",
+    assets: ["B08", "B04", "B03"], color: "#22c55e", rescale: "0,15", colormap: "cvi_ocean",
+    expression: ([nir, red, green]) => `(${nir}/10000)*((${red}/10000)/((${green}/10000)*(${green}/10000)))`,
+  },
+  VARI: {
+    label: "VARI", desc: "Visible vegetation, no NIR (Green, Red, Blue)", kind: "index",
+    assets: ["B03", "B04", "B02"], color: "#31a354", rescale: "-0.3,0.6", colormap: "rdylgn",
+    expression: ([green, red, blue]) => `(${green}-${red})/(${green}+${red}-${blue})`,
+  },
+  RED_EDGE: {
+    label: "RED_EDGE", desc: "S2REP red-edge position (Red, RedEdge1-3)", kind: "index",
+    assets: ["B04", "B05", "B06", "B07"], color: "#4575b4", rescale: "700,740", colormap: "spectral_r",
+    expression: ([red, re1, re2, re3]) => `705+35*(((${re3}+${red})/2-${re1})/(${re2}-${re1}))`,
+  },
+  MTVI: {
+    label: "MTVI", desc: "MTVI2 triangular vegetation (NIR, Red, Green)", kind: "index",
+    assets: ["B08", "B04", "B03"], color: "#31a354", rescale: "-1,1", colormap: "rdylgn",
+    expression: ([nir, red, green]) =>
+      `1.5*(1.2*((${nir}/10000)-(${green}/10000))-2.5*((${red}/10000)-(${green}/10000)))/sqrt((2*(${nir}/10000)+1)*(2*(${nir}/10000)+1)-(6*(${nir}/10000)-5*sqrt(${red}/10000))-0.5)`,
+  },
+  TVI: {
+    label: "TVI", desc: "Triangular vegetation (NIR, Red, Green)", kind: "index",
+    assets: ["B08", "B04", "B03"], color: "#5e4fa2", rescale: "0,50", colormap: "spectral",
+    expression: ([nir, red, green]) =>
+      `0.5*(120*((${nir}/10000)*100-(${green}/10000)*100)-200*((${red}/10000)*100-(${green}/10000)*100))`,
+  },
+  GRVI: {
+    label: "GRVI", desc: "Green-red vegetation, no NIR (Green, Red)", kind: "index",
+    assets: ["B03", "B04"], color: "#31a354", rescale: "-0.3,0.5", colormap: "rdylgn",
+  },
+  RECI: {
+    label: "RECI", desc: "Red-edge chlorophyll ratio (NIR, RedEdge1)", kind: "index",
+    assets: ["B08", "B05"], color: "#4575b4", rescale: "0,3", colormap: "spectral_r",
+    expression: ([nir, re1]) => `(${nir}/${re1})-1`,
+  },
+  SIPI: {
+    label: "SIPI", desc: "Carotenoid/chlorophyll ratio (NIR, Blue, Red)", kind: "index",
+    assets: ["B08", "B02", "B04"], color: "#4393c3", rescale: "0,2", colormap: "rdbu_r",
+    expression: ([nir, blue, red]) => `(${nir}-${blue})/(${nir}-${red})`,
+  },
+  GCI: {
+    label: "GCI", desc: "Green chlorophyll ratio (NIR, Green)", kind: "index",
+    assets: ["B08", "B03"], color: "#238443", rescale: "0,4", colormap: "greens",
+    expression: ([nir, green]) => `(${nir}/${green})-1`,
+  },
+  PSRI: {
+    label: "PSRI", desc: "Plant senescence (Red, Blue, RedEdge2)", kind: "index",
+    assets: ["B04", "B02", "B06"], color: "#b2182b", rescale: "-0.2,0.2", colormap: "rdbu_r",
+    expression: ([red, blue, re2]) => `(${red}-${blue})/${re2}`,
+  },
+  NBRI: {
+    label: "NBRI", desc: "Burn severity (NIR, SWIR2)", kind: "index",
+    assets: ["B08", "B12"], color: "#006837", rescale: "-0.5,0.7", colormap: "rdylgn",
+  },
+  MSI: {
+    label: "MSI", desc: "Moisture stress ratio (SWIR1, NIR)", kind: "index",
+    assets: ["B11", "B08"], color: "#b2182b", rescale: "0.2,2", colormap: "rdbu_r",
+    expression: ([swir1, nir]) => `${swir1}/${nir}`,
+  },
+  NDSI: {
+    label: "NDSI", desc: "Snow/ice index (Green, SWIR1)", kind: "index",
+    assets: ["B03", "B11"], color: "#2166ac", rescale: "-0.2,0.6", colormap: "rdbu",
+  },
+  OSI: {
+    label: "OSI", desc: "Oil spill heuristic (Red, Blue, Green)", kind: "index",
+    assets: ["B04", "B02", "B03"], color: "#b2182b", rescale: "-0.3,0.3", colormap: "rdbu_r",
+    expression: ([red, blue, green]) => `((${red}+${blue})-${green})/((${red}+${blue})+${green})`,
+  },
+  RENDVI: {
+    label: "RENDVI", desc: "Red-edge NDVI (RedEdge2, RedEdge1)", kind: "index",
+    assets: ["B06", "B05"], color: "#4575b4", rescale: "0,0.3", colormap: "spectral_r",
+  },
+  REIP: {
+    label: "REIP", desc: "Red-edge inflection point (Red, RedEdge1-3)", kind: "index",
+    assets: ["B04", "B05", "B06", "B07"], color: "#4575b4", rescale: "700,740", colormap: "spectral_r",
+    expression: ([red, re1, re2, re3]) => `700+40*(((${red}+${re3})/2-${re1})/(${re2}-${re1}))`,
+  },
+  NMDI_SOIL: {
+    label: "NMDI_SOIL", desc: "Soil moisture / drought (NIR, SWIR1, SWIR2)", kind: "index",
+    assets: ["B08", "B11", "B12"], color: "#b2182b", rescale: "0.15,0.85", colormap: "rdbu_r",
+    expression: ([nir, swir1, swir2]) => `(${nir}-(${swir1}-${swir2}))/(${nir}+(${swir1}-${swir2}))`,
+  },
+  NMDI_VEG: {
+    // Exact same formula/bands as NMDI_SOIL — only the colormap direction differs
+    // (rdbu vs rdbu_r) since the same value reads opposite on dense canopy.
+    label: "NMDI_VEG", desc: "Vegetation water content (NIR, SWIR1, SWIR2)", kind: "index",
+    assets: ["B08", "B11", "B12"], color: "#2166ac", rescale: "0.15,0.85", colormap: "rdbu",
+    expression: ([nir, swir1, swir2]) => `(${nir}-(${swir1}-${swir2}))/(${nir}+(${swir1}-${swir2}))`,
+  },
+  ARI: {
+    label: "ARI", desc: "Anthocyanin pigment (Green, RedEdge1)", kind: "index",
+    assets: ["B03", "B05"], color: "#b2182b", rescale: "0,0.2", colormap: "rdbu_r",
+    expression: ([green, re1]) => `(10000/${green})-(10000/${re1})`,
+  },
+  ARI2: {
+    label: "ARI2", desc: "Anthocyanin, leaf-corrected (RedEdge3, Green, RedEdge1)", kind: "index",
+    assets: ["B07", "B03", "B05"], color: "#b2182b", rescale: "0,8", colormap: "rdbu_r",
+    expression: ([re3, green, re1]) => `(${re3}/${green})-(${re3}/${re1})`,
+  },
+  CMR: {
+    label: "CMR", desc: "Clay Minerals Ratio, geology (SWIR1, SWIR2)", kind: "index",
+    assets: ["B11", "B12"], color: "#fca50a", rescale: "0.8,2.5", colormap: "inferno",
+    expression: ([swir1, swir2]) => `${swir1}/${swir2}`,
+  },
+  FMR: {
+    label: "FMR", desc: "Ferrous Minerals Ratio, geology (SWIR1, NIR)", kind: "index",
+    assets: ["B11", "B08"], color: "#ff8000", rescale: "0.2,2", colormap: "hot",
+    expression: ([swir1, nir]) => `${swir1}/${nir}`,
+  },
+  IOI: {
+    label: "IOI", desc: "Iron Oxide ratio, geology (Red, Blue)", kind: "index",
+    assets: ["B04", "B02"], color: "#f97316", rescale: "0.8,2.5", colormap: "magma",
+    expression: ([red, blue]) => `${red}/${blue}`,
+  },
+  NDCI: {
+    label: "NDCI", desc: "Chlorophyll-a, turbid water (RedEdge1, Red)", kind: "index",
+    assets: ["B05", "B04"], color: "#e4460a", rescale: "-0.2,0.4", colormap: "turbo",
+  },
+  FAI: {
+    label: "FAI", desc: "Floating algae index (NIR, Red, SWIR1)", kind: "index",
+    assets: ["B08", "B04", "B11"], color: "#238443", rescale: "-0.05,0.1", colormap: "greens",
+    expression: ([nir, red, swir1]) => `${nir}-(${red}+(${swir1}-${red})*0.1772)`,
+  },
+  MNDWI: {
+    label: "MNDWI", desc: "Water body extraction (Green, SWIR1)", kind: "index",
+    assets: ["B03", "B11"], color: "#2166ac", rescale: "-0.6,0.6", colormap: "rdbu",
+  },
+  GEMI: {
+    label: "GEMI", desc: "Atmosphere-resistant vegetation (NIR, Red)", kind: "index",
+    assets: ["B08", "B04"], color: "#31a354", rescale: "-0.1,1", colormap: "rdylgn",
+    expression: ([nir, red]) =>
+      `(((2*(((${nir}/10000)*(${nir}/10000))-((${red}/10000)*(${red}/10000)))+1.5*(${nir}/10000)+0.5*(${red}/10000))/((${nir}/10000)+(${red}/10000)+0.5))*(1-0.25*((2*(((${nir}/10000)*(${nir}/10000))-((${red}/10000)*(${red}/10000)))+1.5*(${nir}/10000)+0.5*(${red}/10000))/((${nir}/10000)+(${red}/10000)+0.5))))-(((${red}/10000)-0.125)/(1-(${red}/10000)))`,
+  },
+  MCARI: {
+    label: "MCARI", desc: "Chlorophyll absorption (RedEdge1, Red, Green)", kind: "index",
+    assets: ["B05", "B04", "B03"], color: "#238443", rescale: "0,1.5", colormap: "rdylgn",
+    expression: ([re1, red, green]) =>
+      `(((${re1}/10000)-(${red}/10000))-0.2*((${re1}/10000)-(${green}/10000)))*((${re1}/10000)/(${red}/10000))`,
+  },
+  CRI1: {
+    label: "CRI1", desc: "Carotenoid pigment (Blue, Green)", kind: "index",
+    assets: ["B02", "B03"], color: "#b2182b", rescale: "0,15", colormap: "rdbu_r",
+    expression: ([blue, green]) => `(1/(${blue}/10000))-(1/(${green}/10000))`,
+  },
+  CRI2: {
+    label: "CRI2", desc: "Carotenoid pigment, canopy-corrected (Blue, RedEdge1)", kind: "index",
+    assets: ["B02", "B05"], color: "#b2182b", rescale: "0,10", colormap: "rdbu_r",
+    expression: ([blue, re1]) => `(1/(${blue}/10000))-(1/(${re1}/10000))`,
+  },
+  CI: {
+    label: "CI", desc: "Cyanobacteria / algal bloom (Red, RedEdge1, RedEdge2)", kind: "index",
+    assets: ["B04", "B05", "B06"], color: "#e4460a", rescale: "-0.02,0.05", colormap: "turbo",
+    expression: ([red, re1, re2]) => `(${red}+(${re2}-${red})*0.5333)-${re1}`,
+  },
+  EVI2: {
+    label: "EVI2", desc: "Two-band enhanced vegetation (NIR, Red)", kind: "index",
+    assets: ["B08", "B04"], color: "#c71585", rescale: "0,1", colormap: "magma",
+    expression: ([nir, red]) => `2.5*(${nir}-${red})/(${nir}+2.4*${red}+1)`,
+  },
+  MTCI: {
+    label: "MTCI", desc: "MERIS-heritage chlorophyll (RedEdge2, RedEdge1, Red)", kind: "index",
+    assets: ["B06", "B05", "B04"], color: "#4575b4", rescale: "0,5", colormap: "spectral_r",
+    expression: ([re2, re1, red]) => `(${re2}-${re1})/(${re1}-${red})`,
+  },
+  NDVI705: {
+    label: "NDVI705", desc: "Red-edge NDVI, Gitelson & Merzlyak (RedEdge2, RedEdge1)", kind: "index",
+    assets: ["B06", "B05"], color: "#4575b4", rescale: "-1,1", colormap: "spectral_r",
+  },
+  NDTI: {
+    label: "NDTI", desc: "Water turbidity (Red, Green)", kind: "index",
+    assets: ["B04", "B03"], color: "#dc2626", rescale: "-0.2,0.4", colormap: "salinity_clear",
+  },
+  TCARI: {
+    label: "TCARI", desc: "Transformed chlorophyll absorption (RedEdge1, Red, Green)", kind: "index",
+    assets: ["B05", "B04", "B03"], color: "#238443", rescale: "0,2", colormap: "rdylgn",
+    expression: ([re1, red, green]) =>
+      `3*(((${re1}/10000)-(${red}/10000))-0.2*((${re1}/10000)-(${green}/10000))*((${re1}/10000)/(${red}/10000)))`,
+  },
+
+  // ── Sentinel-1 (SAR) — mirrors SatelliteDataPanel/SatellitePipelines.ts VV/VH.
+  // Single-band amplitude assets, not a 2-band normalized difference, so both
+  // `assets` and `expression` are overridden to pass the one band straight
+  // through — the actual amplitude→dB conversion happens server-side
+  // (ANALYSIS_CONFIG.vv/vh in route.ts), same as the single-scene view.
+  VV: {
+    label: "VV backscatter", desc: "Radar return, co-polarized (dB)", kind: "index",
+    assets: ["vv"], color: "#4393c3", rescale: "-25,0", colormap: "spectral",
+    expression: ([vv]) => vv,
+  },
+  VH: {
+    label: "VH backscatter", desc: "Radar return, cross-polarized (dB)", kind: "index",
+    assets: ["vh"], color: "#238b45", rescale: "-30,-5", colormap: "spectral",
+    expression: ([vh]) => vh,
+  },
+
+  // ── Copernicus DEM — mirrors SatellitePipelines.ts ELEVATION. Single elevation
+  // band, raw metres. A before/after diff here reads as real terrain change
+  // (excavation, land-fill, landslide, construction) rather than seasonal
+  // reflectance change like the optical indices above.
+  ELEVATION: {
+    label: "Elevation", desc: "Terrain height (Copernicus DEM, metres)", kind: "index",
+    assets: ["data"], color: "#a6d96a", rescale: "0,1500", colormap: "rdylgn",
+    expression: ([data]) => data,
+  },
 };
+
+// ─── Per-source asset key overrides ────────────────────────────────────────
+// ⚠️ BUG FIX (2026-08-18): PREVIEW_DEFS.assets above is written in Sentinel-2
+// band names ("B04","B08",...) — that's the only naming scheme it ever used.
+// getSceneAssetUrl() only tries case variants of the SAME string (B08/b08/B8),
+// it never tries a *different* band name, so for any non-Sentinel-2 source
+// with the same index (Landsat has NDVI/NDWI/NDMI/NDBI/SAVI/EVI/BSI/GNDVI/
+// MSAVI2/NDDI/SI/CVI/NBRI too — see SOURCE_INDICES["landsat"] in
+// SatellitePipelines.ts) the lookup silently failed and produced the
+// "Could not resolve the required band URLs" error seen when running Change
+// Detection with Landsat scenes selected.
+//
+// Fix: mirror the exact per-source band names SatelliteDataPanel.tsx already
+// uses in its Landsat getVisualization() switch (nir08/red/green/blue/
+// swir16/swir22 — all lowercase, that's how they're published on Planetary
+// Computer's landsat-c2-l2 STAC collection), keyed the SAME order as the
+// matching Sentinel-2 `assets` array above so `def.expression(assets)` still
+// builds the right formula (e.g. NDVI stays [nir, red] either way).
+const LANDSAT_ASSET_OVERRIDES: Partial<Record<PreviewKey, string[]>> = {
+  RGB: ["red", "green", "blue"],
+  NDVI: ["nir08", "red"],
+  NDWI: ["green", "nir08"],
+  NDMI: ["nir08", "swir16"],
+  NDBI: ["swir16", "nir08"],
+  SAVI: ["nir08", "red"],
+  EVI: ["nir08", "red", "blue"],
+  BSI: ["swir16", "red", "nir08", "blue"],
+  GNDVI: ["nir08", "green"],
+  MSAVI2: ["nir08", "red"],
+  NDDI: ["nir08", "red", "green"],
+  SI: ["red", "nir08"],
+  CVI: ["nir08", "red", "green"],
+  NBRI: ["nir08", "swir22"],
+};
+
+/** Real band asset keys to request for this index on this satellite source —
+ *  Landsat gets its own lowercase names above, every other source (Sentinel-2,
+ *  and the single-band VV/VH/ELEVATION entries which are source-specific by
+ *  construction) uses PREVIEW_DEFS[indexKey].assets as-is. */
+function getPreviewAssets(indexKey: PreviewKey, source: SatSource): string[] {
+  if (source === "landsat" && LANDSAT_ASSET_OVERRIDES[indexKey]) {
+    return LANDSAT_ASSET_OVERRIDES[indexKey]!;
+  }
+  return PREVIEW_DEFS[indexKey].assets;
+}
 
 // Kept for any old prop plumbing that still expects the pure-index map.
 const CHANGE_INDEX_DEFS: Record<ChangeIndexKey, PreviewDef> = {
@@ -133,6 +467,51 @@ const CHANGE_INDEX_DEFS: Record<ChangeIndexKey, PreviewDef> = {
   SAVI: PREVIEW_DEFS.SAVI,
   EVI: PREVIEW_DEFS.EVI,
   BSI: PREVIEW_DEFS.BSI,
+  NBRI: PREVIEW_DEFS.NBRI,
+  GCI: PREVIEW_DEFS.GCI,
+  VARI: PREVIEW_DEFS.VARI,
+  RED_EDGE: PREVIEW_DEFS.RED_EDGE,
+  MTVI: PREVIEW_DEFS.MTVI,
+  TVI: PREVIEW_DEFS.TVI,
+  GRVI: PREVIEW_DEFS.GRVI,
+  MSI: PREVIEW_DEFS.MSI,
+  NDSI: PREVIEW_DEFS.NDSI,
+  NDRE: PREVIEW_DEFS.NDRE,
+  GNDVI: PREVIEW_DEFS.GNDVI,
+  MSAVI2: PREVIEW_DEFS.MSAVI2,
+  CCCI: PREVIEW_DEFS.CCCI,
+  NDDI: PREVIEW_DEFS.NDDI,
+  SI: PREVIEW_DEFS.SI,
+  CVI: PREVIEW_DEFS.CVI,
+  RECI: PREVIEW_DEFS.RECI,
+  SIPI: PREVIEW_DEFS.SIPI,
+  PSRI: PREVIEW_DEFS.PSRI,
+  OSI: PREVIEW_DEFS.OSI,
+  RENDVI: PREVIEW_DEFS.RENDVI,
+  REIP: PREVIEW_DEFS.REIP,
+  NMDI_SOIL: PREVIEW_DEFS.NMDI_SOIL,
+  NMDI_VEG: PREVIEW_DEFS.NMDI_VEG,
+  ARI: PREVIEW_DEFS.ARI,
+  ARI2: PREVIEW_DEFS.ARI2,
+  CMR: PREVIEW_DEFS.CMR,
+  FMR: PREVIEW_DEFS.FMR,
+  IOI: PREVIEW_DEFS.IOI,
+  NDCI: PREVIEW_DEFS.NDCI,
+  FAI: PREVIEW_DEFS.FAI,
+  MNDWI: PREVIEW_DEFS.MNDWI,
+  GEMI: PREVIEW_DEFS.GEMI,
+  MCARI: PREVIEW_DEFS.MCARI,
+  CRI1: PREVIEW_DEFS.CRI1,
+  CRI2: PREVIEW_DEFS.CRI2,
+  CI: PREVIEW_DEFS.CI,
+  EVI2: PREVIEW_DEFS.EVI2,
+  MTCI: PREVIEW_DEFS.MTCI,
+  NDVI705: PREVIEW_DEFS.NDVI705,
+  NDTI: PREVIEW_DEFS.NDTI,
+  TCARI: PREVIEW_DEFS.TCARI,
+  VV: PREVIEW_DEFS.VV,
+  VH: PREVIEW_DEFS.VH,
+  ELEVATION: PREVIEW_DEFS.ELEVATION,
 };
 
 // Maps the panel's index selector to the server-side change-detection analysis
@@ -148,10 +527,91 @@ const CHANGE_API_TYPE: Record<ChangeIndexKey, string> = {
   SAVI: "change_savi",
   EVI: "change_evi",
   BSI: "change_bsi",
+  NBRI: "change_nbri",
+  GCI: "change_gci",
+  VARI: "change_vari",
+  RED_EDGE: "change_red_edge",
+  MTVI: "change_mtvi",
+  TVI: "change_tvi",
+  GRVI: "change_grvi",
+  MSI: "change_msi",
+  NDSI: "change_ndsi",
+  NDRE: "change_ndre",
+  GNDVI: "change_gndvi",
+  MSAVI2: "change_msavi2",
+  CCCI: "change_ccci",
+  NDDI: "change_nddi",
+  SI: "change_si",
+  CVI: "change_cvi",
+  RECI: "change_reci",
+  SIPI: "change_sipi",
+  PSRI: "change_psri",
+  OSI: "change_osi",
+  RENDVI: "change_rendvi",
+  REIP: "change_reip",
+  NMDI_SOIL: "change_nmdi_soil",
+  NMDI_VEG: "change_nmdi_veg",
+  ARI: "change_ari",
+  ARI2: "change_ari2",
+  CMR: "change_cmr",
+  FMR: "change_fmr",
+  IOI: "change_ioi",
+  NDCI: "change_ndci",
+  FAI: "change_fai",
+  MNDWI: "change_mndwi",
+  GEMI: "change_gemi",
+  MCARI: "change_mcari",
+  CRI1: "change_cri1",
+  CRI2: "change_cri2",
+  CI: "change_ci",
+  EVI2: "change_evi2",
+  MTCI: "change_mtci",
+  NDVI705: "change_ndvi705",
+  NDTI: "change_ndti",
+  TCARI: "change_tcari",
+  // Non-optical sources (2026-08-18) — VV/VH already existed server-side;
+  // change_elevation is new, added alongside this in route.ts.
+  VV: "change_vv",
+  VH: "change_vh",
+  ELEVATION: "change_elevation",
 };
 
+// ⚠️ NOT "PREVIEW_DEFS[key].kind === 'index'" in principle (composites like
+// RGB/SWIR genuinely can't classify), but as of 2026-08-16 every index-kind
+// entry in PREVIEW_DEFS now has a matching change_<index> branch in route.ts
+// — see CHANGE_API_TYPE below, which is kept as the actual source of truth
+// (so a newly-added preview-only index doesn't silently look classifiable
+// here before its change_ branch actually exists server-side).
 function isClassifiable(key: PreviewKey): key is ChangeIndexKey {
-  return PREVIEW_DEFS[key].kind === "index";
+  return Object.prototype.hasOwnProperty.call(CHANGE_API_TYPE, key);
+}
+
+// Indices whose natural value range is close enough to the original 7's
+// (roughly -1..1, actual ranges 0.6-1.2) that the server's flat 0.08/0.25
+// threshold/classThreshold defaults already work fine — so we leave them
+// alone (unscaled `threshold`, no `classThreshold` override) to not change
+// behavior anyone's already relying on.
+const NARROW_RANGE_CHANGE_KEYS = new Set<ChangeIndexKey>(["NBRI", "VARI", "MTVI", "GRVI", "NDSI"]);
+
+// The other 4 (MSI, GCI, TVI, RED_EDGE) are ratios/wavelengths with ranges
+// nothing like -1..1 (0.2-2, 0-4, 0-50, 700-740nm) — sending the raw 0.02-0.3
+// slider value as an absolute threshold there is either noise-level (TVI,
+// RED_EDGE) or trivially-always-true (MSI, GCI), so the sensitivity slider
+// would do effectively nothing. Instead we scale it by the index's own
+// rescale range (same range route.ts uses for the preview colormap, in
+// PREVIEW_DEFS[key].rescale) and pick a classThreshold about 45% of the way
+// up that range — same role 0.25 plays for the original -1..1 indices.
+function getChangeThresholdParams(key: ChangeIndexKey, sliderThreshold: number): { threshold: number; classThreshold?: number } {
+  if (NARROW_RANGE_CHANGE_KEYS.has(key)) return { threshold: sliderThreshold };
+  const rescale = CHANGE_INDEX_DEFS[key]?.rescale;
+  if (!rescale) return { threshold: sliderThreshold };
+  const [min, max] = rescale.split(",").map(Number);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return { threshold: sliderThreshold };
+  const range = max - min;
+  return {
+    threshold: sliderThreshold * range,
+    classThreshold: min + range * 0.45,
+  };
 }
 
 interface ChangeLegendItem { key: string; label: string; color: string }
@@ -174,6 +634,55 @@ function defaultChangeLegend(indexKey: ChangeIndexKey): ChangeLegendItem[] {
     SAVI: ["Vegetation Gain", "Vegetation Loss"],
     EVI: ["Vegetation Gain", "Vegetation Loss"],
     BSI: ["Bare Soil Gain", "Bare Soil Loss"],
+    NBRI: ["Vegetation Gain (Burn Recovery)", "Vegetation Loss (New Burn Scar)"],
+    GCI: ["Chlorophyll Increase", "Chlorophyll Decrease"],
+    VARI: ["Vegetation Gain", "Vegetation Loss"],
+    RED_EDGE: ["Red-Edge Position Increase (More Vigor)", "Red-Edge Position Decrease (Less Vigor)"],
+    MTVI: ["Vegetation Gain", "Vegetation Loss"],
+    TVI: ["Vegetation Gain", "Vegetation Loss"],
+    GRVI: ["Vegetation Gain", "Vegetation Loss"],
+    // ⚠️ MSI is inverted vs. NDVI-style indices — higher = more water-stressed,
+    // so a positive delta ("gain") means stress is INCREASING, not improving.
+    MSI: ["Moisture Stress Increase", "Moisture Stress Decrease"],
+    NDSI: ["Snow/Ice Gain", "Snow/Ice Loss"],
+    NDRE: ["Chlorophyll Gain", "Chlorophyll Loss"],
+    GNDVI: ["Vegetation Gain", "Vegetation Loss"],
+    MSAVI2: ["Vegetation Gain", "Vegetation Loss"],
+    CCCI: ["Chlorophyll/Nitrogen Gain", "Chlorophyll/Nitrogen Loss"],
+    NDDI: ["Drought Stress Increase", "Drought Stress Decrease"],
+    SI: ["Salinity Increase", "Salinity Decrease"],
+    CVI: ["Chlorophyll Increase", "Chlorophyll Decrease"],
+    RECI: ["Chlorophyll Increase", "Chlorophyll Decrease"],
+    SIPI: ["Pigment Stress Increase", "Pigment Stress Decrease"],
+    // ⚠️ PSRI is inverted like MSI — negative = healthy, positive = senescing.
+    PSRI: ["Senescence/Stress Increase", "Senescence/Stress Decrease"],
+    OSI: ["Oil Sheen Signal Increase", "Oil Sheen Signal Decrease"],
+    RENDVI: ["Chlorophyll Gain", "Chlorophyll Loss"],
+    REIP: ["Red-Edge Position Increase (More Vigor)", "Red-Edge Position Decrease (Less Vigor)"],
+    // Rising NMDI reads as drier soil on bare/sparse ground — not "gain".
+    NMDI_SOIL: ["NMDI Increase (Drier Soil)", "NMDI Decrease (Wetter Soil)"],
+    NMDI_VEG: ["Canopy Moisture Increase", "Canopy Moisture Decrease"],
+    ARI: ["Anthocyanin Increase", "Anthocyanin Decrease"],
+    ARI2: ["Anthocyanin Increase (Leaf-Corrected)", "Anthocyanin Decrease (Leaf-Corrected)"],
+    CMR: ["Clay Mineral Signal Increase", "Clay Mineral Signal Decrease"],
+    FMR: ["Ferrous Mineral Signal Increase", "Ferrous Mineral Signal Decrease"],
+    IOI: ["Iron Oxide Signal Increase", "Iron Oxide Signal Decrease"],
+    NDCI: ["Chlorophyll-a Increase", "Chlorophyll-a Decrease"],
+    FAI: ["Floating Algae Signal Increase", "Floating Algae Signal Decrease"],
+    MNDWI: ["Water Extent Gain", "Water Extent Loss"],
+    GEMI: ["Vegetation Gain", "Vegetation Loss"],
+    MCARI: ["Chlorophyll Absorption Increase", "Chlorophyll Absorption Decrease"],
+    CRI1: ["Carotenoid Signal Increase", "Carotenoid Signal Decrease"],
+    CRI2: ["Carotenoid Signal Increase (Canopy-Corrected)", "Carotenoid Signal Decrease (Canopy-Corrected)"],
+    CI: ["Cyanobacteria Bloom Signal Increase", "Cyanobacteria Bloom Signal Decrease"],
+    EVI2: ["Vegetation Gain", "Vegetation Loss"],
+    MTCI: ["Chlorophyll Increase", "Chlorophyll Decrease"],
+    NDVI705: ["Chlorophyll Gain", "Chlorophyll Loss"],
+    NDTI: ["Turbidity Increase", "Turbidity Decrease"],
+    TCARI: ["Chlorophyll Absorption Increase", "Chlorophyll Absorption Decrease"],
+    VV: ["Backscatter Gain", "Backscatter Loss"],
+    VH: ["Backscatter Gain", "Backscatter Loss"],
+    ELEVATION: ["Elevation Gain", "Elevation Loss"],
   };
   const [gainLabel, lossLabel] = GAIN_LOSS_LABELS[indexKey];
   return [
@@ -232,9 +741,10 @@ function makePreviewUrl(
   scene: SatelliteScene,
   indexKey: PreviewKey,
   bbox: [number, number, number, number], // [west, south, east, north] — the AOI, not the scene tile
+  source: SatSource,
 ) {
   const def = PREVIEW_DEFS[indexKey];
-  const { assets } = def;
+  const assets = getPreviewAssets(indexKey, source);
   if (!scene.id || !scene.collection) return scene.thumbnail;
 
   const hrefs = assets.map((asset) => getSceneAssetUrl(scene, asset));
@@ -653,7 +1163,10 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   const bounds = getFeatureBounds(selectedFeature, coords ? { lat: coords[0], lng: coords[1] } : undefined);
   const [[south, west], [north, east]] = bounds;
 
-  const [source] = useState<"sentinel-2">("sentinel-2");
+  // Same satellite picker as SatelliteDataPanel.tsx (SOURCE_META/SOURCE_INDICES) —
+  // switching source below filters "Index to compare" down to that satellite's
+  // own indices (availableIndexKeys), same as the Satellite Data tab.
+  const [source, setSource] = useState<SatSource>("sentinel-2");
   const [indexKey, setIndexKey] = useState<PreviewKey>("NDVI");
   const [indexPickerOpen, setIndexPickerOpen] = useState(false);
   const [threshold, setThreshold] = useState(0.08);
@@ -692,7 +1205,61 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
 
   const previewDef = PREVIEW_DEFS[indexKey];
   const canClassify = isClassifiable(indexKey);
-  const collection = source === "sentinel-2" ? "sentinel-2-l2a" : "landsat-c2-l2";
+  const collection = SOURCE_COLLECTIONS[source];
+
+  // Which PreviewKey options actually apply to the selected satellite — the
+  // intersection of "what this panel knows how to preview/diff" (PREVIEW_DEFS)
+  // and "what this satellite actually has" (SOURCE_INDICES, same source of
+  // truth as SatelliteDataPanel.tsx). RGB/SWIR are plain color composites
+  // built from Sentinel-2/Landsat band names specifically, so they're only
+  // offered for those two sources even though SOURCE_INDICES doesn't list
+  // "SWIR" as its own analysis type.
+  //
+  // ⚠️ BUG FIX (2026-08-18): MODIS's SOURCE_INDICES also happens to be named
+  // "NDVI"/"EVI" (SOURCE_INDICES.modis = ["NDVI","EVI","FIRE","LST"]) — same
+  // *label* as the Sentinel-2/Landsat indices already in PREVIEW_DEFS, but a
+  // totally different pipeline underneath (MODIS goes through STAC Search ->
+  // TiTiler tiles directly, see TITILER_STYLES in SatellitePipelines.ts — no
+  // B04/B08-style COG band assets at all, and no /api/raster-proxy/analyze
+  // support). Before this fix, the plain `sourceKeys.has(key)` intersection
+  // below matched on the NAME only, so picking MODIS silently offered NDVI/EVI
+  // as if they were real options — Run Change Detection then tried to fetch
+  // Sentinel-2 band assets ("B08","B04") from a MODIS scene, which doesn't
+  // have them, producing "Could not resolve the required band URLs" instead
+  // of the friendly "isn't wired up yet" message ASTER/Sentinel-5P/Sentinel-3
+  // already show correctly (they don't share any key names with PREVIEW_DEFS,
+  // so they never had this collision).
+  //
+  // Fix: only sources whose SOURCE_INDICES entries actually map onto real
+  // PREVIEW_DEFS band assets (Sentinel-2, Landsat, Sentinel-1, Copernicus DEM)
+  // are allowed to intersect at all. Every other source (MODIS, ASTER,
+  // Sentinel-5P, Sentinel-3 — all TiTiler-xarray/direct-tile pipelines) always
+  // gets an empty list here, regardless of any accidental name overlap, so
+  // they consistently fall into the "isn't wired up yet" banner below instead
+  // of a broken Run button.
+  const DIFFABLE_SOURCES = useMemo(() => new Set<SatSource>(["sentinel-2", "landsat", "sentinel-1", "cop-dem"]), []);
+  const availableIndexKeys = useMemo(() => {
+    if (!DIFFABLE_SOURCES.has(source)) return [];
+    const sourceKeys = new Set(SOURCE_INDICES[source] as string[]);
+    return (Object.keys(PREVIEW_DEFS) as PreviewKey[]).filter((key) => {
+      if (key === "RGB" || key === "SWIR") return source === "sentinel-2" || source === "landsat";
+      return sourceKeys.has(key);
+    });
+  }, [source, DIFFABLE_SOURCES]);
+
+  // If the satellite changes and the currently-picked index no longer applies
+  // (e.g. switching from Sentinel-2 to Sentinel-1), fall back to the first
+  // index that's actually available for the new satellite instead of silently
+  // keeping an index that isn't even in the dropdown anymore.
+  useEffect(() => {
+    if (!availableIndexKeys.includes(indexKey) && availableIndexKeys.length) {
+      setIndexKey(availableIndexKeys[0]);
+      setChangeResult(null);
+      setDiffDataUrl(null);
+      setComputeError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableIndexKeys]);
 
   const indexPickerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -823,11 +1390,11 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   // refresh preview URLs whenever scene, index, or AOI changes — cropped server-side
   // to the AOI bbox (see makePreviewUrl), not the whole scene tile.
   useEffect(() => {
-    setBeforePreviewUrl(beforeScene ? makePreviewUrl(beforeScene, indexKey, bboxTuple) ?? null : null);
-  }, [beforeScene, indexKey, bboxTuple]);
+    setBeforePreviewUrl(beforeScene ? makePreviewUrl(beforeScene, indexKey, bboxTuple, source) ?? null : null);
+  }, [beforeScene, indexKey, bboxTuple, source]);
   useEffect(() => {
-    setAfterPreviewUrl(afterScene ? makePreviewUrl(afterScene, indexKey, bboxTuple) ?? null : null);
-  }, [afterScene, indexKey, bboxTuple]);
+    setAfterPreviewUrl(afterScene ? makePreviewUrl(afterScene, indexKey, bboxTuple, source) ?? null : null);
+  }, [afterScene, indexKey, bboxTuple, source]);
 
   // Once the bbox-cropped previews are in, clip them down to the exact drawn shape
   // (polygon/rectangle/circle-as-polygon) instead of leaving them as a rectangle.
@@ -888,16 +1455,17 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const canRun = !!beforeScene && !!afterScene && canClassify;
+  const canRun = !!beforeScene && !!afterScene && canClassify && availableIndexKeys.length > 0;
 
   const runButtonLabel = useMemo(() => {
-    if (!canClassify) return `${previewDef.label} is visual-only — pick an index (NDVI/NDWI/NDMI/NDBI/SAVI/EVI/BSI) to run classification`;
+    if (!availableIndexKeys.length) return `Change Detection isn't available yet for ${SOURCE_META[source].title}`;
+    if (!canClassify) return `${previewDef.label} is preview/swipe-only — pick a classifiable index to run classification`;
     if (computing) return "Computing change map...";
     if (!beforeScene && !afterScene) return "Search & select Before + After scenes";
     if (!beforeScene) return "Select a Before scene ↑";
     if (!afterScene) return "Select an After scene ↑";
     return "Run Change Detection";
-  }, [computing, beforeScene, afterScene, canClassify, previewDef]);
+  }, [computing, beforeScene, afterScene, canClassify, previewDef, availableIndexKeys, source]);
 
   // Runs the real change-detection computation server-side via
   // /api/raster-proxy/analyze (type=change_ndvi|change_ndwi|change_ndbi):
@@ -908,7 +1476,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   const runChangeDetection = useCallback(async () => {
     if (!beforeScene || !afterScene) return;
     if (!isClassifiable(indexKey)) {
-      setComputeError(`${previewDef.label} is a visual composite, not a single index — there's no scalar change to classify. Pick NDVI, NDWI, NDMI, NDBI, SAVI, EVI, or BSI to run classification.`);
+      setComputeError(`${previewDef.label} isn't wired up for server-side change classification — it's available as a Before/After visual preview and swipe compare only. Only RGB and SWIR (plain color composites, no single scalar value) can't run classification — pick any other index.`);
       return;
     }
     setComputing(true);
@@ -917,22 +1485,28 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     setDiffDataUrl(null);
 
     try {
-      const beforeHrefs = previewDef.assets.map((key) => getSceneAssetUrl(beforeScene, key));
-      const afterHrefs = previewDef.assets.map((key) => getSceneAssetUrl(afterScene, key));
+      const sourceAssets = getPreviewAssets(indexKey, source);
+      const beforeHrefs = sourceAssets.map((key) => getSceneAssetUrl(beforeScene, key));
+      const afterHrefs = sourceAssets.map((key) => getSceneAssetUrl(afterScene, key));
 
       if (beforeHrefs.some((h) => !h) || afterHrefs.some((h) => !h)) {
         throw new Error("Could not resolve the required band URLs for the selected scenes.");
       }
 
       const classifiableKey: ChangeIndexKey = indexKey as ChangeIndexKey;
+      const { threshold: scaledThreshold, classThreshold } = getChangeThresholdParams(classifiableKey, threshold);
       const params = new URLSearchParams({
         type: CHANGE_API_TYPE[classifiableKey],
         // Order matters: backend splits this list in half — first half = Before
         // bands (in the same order as `previewDef.assets`), second half = After.
         urls: [...beforeHrefs, ...afterHrefs].join(","),
         bbox: `${west},${south},${east},${north}`,
-        threshold: String(threshold),
+        threshold: String(scaledThreshold),
       });
+      // Only MSI/GCI/TVI/RED_EDGE get an explicit classThreshold — the
+      // original 7 (+ NBRI/VARI/MTVI/GRVI/NDSI) rely on the server's own
+      // 0.25 default, unchanged from before.
+      if (classThreshold !== undefined) params.set("classThreshold", String(classThreshold));
 
       const res = await fetch(`/api/raster-proxy/analyze?${params.toString()}`);
       if (!res.ok) {
@@ -972,7 +1546,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     } finally {
       setComputing(false);
     }
-  }, [beforeScene, afterScene, indexKey, previewDef, threshold, west, south, east, north]);
+  }, [beforeScene, afterScene, indexKey, previewDef, threshold, west, south, east, north, source]);
 
   const downloadDiff = useCallback(() => {
     if (!diffDataUrl) return;
@@ -997,6 +1571,40 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
             STAC
           </span>
         </div>
+      </div>
+
+      {/* Satellite source selector — same SOURCE_META list as SatelliteDataPanel.tsx.
+          Picking a satellite here filters "Index to compare" below to that
+          satellite's own indices (availableIndexKeys). */}
+      <div className="space-y-1.5">
+        <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Satellite source</p>
+        <div className="relative" dir="ltr">
+          <select
+            value={source}
+            onChange={(e) => setSource(e.target.value as SatSource)}
+            dir="ltr"
+            className="h-10 w-full cursor-pointer appearance-none rounded-lg border border-white/[0.08] bg-[#020817]/70 pl-8 pr-8 text-xs font-semibold text-slate-200 outline-none transition focus:border-cyan-400/40"
+          >
+            {(Object.keys(SOURCE_META) as SatSource[]).map((key) => (
+              <option key={key} value={key} className="bg-[#020817] text-slate-200">
+                {SOURCE_META[key].title} — {SOURCE_META[key].subtitle}
+              </option>
+            ))}
+          </select>
+          <svg
+            viewBox="0 0 20 20"
+            className="mx-auto my-auto pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500"
+            fill="none"
+          >
+            <path d="M5.5 7.5l4.5 4.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </div>
+        {!availableIndexKeys.length && (
+          <p className="text-[0.58rem] leading-relaxed text-amber-300/80">
+            {SOURCE_META[source].title} isn&apos;t wired up for Change Detection yet — its scenes render fine in
+            Satellite Data, but the two-date diff needs backend work first (see SatellitePipelines.ts TITILER_STYLES).
+          </p>
+        )}
       </div>
 
       {/* Index selector — click to open a dropdown list of the available analyses */}
@@ -1030,9 +1638,16 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
         {indexPickerOpen && (
           <div
             role="listbox"
-            className="absolute left-3 right-3 top-[calc(100%-4px)] z-20 rounded-lg border border-white/[0.1] bg-[#060d1b] shadow-[0_16px_40px_rgba(0,0,0,0.6)] overflow-hidden"
+            // ⚠️ FIX (2026-08-18): this used to be `absolute` (floating on top of
+            // AOI info / scene slots below it, hiding them until closed). Now it's
+            // a normal in-flow block that grows the sidebar's height instead —
+            // opening it pushes everything below down rather than covering it.
+            // `max-h` + `overflow-y-auto` turns it into a scrollable "slide down"
+            // list (same colors/rows as before) instead of a huge column when a
+            // source has many indices (e.g. Sentinel-2's 40+).
+            className="relative mt-2 max-h-64 overflow-y-auto rounded-lg border border-white/[0.1] bg-[#060d1b] shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
           >
-            {(Object.keys(PREVIEW_DEFS) as PreviewKey[]).map((key) => {
+            {availableIndexKeys.map((key) => {
               const def = PREVIEW_DEFS[key];
               const active = indexKey === key;
               return (
@@ -1060,6 +1675,11 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
                   {def.kind === "composite" && (
                     <span className="shrink-0 text-[0.5rem] uppercase tracking-wider text-slate-500 border border-white/[0.08] rounded-full px-1.5 py-0.5">
                       visual only
+                    </span>
+                  )}
+                  {def.kind === "index" && !isClassifiable(key) && (
+                    <span className="shrink-0 text-[0.5rem] uppercase tracking-wider text-slate-500 border border-white/[0.08] rounded-full px-1.5 py-0.5">
+                      preview only
                     </span>
                   )}
                   {active && (
@@ -1164,10 +1784,13 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
       {!canClassify && (
         <div className="rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2">
           <p className="text-[0.58rem] text-slate-400 leading-relaxed">
-            <span className="font-semibold" style={{ color: previewDef.color }}>{previewDef.label}</span> is a color
-            composite, not a single index — it's great for the Before/After swipe and side-by-side compare above,
-            but there's no scalar pixel value to classify into Gain/Loss. Pick NDVI, NDWI, NDMI, NDBI, SAVI, EVI, or
-            BSI to run the change classification.
+            <span className="font-semibold" style={{ color: previewDef.color }}>{previewDef.label}</span>{" "}
+            {previewDef.kind === "composite"
+              ? "is a color composite, not a single index"
+              : "doesn't have server-side change classification wired up yet"}
+            {" "}— it's great for the Before/After swipe and side-by-side compare above,
+            but there's no scalar pixel value to classify into Gain/Loss. Pick any index other than
+            RGB or SWIR (plain color composites) to run the change classification.
           </p>
         </div>
       )}

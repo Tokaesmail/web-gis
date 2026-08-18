@@ -38,6 +38,51 @@ export type SatelliteAnalysisType =
   // Sentinel-2 only, see SOURCE_INDICES note below (needs B05/B06[/B07]).
   | "RENDVI"
   | "REIP"
+  // Drought/pigment add-ons (2026-08-15) — Sentinel-2 only, see SOURCE_INDICES
+  // note below. NMDI_SOIL/NMDI_VEG share the exact same formula (B08/B11/B12)
+  // — Wang & Qu (2007) proved it works for both, just read in opposite
+  // directions — so they're kept as two dropdown entries with the same
+  // underlying calc but different legend/colormap, not two different formulas.
+  | "NMDI_SOIL"
+  | "NMDI_VEG"
+  | "ARI"
+  | "ARI2"
+  // Geology / mineral-mapping add-ons (2026-08-15) — Sentinel-2 only, see
+  // SOURCE_INDICES note below. FMR (SWIR1/NIR = B11/B08) is numerically
+  // IDENTICAL to MSI already above — same ratio, different application
+  // domain (bare rock/geology vs. vegetation moisture stress) — kept as a
+  // separate dropdown entry with its own geology-oriented legend/colormap,
+  // same reasoning as NMDI_SOIL/NMDI_VEG sharing one formula.
+  | "CMR"
+  | "FMR"
+  // Iron oxide + water-quality add-ons (2026-08-15) — Sentinel-2 only, see
+  // SOURCE_INDICES note below.
+  | "IOI"
+  | "NDCI"
+  | "FAI"
+  // Water/vegetation add-ons (2026-08-15) — Sentinel-2 only, see SOURCE_INDICES
+  // note below. MNDWI shares its exact formula/bands with NDSI above (see note).
+  | "MNDWI"
+  | "GEMI"
+  // Pigment/index add-ons (2026-08-15) — Sentinel-2 only, see SOURCE_INDICES
+  // note below. GRVI already existed above (Visible-only/Red-Edge add-ons).
+  | "MCARI"
+  | "CRI1"
+  | "CRI2"
+  // Harmful algal bloom add-on (2026-08-15) — Sentinel-2 approximation of the
+  // MERIS/OLCI-heritage Cyanobacteria Index, see SOURCE_INDICES note below
+  // for the band-substitution caveat.
+  | "CI"
+  // Vegetation/chlorophyll add-ons (2026-08-15) — Sentinel-2 only, see
+  // SOURCE_INDICES note below. NDRE already exists above (Agriculture
+  // add-ons 2026-08-09).
+  | "EVI2"
+  | "MTCI"
+  // 2026-08-15 batch (part 2) — Sentinel-2 only, see SOURCE_INDICES note
+  // below. NDVI705 shares its exact formula/bands with RENDVI above.
+  | "NDVI705"
+  | "NDTI"
+  | "TCARI"
   // Sentinel-1 (Radar / SAR)
   | "VV"
   | "VH"
@@ -114,7 +159,73 @@ export const SOURCE_INDICES: Record<SatSource, SatelliteAnalysisType[]> = {
   // REIP محتاج B04/B05/B06/B07 زي RED_EDGE (S2REP) بالظبط، لكنه معادلة
   // مختلفة (Guyot & Baret 1988 الكلاسيكية بدل Frampton et al. 2013) —
   // شوفي التعليق جوه ANALYSIS_CONFIG.reip (route.ts) للفرق بين الاتنين.
-  "sentinel-2": ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "NDRE", "GNDVI", "MSAVI2", "CCCI", "NDDI", "SI", "CVI", "VARI", "RED_EDGE", "MTVI", "TVI", "GRVI", "RECI", "SIPI", "GCI", "PSRI", "NBRI", "MSI", "NDSI", "OSI", "RENDVI", "REIP"],
+  // ⚠️ NMDI_SOIL/NMDI_VEG (2026-08-15) — Wang & Qu (2007), محتاج NIR+SWIR1+SWIR2
+  // (B08/B11/B12) — زي MSI/NBRI متاح تقنيًا على Landsat برضه (nir08/swir16/swir22)
+  // بس اتضاف هنا بس لـ sentinel-2 بناءً على الطلب. الاتنين نفس المعادلة بالظبط
+  // (B08-(B11-B12))/(B08+(B11-B12)) — الفرق بينهم legend/colormap بس (اتجاه
+  // القراءة معكوس: قيمة عالية = تربة جافة لكن = محصول صحي/رطب لو غطاء نباتي كثيف).
+  // ARI (2026-08-15) — Gitelson et al. (2001), محتاج Green+RedEdge1 (B03/B05).
+  // ⚠️ مش scale-invariant زي باقي الـ ratios (reci/gci) — دي فرق reciprocals
+  // (1/x) مش نسبة مباشرة، فلازم تطبيع /10000 قبل القسمة عشان يطلع بمدى
+  // الأدبيات الحقيقي (~0-0.2) بدل ما يتضخم بمقياس الـ DN الخام — شوفي
+  // التعليق جوه ANALYSIS_CONFIG.ari (route.ts).
+  // ARI2/mARI (2026-08-15) — نفس ARI مضروبة في NIR reflectance (B07) عشان
+  // تصحيح كثافة/سمك الورقة (leaf scattering) — محتاج B03/B05/B07. ⚠️ بعكس
+  // ARI العادية، دي فعليًا scale-invariant تاني (الـ ÷10000 بتاعت الـ ARI
+  // وضرب NIR/10000 بيلغوا بعض جبريًا) — شوفي ANALYSIS_CONFIG.ari2 (route.ts).
+  // CMR/FMR (2026-08-15) — Clay Minerals Ratio (B11/B12) و Ferrous Minerals
+  // Ratio (B11/B08)، الاتنين simple ratios جيولوجية عادية (ESRI ClayMinerals/
+  // FerrousMinerals). ⚠️ FMR نفس بالظبط formula/bands زي MSI فوق (B11/B08) —
+  // مش خطأ تكرار، القيمة نفسها بتتقرا كمؤشر جيولوجي (حديد حديدوز) هنا بدل
+  // إجهاد مائي نباتي — legend/colormap مختلفين بس (شوفي SATELLITE_LEGENDS.FMR).
+  // IOI (2026-08-15) — Iron Oxide ratio (ESRI): Red/Blue = B04/B02.
+  // NDCI (2026-08-15) — Mishra & Mishra 2012، chlorophyll-a في المية الغائمة/المنتجة
+  // (turbid productive waters) — (RedEdge1-Red)/(RedEdge1+Red) = (B05-B04)/(B05+B04).
+  // FAI (2026-08-15) — Floating Algae Index (Hu 2009)، B04/B08/B11 — بيبني baseline
+  // خطي بين Red وSWIR1 عند طول موجة NIR، والفرق بينه وبين NIR الحقيقي بيكشف
+  // الطحالب/النباتات العائمة على سطح المية. شوفي ANALYSIS_CONFIG.fai (route.ts).
+  // MNDWI (2026-08-15) — Xu (2006)، Modified NDWI: (Green-SWIR1)/(Green+SWIR1)
+  // = B03/B11. ⚠️ نفس بالظبط بانداتات/معادلة NDSI فوق (NDSI هي كمان
+  // (Green-SWIR1)/(Green+SWIR1) بنفس الترتيب) — مش خطأ تكرار، القيمة نفسها
+  // بتتقرا هنا كإشارة استخراج مسطحات مائية (عالي = مية) بدل ثلج/جليد —
+  // legend/colormap مختلفين بس، نفس منطق FMR/MSI وNMDI_SOIL/NMDI_VEG فوق.
+  // GEMI (2026-08-15) — Global Environmental Monitoring Index (Pinty & Verhoef
+  // 1992)، B08/B04 — محتاج تطبيع reflectance (÷10000) عشان فيها ثابت جمع
+  // (0.125) مش نسبة/فرق بسيط زي NDVI، شوفي التعليق جوه ANALYSIS_CONFIG.gemi
+  // (route.ts) للمعادلة كاملة.
+  // MCARI (2026-08-15) — Daughtry et al. (2000)، B05/B04/B03 — محتاج تطبيع
+  // reflectance (÷10000) زي CVI/TVI/MTVI فوق (فرق مضروب في نسبة، مش نسبة
+  // بسيطة). CRI1/CRI2 (Gitelson et al. 2002) — فرق reciprocals (1/x) زي ARI
+  // فوق بالظبط، فمحتاجين نفس تطبيع ÷10000 قبل القسمة. الثلاثة شوفي
+  // ANALYSIS_CONFIG (route.ts) للمعادلات كاملة. ⚠️ GRVI (Green,Red) اتضافت
+  // قبل كده فوق (Visible-only add-ons 2026-08-11) — مش محتاجة تتضاف تاني.
+  // CI (2026-08-15) — Cyanobacteria Index (Wynne et al. 2008)، الأصل مبني على
+  // بانداتات MERIS/OLCI عند 665/681/709nm — Sentinel-2 معندوش باند عند 681nm
+  // بالظبط، فده تقريب باستخدام B04/B05/B06 (665/705/740nm) بدل الأصلية.
+  // ⚠️ نفس منطق baseline-interpolation بتاعت FAI فوق، بس هنا الـ baseline بين
+  // Red وRedEdge2 والقيمة المقاسة عندها RedEdge1 (بدل NIR/Red/SWIR1 بتاعت FAI
+  // للمياه العامة). شوفي التحذير في ANALYSIS_CONFIG.ci (route.ts) عن حدود
+  // التقريب ده مقارنة بالخوارزمية الأصلية على MERIS/OLCI.
+  // EVI2 (2026-08-15) — Jiang et al. (2008)، B08/B04 — نسخة بانداتين من EVI
+  // (بدون Blue)، نفس معاملات/معادلة العائلة، مش محتاجة تطبيع ÷10000 هنا عشان
+  // متسقة مع EVI الأصلية فوق (نفس النمط، DN خام مباشرة).
+  // MTCI (2026-08-15) — Dash & Curran (2004)، تقريب Sentinel-2 لـ MERIS
+  // Terrestrial Chlorophyll Index الأصلي (753/709/681nm) — هنا B06/B05/B04
+  // (740/705/665nm). فرق فوق فرق فبيتلغي أي ثابت تحويل DN->reflectance
+  // (scale-invariant زي RECI/GCI)، مش محتاج ÷10000. شوفي ANALYSIS_CONFIG.mtci
+  // (route.ts) للتفاصيل.
+  // NDVI705 (2026-08-15) — Gitelson & Merzlyak (1994)، (R750-R705)/(R750+R705)
+  // — تقريب Sentinel-2 باستخدام B06/B05 (740/705nm). ⚠️ نفس بالظبط
+  // formula/bands بتاعة RENDVI فوق (نفس المعادلة) — مش خطأ تكرار، اسم تاني
+  // شائع في الأدبيات لنفس الحساب، نفس منطق NDSI/MNDWI فوق.
+  // NDTI (2026-08-15) — Normalized Difference Turbidity Index (Lacaux et al.
+  // 2007)، (Red-Green)/(Red+Green) = B04/B03 — جودة مياه، مش تلاجة الأرض
+  // (فيه اسم NDTI تاني مختلف تمامًا لـ tillage/SWIR بس ده مش المقصود هنا
+  // بناءً على الطلب).
+  // TCARI (2026-08-15) — Haboudane et al. (2002)، B05/B04/B03 — رفيقة MCARI
+  // فوق بس معادلة مختلفة شوية (الضرب في النسبة جوه القوس التاني بس مش
+  // القوسين مع بعض) — شوفي ANALYSIS_CONFIG.tcari (route.ts) للفرق بالظبط.
+  "sentinel-2": ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "NDRE", "GNDVI", "MSAVI2", "CCCI", "NDDI", "SI", "CVI", "VARI", "RED_EDGE", "MTVI", "TVI", "GRVI", "RECI", "SIPI", "GCI", "PSRI", "NBRI", "MSI", "NDSI", "OSI", "RENDVI", "REIP", "NMDI_SOIL", "NMDI_VEG", "ARI", "ARI2", "CMR", "FMR", "IOI", "NDCI", "FAI", "MNDWI", "GEMI", "MCARI", "CRI1", "CRI2", "CI", "EVI2", "MTCI", "NDVI705", "NDTI", "TCARI"],
   "landsat":    ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "GNDVI", "MSAVI2", "NDDI", "SI", "CVI", "NBRI"],
   "sentinel-1": ["VV", "VH", "RATIO", "SAR_RGB", "FLOOD", "CHANGE"],
   "cop-dem":    ["ELEVATION", "SLOPE", "HILLSHADE", "ASPECT", "CONTOURS"],
@@ -823,6 +934,194 @@ export const SATELLITE_LEGENDS: Record<SatelliteAnalysisType, {
     mid: "~715nm (moderate)",
     max: "~730-740nm (dense, high chlorophyll)",
     meaning: ["Guyot & Baret (1988) classic linear formula: 700 + 40 × ((Red+RedEdge3)/2 − RedEdge1) / (RedEdge2 − RedEdge1), using B04/B05/B06/B07. Same four bands and output range as RED_EDGE (S2REP), but a different — older — set of coefficients, so the two won't produce identical pixel values even on the same scene.", "Same interpretation direction as RED_EDGE: higher wavelength (toward 730-740nm) means more canopy chlorophyll/nitrogen, and it tends not to saturate on dense mature canopy the way NDVI/NDRE do."],
+  },
+  NMDI_SOIL: {
+    label: "NMDI soil moisture (drought)",
+    // "rdbu_r" زي MSI/OSI — قيمة منخفضة = رطب (أزرق)، قيمة عالية = جاف (أحمر).
+    gradient: "linear-gradient(90deg,#2166ac,#4393c3,#d1e5f0,#fddbc7,#f4a582,#d6604d,#b2182b)",
+    min: "~0.15 = wet soil (blue)",
+    mid: "~0.5 (mixed)",
+    max: "0.85+ = extreme soil drought (red)",
+    meaning: ["Wang & Qu (2007): (NIR − (SWIR1 − SWIR2)) / (NIR + (SWIR1 − SWIR2)), B08/B11/B12 — uses the slope between two liquid-water absorption bands (1640nm, 2130nm) instead of one, giving stronger drought sensitivity than a single-SWIR index like NDMI/MSI.", "Reads correctly on bare or sparsely vegetated ground: rising NMDI means the soil surface is drying out. Over a canopy with LAI ≳ 2 the same formula instead tracks vegetation water content — see NMDI_VEG, which shares this exact calculation but reads the opposite direction."],
+  },
+  NMDI_VEG: {
+    label: "NMDI vegetation water content",
+    // "rdbu" (مش معكوس) زي NDSI — قيمة عالية = رطب/صحي (أزرق)، قيمة منخفضة =
+    // إجهاد مائي (أحمر). عكس NMDI_SOIL عمدًا لإن نفس القيمة بتتقرا بعكس الاتجاه.
+    gradient: "linear-gradient(90deg,#b2182b,#d6604d,#f4a582,#fddbc7,#d1e5f0,#4393c3,#2166ac)",
+    min: "low = severe canopy water stress (red)",
+    mid: "moderate",
+    max: "high = well-watered canopy (blue)",
+    meaning: ["Same Wang & Qu (2007) formula as NMDI_SOIL — (NIR − (SWIR1 − SWIR2)) / (NIR + (SWIR1 − SWIR2)), B08/B11/B12 — but read in the opposite direction: on heavily vegetated ground (LAI ≳ 2) it behaves as a canopy water-content index rather than a soil-moisture index.", "Most reliable over dense, closed canopy; on bare or sparse ground the same pixel value is better read as NMDI_SOIL instead. Best interpreted alongside NDMI/MSI rather than in isolation."],
+  },
+  ARI: {
+    label: "ARI anthocyanin pigment",
+    // "rdbu_r" زي PSRI (senescence) — قيمة منخفضة = كلوروفيل غالب/أخضر سليم
+    // (أزرق)، قيمة عالية = أنثوسيانين مرتفع (أحمر/بنفسجي — إجهاد/شيخوخة/نضج ثمار).
+    gradient: "linear-gradient(90deg,#2166ac,#4393c3,#d1e5f0,#fddbc7,#f4a582,#d6604d,#b2182b)",
+    min: "~0 = minimal anthocyanin (blue)",
+    mid: "~0.1 (moderate)",
+    max: "0.2+ = high anthocyanin content (red)",
+    meaning: ["Gitelson et al. (2001): (1/Green) − (1/RedEdge1), B03/B05 — isolates the anthocyanin absorption peak near 550nm by subtracting out the 700nm band, which reflects chlorophyll only, not anthocyanins.", "Rising values flag increasing anthocyanin — useful for plant-stress detection, leaf senescence, autumn foliage change, and fruit-ripeness monitoring. ⚠️ Unlike NDVI-style ratios this is a difference of reciprocals (1/x), so raw DN must be converted to true reflectance (÷10000) before computing it or the result comes out ~10000× too small — see ANALYSIS_CONFIG.ari in route.ts."],
+  },
+  ARI2: {
+    label: "ARI2 (mARI) anthocyanin, leaf-corrected",
+    // نفس منطق ARI فوق (نفس اتجاه القراءة ونفس colormap) — بس مداه أوسع
+    // بكتير (0 لحد 8+ بدل 0-0.2) لإنه مضروب في NIR reflectance كمان.
+    gradient: "linear-gradient(90deg,#2166ac,#4393c3,#d1e5f0,#fddbc7,#f4a582,#d6604d,#b2182b)",
+    min: "~0 = minimal anthocyanin (blue)",
+    mid: "~4 (moderate)",
+    max: "8+ = high anthocyanin content (red)",
+    meaning: ["Modified ARI / ARI2 (Gitelson et al.): ARI × NIR reflectance, B03/B05/B07 — adds the near-infrared band on top of the plain ARI formula to correct for leaf density/thickness (leaf scattering), since a thick or multi-layered canopy scatters more NIR and would otherwise skew the raw ARI reading.", "Same interpretation direction as ARI (rising = more anthocyanin), but the NIR correction makes it more reliable across canopies of different density/thickness — prefer ARI2 over plain ARI when comparing leaves or canopies that differ a lot in structure, not just pigment."],
+  },
+  CMR: {
+    label: "Clay Minerals Ratio (geology)",
+    // ⚠️ (2026-08-15) اتصلحت — الـ colormap الفعلي على الخريطة هو "inferno"
+    // (getIndexPreviewStyle في SatelliteDataPanel.tsx + defaultColormap في
+    // route.ts)، مش الـ amber/brown القديم اللي كان هنا. inferno بيبدأ أسود
+    // (قيمة منخفضة) وبيروح بنفسجي->أحمر->برتقالي->أصفر فاتح (قيمة عالية).
+    gradient: "linear-gradient(90deg,#000004,#420a68,#932667,#dd513a,#fca50a,#fcffa4)",
+    min: "~0.8 = low clay/alunite signal (dark)",
+    mid: "~1.5 (moderate)",
+    max: "2.5+ = high hydrous-mineral (clay/alunite) signal (bright)",
+    meaning: ["ESRI Clay Minerals Ratio: SWIR1/SWIR2 (B11/B12) — hydrous minerals such as clays and alunite absorb strongly in the 2.0–2.3µm portion of the spectrum, so this simple ratio picks out that absorption without needing atmospheric correction (ratios cancel illumination/terrain effects).", "⚠️ Also responds to carbonate mineralization and recently burned areas, which show high SWIR2 reflectance too — treat a high value as \"hydrous/altered mineral signature\", not confirmed clay, without field or hyperspectral follow-up. Sentinel-2's broad SWIR bands are a coarse indicator only; true clay-species discrimination needs a hyperspectral sensor."],
+  },
+  FMR: {
+    label: "Ferrous Minerals Ratio (geology)",
+    // ⚠️ (2026-08-15) اتصلحت — الـ colormap الفعلي على الخريطة هو "hot" (زي
+    // FIRE/FRP) مش الـ cyan/brown القديم اللي كان هنا (مالوش أي علاقة بـ
+    // hot). "hot" بيبدأ أسود (قيمة منخفضة) وبيروح أحمر->برتقالي->أصفر->أبيض
+    // (قيمة عالية) — نفس التدرّج المستخدم فعليًا في getIndexPreviewStyle
+    // و defaultColormap في route.ts.
+    gradient: "linear-gradient(90deg,#000000,#660000,#ff0000,#ff8000,#ffff00,#ffffff)",
+    min: "~0.2 = low iron-oxide signal (dark)",
+    mid: "~1 (moderate)",
+    max: "2+ = strong ferrous/iron-oxide signal (bright/white)",
+    meaning: ["ESRI Ferrous Minerals Ratio (Segal 1982): SWIR1/NIR (B11/B08) — highlights iron-bearing minerals by ratioing the SWIR band against NIR. ⚠️ Numerically identical formula/bands to MSI above — same calculation, read here as a geology signal (iron oxide content in bare rock/soil) instead of a vegetation moisture-stress signal.", "Most meaningful over exposed rock or bare/sparsely vegetated ground; on dense canopy the same value is better read as MSI (moisture stress) instead — pick whichever legend matches what's actually on the ground in your AOI."],
+  },
+  IOI: {
+    label: "Iron Oxide ratio (geology)",
+    // "magma" (زي THERMAL) — مؤكد موجود، تدرّج أسود->بنفسجي->برتقالي->أصفر
+    // مناسب لإشارة أكسيد الحديد (لون الصدأ/الهيماتيت).
+    gradient: "linear-gradient(90deg,#0f172a,#6b21a8,#db2777,#f97316,#facc15)",
+    min: "~0.8 = low iron-oxide exposure",
+    mid: "~1.5 (moderate)",
+    max: "2.5+ = strong hematite/goethite signal",
+    meaning: ["ESRI Iron Oxide ratio: Red/Blue (B04/B02) — limonitic iron-oxide alteration and iron-bearing phyllosilicates absorb strongly in the blue and reflect more in red, so this simple ratio picks up surface iron staining/alteration without atmospheric correction (ratios self-cancel illumination).", "Complements FMR/CMR above for mineral exploration: IOI targets surface oxidation staining specifically, while FMR targets broader iron-bearing minerals and CMR targets clay/hydrous alteration — the three together give a rough alteration-mineral picture, not a substitute for hyperspectral or field confirmation."],
+  },
+  NDCI: {
+    label: "NDCI chlorophyll-a (turbid water)",
+    // "turbo" — نفس colormap SST/CHLOROPHYLL (Sentinel-3) بالظبط، عشان يتقري
+    // بنفس المنطق: قيمة منخفضة = مية صافية، قيمة عالية = تركيز كلوروفيل عالي/bloom.
+    gradient: "linear-gradient(90deg,#30123b,#4662d7,#36aaf9,#1ae4b6,#a2fc3c,#fabb31,#e4460a,#7a0403)",
+    min: "-0.2 = clear water, minimal chlorophyll-a",
+    mid: "~0 (moderate)",
+    max: "0.4+ = high chlorophyll-a / algal bloom",
+    meaning: ["Mishra & Mishra (2012): (RedEdge1-Red)/(RedEdge1+Red), B05/B04 — normalized-difference chlorophyll index calibrated for estuarine and coastal turbid, productive (case-2) waters where standard ocean-color chlorophyll algorithms break down.", "Designed for water pixels specifically — mask out land/vegetation first (e.g. with NDWI) since NDCI on terrestrial vegetation just reads as a weaker version of NDRE, not a meaningful chlorophyll-a estimate."],
+  },
+  FAI: {
+    label: "FAI floating algae / surface vegetation",
+    // Sequential أزرق(مية نضيفة)->أخضر(طحالب) — بديهي لموضوع الطحالب العائمة.
+    gradient: "linear-gradient(90deg,#022c43,#04628a,#1f9bb5,#7fd1c9,#a6d96a,#238443)",
+    min: "negative = open water, no floating material",
+    mid: "~0 (baseline / threshold zone)",
+    max: "positive = floating algae / vegetation mat",
+    meaning: ["Hu (2009): FAI = NIR − NIR′, where NIR′ is a linear baseline interpolated between Red and SWIR1 at the NIR wavelength (B08 − [B04 + (B11−B04)×(λNIR−λRed)/(λSWIR1−λRed)]). Floating vegetation/algae reflects far more strongly in NIR than the Red–SWIR1 baseline predicts, so it stands out as a positive spike; open water sits close to zero or slightly negative.", "⚠️ Threshold-dependent and scene-specific — published Sentinel-2 studies use thresholds around 0.05-0.07 to separate floating algae from water, but sun-glint, thin clouds, and turbid sediment can also push FAI positive. Cross-check flagged areas visually (RGB) before treating a bloom as confirmed."],
+  },
+  MNDWI: {
+    label: "MNDWI water body extraction",
+    // "rdbu" زي NDWI — قيمة عالية = مية (أزرق)، قيمة منخفضة = يابسة (أحمر).
+    gradient: "linear-gradient(90deg,#67001f,#d6604d,#fddbc7,#d1e5f0,#4393c3,#053061)",
+    min: "low = built-up / dry land (red)",
+    mid: "~0",
+    max: "high = open water (blue)",
+    meaning: ["Xu (2006): (Green−SWIR1)/(Green+SWIR1), B03/B11 — ⚠️ numerically identical formula/bands to NDSI above (same calculation), read here as a water-extraction signal instead of snow/ice. SWIR1 absorption by water is much stronger than green reflectance loss, so open water pushes this ratio strongly positive.", "Generally outperforms standard NDWI (Green/NIR) for suppressing built-up-area false positives, since SWIR1 also absorbs strongly over urban surfaces — best read alongside NDWI rather than in isolation, and note the NDSI overlap if the AOI has both water and snow/ice."],
+  },
+  GEMI: {
+    label: "GEMI soil-adjusted, atmosphere-resistant vegetation",
+    gradient: "linear-gradient(90deg,#8b0000,#e31a1c,#fd8d3c,#ffe600,#a6d96a,#31a354,#006837)",
+    min: "bare soil / non-vegetated",
+    mid: "moderate cover",
+    max: "dense, healthy canopy",
+    meaning: ["Pinty & Verhoef (1992): a two-step non-linear function of NIR/Red reflectance (η = [2(NIR²−Red²)+1.5·NIR+0.5·Red]/(NIR+Red+0.5); GEMI = η(1−0.25η) − (Red−0.125)/(1−Red)), B08/B04. Designed to stay stable across varying atmospheric conditions (aerosol/water-vapor content) where NDVI drifts scene-to-scene.", "Needs true reflectance (0–1) rather than raw DN — the additive 0.125/1 constants are calibrated to that scale, unlike simple-ratio or normalized-difference indices which are scale-invariant."],
+  },
+  MCARI: {
+    label: "MCARI chlorophyll absorption (soil/PAR resistant)",
+    gradient: "linear-gradient(90deg,#d94801,#fd8d3c,#fed976,#78c679,#238443)",
+    min: "low chlorophyll absorption / sparse cover",
+    mid: "moderate",
+    max: "high chlorophyll absorption, dense canopy",
+    meaning: ["Daughtry et al. (2000): [(R700−R670) − 0.2×(R700−R550)] × (R700/R670), B05/B04/B03 — combines a red-edge/red difference (chlorophyll absorption depth) with a green correction term (removes non-photosynthetic/soil background influence) and a ratio multiplier (further suppresses soil brightness).", "Needs true reflectance (÷10000), same reasoning as CVI/TVI/MTVI — the difference-times-ratio shape is not scale-invariant. Often paired with OSAVI (MCARI/OSAVI) to further reduce residual soil sensitivity; used standalone here."],
+  },
+  CRI1: {
+    label: "CRI1 carotenoid pigment",
+    // "rdbu_r" زي ARI عمدًا — نفس منطق فرق الـ reciprocals.
+    gradient: "linear-gradient(90deg,#053061,#4393c3,#d1e5f0,#fddbc7,#d6604d,#67001f)",
+    min: "low carotenoid signal (blue)",
+    mid: "moderate",
+    max: "high carotenoid signal (red)",
+    meaning: ["Gitelson et al. (2002): (1/R510) − (1/R550) — approximated on Sentinel-2 as (1/Blue) − (1/Green), B02/B03. Isolates carotenoid pigment absorption near 510nm by subtracting out the overlapping absorption at 550nm.", "⚠️ Difference of reciprocals (1/x) like ARI above, not a direct ratio — needs reflectance normalization (÷10000) before dividing, or the result explodes far outside its literature range."],
+  },
+  CRI2: {
+    label: "CRI2 carotenoid pigment (canopy-corrected)",
+    gradient: "linear-gradient(90deg,#053061,#4393c3,#d1e5f0,#fddbc7,#d6604d,#67001f)",
+    min: "low carotenoid signal (blue)",
+    mid: "moderate",
+    max: "high carotenoid signal (red)",
+    meaning: ["Gitelson et al. (2002): (1/R510) − (1/R700) — approximated on Sentinel-2 as (1/Blue) − (1/RedEdge1), B02/B05. Same carotenoid-isolation idea as CRI1, but substitutes the red-edge (~700nm) band for green (~550nm), making it more robust on denser canopies where CRI1 saturates.", "Same reciprocal-difference caveat as CRI1 — needs reflectance normalization (÷10000), not raw DN. Best read alongside CRI1: a large gap between the two often indicates canopy structure effects rather than pigment differences alone."],
+  },
+  CI: {
+    label: "CI cyanobacteria index (harmful algal bloom, water)",
+    // "turbo" زي NDCI/CHLOROPHYLL عمدًا — نفس منطق تركيز الصبغة.
+    gradient: "linear-gradient(90deg,#30123b,#4662d7,#36aaf9,#1ae4b6,#a2fc3c,#fabb31,#e4460a,#7a0403)",
+    min: "negative = no bloom signal / clear water",
+    mid: "~0 (baseline)",
+    max: "positive = cyanobacteria bloom signal",
+    meaning: ["Wynne et al. (2008): baseline-subtraction ('spectral shape') around the ~681nm phycocyanin/chlorophyll fluorescence feature, originally built for MERIS/OLCI's exact 665/681/709nm bands. ⚠️ Sentinel-2 has no band at 681nm, so this is an approximation using B04/B05/B06 (665/705/740nm) — CI = [Red + (RedEdge2−Red)×(705−665)/(740−665)] − RedEdge1, i.e. how far actual reflectance at 705nm dips below the Red→RedEdge2 baseline.", "Because it substitutes a different wavelength than the original algorithm targets, treat this as a coarse bloom-presence indicator rather than the validated Wynne CI — cross-check flagged water pixels with RGB/NDCI/turbidity before reporting a confirmed cyanobacteria bloom, and mask out land first (e.g. with NDWI/MNDWI)."],
+  },
+  EVI2: {
+    label: "EVI2 two-band enhanced vegetation",
+    gradient: "linear-gradient(90deg,#2c0735,#c71585,#ff6347,#ffa500,#ffd700,#ffff66)",
+    min: "sparse",
+    mid: "moderate",
+    max: "dense canopy",
+    meaning: ["Jiang et al. (2008): 2.5×(NIR−Red)/(NIR+2.4×Red+1), B08/B04 — a two-band simplification of EVI that drops the Blue-band atmospheric correction term, so it works when Blue isn't available or is noisy, at the cost of some aerosol resistance.", "Tracks the standard 3-band EVI closely on most scenes; the two diverge mainly under heavy atmospheric haze, where EVI's Blue-based correction still has an edge."],
+  },
+  MTCI: {
+    label: "MTCI chlorophyll (MERIS-heritage, Sentinel-2 approximation)",
+    // "spectral_r" زي NDRE/RECI/RENDVI عمدًا — نفس منطق كلوروفيل الـ red-edge.
+    gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#4575b4,#313695)",
+    min: "low chlorophyll (red/orange)",
+    mid: "moderate (yellow)",
+    max: "high chlorophyll (blue)",
+    meaning: ["Dash & Curran (2004): (R753−R709)/(R709−R681) on MERIS — approximated on Sentinel-2 as (RedEdge2−RedEdge1)/(RedEdge1−Red), B06/B05/B04 (740/705/665nm substituting for 753/709/681nm). A difference-over-difference ratio, so it's scale-invariant like RECI/GCI — no reflectance normalization needed.", "Designed to stay linear with canopy chlorophyll content further into high-biomass conditions than NDVI/NDRE, which saturate earlier — useful for dense, mature canopy where those two have already flattened out."],
+  },
+  NDVI705: {
+    label: "NDVI705 red-edge NDVI (Gitelson & Merzlyak)",
+    // نفس تدرّج RENDVI بالظبط — نفس المعادلة، اسم تاني بس.
+    gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#4575b4,#313695)",
+    min: "low chlorophyll (red/orange)",
+    mid: "moderate (yellow)",
+    max: "high chlorophyll (blue)",
+    meaning: ["Gitelson & Merzlyak (1994): (R750−R705)/(R750+R705), approximated on Sentinel-2 as (RedEdge2−RedEdge1)/(RedEdge2+RedEdge1), B06/B05. ⚠️ Numerically identical formula/bands to RENDVI above — same calculation, kept as a separate dropdown entry under the more widely-cited literature name, same reasoning as MNDWI/NDSI sharing one formula.", "Same early chlorophyll/nitrogen-stress sensitivity as RENDVI — Sentinel-2 only, Landsat has no red-edge band."],
+  },
+  NDTI: {
+    label: "NDTI water turbidity",
+    // "salinity_clear" زي SI عمدًا (تيل صافي -> ذهبي -> أحمر عكارة عالية) —
+    // نفس التدرّج المستخدم فعليًا في getIndexPreviewStyle.
+    gradient: "linear-gradient(90deg,#0891b2,#67e8f9,#fde68a,#f59e0b,#dc2626)",
+    min: "low turbidity / clear water",
+    mid: "moderate",
+    max: "high turbidity / suspended sediment",
+    meaning: ["Lacaux et al. (2007): (Red−Green)/(Red+Green), B04/B03 — suspended sediment scatters more strongly in red than green, so this ratio rises with turbidity. Same normalized-difference shape as NDVI/NDWI, scale-invariant, no ÷10000 needed.", "⚠️ Different index from the SWIR-based 'Normalized Difference Tillage Index' that shares the same acronym in some agriculture literature — this one targets water turbidity specifically, not crop residue/tillage. Mask out land first (e.g. with NDWI/MNDWI) since NDTI on vegetation or bare soil isn't a meaningful turbidity reading."],
+  },
+  TCARI: {
+    label: "TCARI chlorophyll absorption (transformed)",
+    gradient: "linear-gradient(90deg,#d94801,#fd8d3c,#fed976,#78c679,#238443)",
+    min: "low chlorophyll absorption / sparse cover",
+    mid: "moderate",
+    max: "high chlorophyll absorption, dense canopy",
+    meaning: ["Haboudane et al. (2002): 3×[(R700−R670) − 0.2×(R700−R550)×(R700/R670)], B05/B04/B03 — a companion to MCARI above with the same three bands, but the soil-correction term (0.2×(R700−R550)) is scaled by the ratio only, not the whole bracket, giving it different soil/PAR sensitivity than MCARI.", "Needs true reflectance (÷10000), same reasoning as MCARI/CVI/TVI — the difference-times-ratio shape is not scale-invariant. In the literature TCARI is most often paired as a TCARI/OSAVI ratio to further cancel soil background; used standalone here, same treatment as MCARI."],
   },
 
   // ── Sentinel-1 (Radar) ──────────────────────────────────────────────────

@@ -43,11 +43,52 @@
 //   rendvi → urls = B06,B05        (RedEdge2, RedEdge1) — Sentinel-2 only، زي NDRE بس الاتنين red-edge
 //   reip   → urls = B04,B05,B06,B07 (Red, RedEdge1, RedEdge2, RedEdge3) — Sentinel-2 only، زي red_edge (S2REP)
 //                                   بس معادلة Guyot & Baret 1988 الكلاسيكية بدل Frampton 2013
+//   nmdi_soil → urls = B08,B11,B12 (NIR, SWIR1, SWIR2) — Sentinel-2 only، نفس معادلة nmdi_veg بالظبط
+//                                   (Wang & Qu 2007) — بس legend/colormap معكوسين لإن نفس القيمة
+//                                   بتتقرا: تربة جافة = عالي (soil)، محصول رطب = عالي (veg)
+//   nmdi_veg  → urls = B08,B11,B12 (NIR, SWIR1, SWIR2) — نفس بانداتات/معادلة nmdi_soil بالظبط
+//   ari       → urls = B03,B05     (Green, RedEdge1) — Sentinel-2 only، فرق reciprocals (1/x)
+//                                   مش نسبة عادية، محتاج تطبيع ÷10000 قبل القسمة (شوفي ANALYSIS_CONFIG.ari)
+//   ari2      → urls = B07,B03,B05 (NIR, Green, RedEdge1) — Sentinel-2 only، mARI = ARI × NIR reflectance،
+//                                   بيصحح كثافة/سمك الورقة — فعليًا scale-invariant (شوفي ANALYSIS_CONFIG.ari2)
+//   cmr       → urls = B11,B12     (SWIR1, SWIR2) — Sentinel-2 only، Clay Minerals Ratio، simple ratio
+//   fmr       → urls = B11,B08     (SWIR1, NIR) — Sentinel-2 only، Ferrous Minerals Ratio — ⚠️ نفس
+//                                   بانداتات/معادلة msi بالظبط، بس مقروءة كإشارة جيولوجية مش إجهاد مائي
+//   ioi       → urls = B04,B02     (Red, Blue) — Sentinel-2 only، Iron Oxide ratio (ESRI)
+//   ndci      → urls = B05,B04     (RedEdge1, Red) — Sentinel-2 only، Mishra & Mishra 2012،
+//                                   chlorophyll-a في المية الغائمة/المنتجة (turbid productive waters)
+//   fai       → urls = B08,B04,B11 (NIR, Red, SWIR1) — Sentinel-2 only، Floating Algae Index (Hu 2009)
+//                                   NIR − baseline خطي بين Red وSWIR1 (شوفي ANALYSIS_CONFIG.fai)
+//   mndwi     → urls = B03,B11     (Green, SWIR1) — Sentinel-2 only، Xu 2006 — ⚠️ نفس بالظبط
+//                                   بانداتات/معادلة ndsi فوق، مقروءة هنا كمسطحات مائية مش ثلج/جليد
+//   gemi      → urls = B08,B04     (NIR, Red) — Sentinel-2 only، Pinty & Verhoef 1992، محتاج
+//                                   تطبيع reflectance ÷10000 (شوفي ANALYSIS_CONFIG.gemi)
+//   mcari     → urls = B05,B04,B03 (RedEdge1, Red, Green) — Sentinel-2 only، Daughtry et al. 2000،
+//                                   محتاج تطبيع reflectance ÷10000 زي cvi/tvi/mtvi (شوفي ANALYSIS_CONFIG.mcari)
+//   cri1      → urls = B02,B03     (Blue, Green) — Sentinel-2 only، Gitelson et al. 2002، فرق
+//                                   reciprocals (1/x) زي ari، محتاج ÷10000 (شوفي ANALYSIS_CONFIG.cri1)
+//   cri2      → urls = B02,B05     (Blue, RedEdge1) — Sentinel-2 only، نفس منطق cri1 بس بديل
+//                                   RedEdge1 محل Green (أكتر ثباتًا على غطاء نباتي كثيف)
+//   ci        → urls = B04,B05,B06 (Red, RedEdge1, RedEdge2) — Sentinel-2 only، Wynne et al. 2008،
+//                                   Sentinel-2 تقريب (مفيش باند عند 681nm) — شوفي ANALYSIS_CONFIG.ci
+//   evi2      → urls = B08,B04     (NIR, Red) — Sentinel-2 only، Jiang et al. 2008، نسخة بانداتين
+//                                   من evi بدون Blue، نفس نمط evi (DN خام، مش محتاجة ÷10000)
+//   mtci      → urls = B06,B05,B04 (RedEdge2, RedEdge1, Red) — Sentinel-2 only، Dash & Curran 2004،
+//                                   تقريب MERIS (740/705/665nm بدل 753/709/681nm)، scale-invariant
+//   ndvi705   → urls = B06,B05     (RedEdge2, RedEdge1) — Sentinel-2 only، Gitelson & Merzlyak 1994،
+//                                   ⚠️ نفس بالظبط بانداتات/معادلة rendvi فوق
+//   ndti      → urls = B04,B03     (Red, Green) — Sentinel-2 only، Normalized Difference Turbidity
+//                                   Index (Lacaux et al. 2007)، جودة مياه — مش tillage NDTI
+//   tcari     → urls = B05,B04,B03 (RedEdge1, Red, Green) — Sentinel-2 only، Haboudane et al. 2002،
+//                                   رفيقة mcari بمعادلة مختلفة شوية (شوفي ANALYSIS_CONFIG.tcari)
 //
 //   change_<index> → urls = [...نفس بانداتات الـ index بتاعته لـ Before, ...نفس البانداتات لـ After]
 //     مثال change_evi → urls = beforeB08,beforeB04,beforeB02,afterB08,afterB04,afterB02
 //     change_rgb  → urls = beforeB04,beforeB03,beforeB02,afterB04,afterB03,afterB02  (R,G,B × before/after)
 //     change_swir → urls = beforeB12,beforeB8A,beforeB04,afterB12,afterB8A,afterB04 (SWIR,NIR,Red × before/after)
+//     change_nbri/change_gci/change_vari/change_red_edge/change_mtvi/change_tvi/change_grvi/
+//     change_msi/change_ndsi → same pattern, same bands as their index versions above
+//     (2026-08-16 — used to be preview/swipe-only client-side, see ChangeDetectionPanel.tsx)
 //
 //   vv_vh_ratio → urls = vv,vh   (VV, VH amplitude assets) — dB difference: 20·log10(VV) − 20·log10(VH)
 //   sar_rgb     → urls = vv,vh   (VV, VH amplitude assets) — composite: R=VV dB, G=VH dB, B=VV/VH ratio dB
@@ -211,11 +252,38 @@ type AnalysisType =
   | "change_rgb" | "change_swir"
   | "change_ndvi" | "change_ndwi" | "change_ndbi" | "change_ndmi"
   | "change_savi" | "change_evi" | "change_bsi"
+  // ⚠️ (2026-08-16) Change classification for the 9 add-on indices that used
+  // to be preview/swipe-only in ChangeDetectionPanel.tsx (they were "index"
+  // kind above but had no change_<index> branch, so Run Change Detection was
+  // disabled for them client-side — see isClassifiable() there). Formulas are
+  // copied 1:1 from the index versions above.
+  | "change_nbri" | "change_gci" | "change_vari" | "change_red_edge"
+  | "change_mtvi" | "change_tvi" | "change_grvi" | "change_msi" | "change_ndsi"
+  // ⚠️ (2026-08-16 batch 2) — the rest of the still-preview-only add-on
+  // indices, same treatment: formula copied 1:1 from the index entry above,
+  // bandCount doubled. See ChangeDetectionPanel.tsx's getChangeThresholdParams
+  // for how threshold/classThreshold get scaled per-index for these too.
+  | "change_ndre" | "change_gndvi" | "change_msavi2" | "change_ccci"
+  | "change_nddi" | "change_si" | "change_cvi" | "change_reci" | "change_sipi"
+  | "change_psri" | "change_osi" | "change_rendvi" | "change_reip"
+  | "change_nmdi_soil" | "change_nmdi_veg" | "change_ari" | "change_ari2"
+  | "change_cmr" | "change_fmr" | "change_ioi" | "change_ndci" | "change_fai"
+  | "change_mndwi" | "change_gemi" | "change_mcari" | "change_cri1" | "change_cri2"
+  | "change_ci" | "change_evi2" | "change_mtci" | "change_ndvi705"
+  | "change_ndti" | "change_tcari"
   // Sentinel-1 (Radar / SAR)
   | "vv" | "vh"  | "change_vv" | "change_vh"
   | "vv_vh_ratio" | "sar_rgb"
   // Copernicus DEM
   | "elevation" | "slope" | "hillshade" | "aspect" 
+  // ⚠️ change_elevation (2026-08-18) — added to wire Copernicus DEM into
+  // ChangeDetectionPanel.tsx's satellite picker (see PREVIEW_DEFS.ELEVATION
+  // there). Terrain height is normally static, but a real before/after
+  // elevation diff is exactly the right tool for excavation/land-fill/
+  // landslide/construction monitoring — same renderChange() pipeline as
+  // change_vv/change_vh below, just with the identity formula (raw metres,
+  // no dB conversion).
+  | "change_elevation"
   // Sentinel-5P (Atmosphere) — ✅ حقيقية دلوقتي عن طريق /gis/sentinel5p/decode
   // (شوفي sentinelDecode.ts في الفرونت). "o3" alias جديد لنفس "ozone" القديمة
   // (الـ endpoint الجديد بيرجّع اسم المتغير "O3" مش "OZONE").
@@ -229,6 +297,16 @@ type AnalysisType =
   // variable.toLowerCase() اللي buildRasterProxyAnalyzeUrl بتبعته:
   // LST→"lst", FRP_MWIR→"frp_mwir", CHL_NN→"chl_nn".
   | "lst" | "frp_mwir" | "chl_nn"
+  // ⚠️ change_* variants (2026-08-18) — wiring Sentinel-5P/Sentinel-3 into
+  // ChangeDetectionPanel.tsx's satellite picker. Unlike change_ndvi etc.
+  // (which read raw Sentinel-2/Landsat band URLs directly), the frontend for
+  // these first resolves TWO decoded COG urls (one per date) via
+  // decodeSentinelDataset() in sentinelDecode.ts, then sends both urls here
+  // — same renderChange() pipeline, bandCount 2, identity formula (raw
+  // physical units, no ratio/dB conversion needed).
+  | "change_no2" | "change_so2" | "change_co" | "change_ozone" | "change_o3"
+  | "change_ch4" | "change_hcho" | "change_cloud"
+  | "change_sst" | "change_lst" | "change_frp_mwir" | "change_chl_nn"
   // Visible-only + Red-Edge add-ons (2026-08-11) — Sentinel-2 only
   | "vari" | "red_edge"
   // Triangular/visible vegetation add-ons (2026-08-11) — Sentinel-2 only
@@ -239,8 +317,31 @@ type AnalysisType =
   | "msi" | "ndsi" | "osi"
   // Red-edge NDVI + classic red-edge inflection point add-ons (2026-08-14) —
   // Sentinel-2 only, see SatellitePipelines.ts SOURCE_INDICES note
-  | "rendvi" | "reip";
-
+  | "rendvi" | "reip"
+  // Drought/pigment add-ons (2026-08-15) — Sentinel-2 only, see
+  // SatellitePipelines.ts SOURCE_INDICES note
+  | "nmdi_soil" | "nmdi_veg" | "ari" | "ari2"
+  // Geology / mineral-mapping add-ons (2026-08-15) — Sentinel-2 only, see
+  // SatellitePipelines.ts SOURCE_INDICES note
+  | "cmr" | "fmr" | "ioi"
+  // Water-quality add-ons (2026-08-15) — Sentinel-2 only, see
+  // SatellitePipelines.ts SOURCE_INDICES note
+  | "ndci" | "fai"
+  // Water/vegetation add-ons (2026-08-15) — Sentinel-2 only, see
+  // SatellitePipelines.ts SOURCE_INDICES note
+  | "mndwi" | "gemi"
+  // Pigment/index add-ons (2026-08-15) — Sentinel-2 only, see
+  // SatellitePipelines.ts SOURCE_INDICES note. grvi already exists above.
+  | "mcari" | "cri1" | "cri2"
+  // Harmful algal bloom add-on (2026-08-15) — Sentinel-2 approximation, see
+  // SatellitePipelines.ts SOURCE_INDICES note for the band-substitution caveat.
+  | "ci"
+  // Vegetation/chlorophyll add-ons (2026-08-15) — Sentinel-2 only, ndre
+  // already exists above.
+  | "evi2" | "mtci"
+  // 2026-08-15 batch (part 2) — Sentinel-2 only, see SatellitePipelines.ts
+  // SOURCE_INDICES note. ndvi705 shares its formula with rendvi.
+  | "ndvi705" | "ndti" | "tcari";
 type CompositeConfig = { kind: "composite"; bandCount: 3; label: string };
 type IndexConfig = {
   kind: "index";
@@ -665,6 +766,293 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     defaultMin: 700,
     defaultMax: 740,
   },
+  nmdi_soil: {
+    // Normalized Multi-band Drought Index (Wang & Qu 2007) — (NIR-(SWIR1-SWIR2))
+    // /(NIR+(SWIR1-SWIR2)), B08/B11/B12. Uses the *slope* between two
+    // liquid-water absorption bands (1640nm, 2130nm) as the moisture-sensitive
+    // term, giving it enhanced drought sensitivity vs. a single-SWIR index
+    // like NDMI/MSI. Same normalized-difference shape as NDVI, so no ÷10000
+    // needed (scale-invariant).
+    // ⚠️ Exact same formula as nmdi_veg below — Wang & Qu showed it works for
+    // BOTH soil and vegetation moisture, just read in opposite directions
+    // (rising value = drier soil on bare/sparse ground, but = wetter canopy
+    // on dense vegetation, LAI ≳ 2). Kept as two entries for the legend/
+    // colormap difference only, not two different calculations.
+    kind: "index", bandCount: 3, label: "NMDI soil moisture (NIR,SWIR1,SWIR2 — e.g. B08,B11,B12)",
+    formula: (nir, swir1, swir2) => (nir - (swir1 - swir2)) / (nir + (swir1 - swir2) || 1e-6),
+    defaultColormap: "rdbu_r",
+    defaultMin: 0.15,
+    defaultMax: 0.85,
+  },
+  nmdi_veg: {
+    // Same Wang & Qu (2007) formula/bands as nmdi_soil above, read in the
+    // opposite direction: over heavily vegetated ground this behaves as a
+    // canopy water-content index instead of a soil-moisture index (low =
+    // vegetation drought, high = well-watered canopy) — see nmdi_soil for
+    // the full formula note.
+    kind: "index", bandCount: 3, label: "NMDI vegetation water content (NIR,SWIR1,SWIR2 — e.g. B08,B11,B12)",
+    formula: (nir, swir1, swir2) => (nir - (swir1 - swir2)) / (nir + (swir1 - swir2) || 1e-6),
+    defaultColormap: "rdbu",
+    defaultMin: 0.15,
+    defaultMax: 0.85,
+  },
+  ari: {
+    // Anthocyanin Reflectance Index (Gitelson et al. 2001) — (1/Green)-(1/RedEdge1),
+    // B03/B05. Isolates the anthocyanin absorption peak near 550nm by
+    // subtracting the 700nm band, which reflects chlorophyll only.
+    // ⚠️ NOT scale-invariant like reci/gci/msi (those are direct ratios where
+    // a constant DN-vs-reflectance factor cancels out) — this is a
+    // *difference of reciprocals* (1/x), so raw DN must be converted to true
+    // reflectance (÷10000) first, same reasoning as cvi/tvi/mtvi above.
+    // Without it, the result comes out ~10000× too small and every pixel
+    // collapses into the near-zero transparency band.
+    kind: "index", bandCount: 2, label: "ARI Anthocyanin Reflectance Index (Green,RedEdge1 — e.g. B03,B05)",
+    formula: (green, redEdge1) => (1 / (green / 10000 || 1e-6)) - (1 / (redEdge1 / 10000 || 1e-6)),
+    defaultColormap: "rdbu_r",
+    defaultMin: 0,
+    defaultMax: 0.2,
+  },
+  ari2: {
+    // Modified ARI / mARI (Gitelson et al.) — ARI × NIR reflectance, adds the
+    // near-infrared band (B07) on top of plain ARI to correct for leaf
+    // density/thickness (leaf scattering), since a thicker/multi-layered
+    // canopy scatters more NIR and would otherwise skew the raw ARI reading.
+    // ⚠️ Algebraically, this collapses back to a plain ratio and IS
+    // scale-invariant (unlike ari above): mARI = ((1/(green/10000)) -
+    // (1/(redEdge1/10000))) * (nir/10000) simplifies to nir/green -
+    // nir/redEdge1 — the ÷10000 in the reciprocal terms and the ÷10000 on the
+    // NIR multiplier cancel out exactly. So no explicit ÷10000 is needed in
+    // the formula below even though raw DN is used directly.
+    kind: "index", bandCount: 3, label: "ARI2 (mARI) leaf-corrected anthocyanin (NIR,Green,RedEdge1 — e.g. B07,B03,B05)",
+    formula: (nir, green, redEdge1) => (nir / (green || 1e-6)) - (nir / (redEdge1 || 1e-6)),
+    defaultColormap: "rdbu_r",
+    defaultMin: 0,
+    defaultMax: 8,
+  },
+  cmr: {
+    // Clay Minerals Ratio (ESRI) — SWIR1/SWIR2 simple ratio (B11/B12). Hydrous
+    // minerals (clays, alunite) absorb strongly in the 2.0–2.3µm range, so
+    // this ratio picks that absorption out; being a ratio it self-cancels
+    // illumination/terrain shading effects, no ÷10000 needed.
+    kind: "index", bandCount: 2, label: "CMR Clay Minerals Ratio (SWIR1,SWIR2 — e.g. B11,B12)",
+    formula: (swir1, swir2) => swir1 / (swir2 || 1e-6),
+    // ⚠️ "oranges" مش اسم مؤكد موجود في RAMPS (شوفي كومنت BSI فوق عن نفس
+    // الغلطة قبل كده مع "PuOr") — استخدمنا "inferno" بدل كده، مؤكد موجود
+    // (مستخدم فعليًا لـ LST/THERMAL) وبيدّي نفس الإحساس البني/الترابي.
+    defaultColormap: "inferno",
+    defaultMin: 0.8,
+    defaultMax: 2.5,
+  },
+  fmr: {
+    // Ferrous Minerals Ratio (ESRI, after Segal 1982) — SWIR1/NIR simple
+    // ratio (B11/B08). ⚠️ Exact same formula/bands as msi above — same
+    // calculation, just read here as a geology signal (iron-oxide content on
+    // bare rock/soil) instead of vegetation moisture stress.
+    kind: "index", bandCount: 2, label: "FMR Ferrous Minerals Ratio (SWIR1,NIR — e.g. B11,B08)",
+    formula: (swir1, nir) => swir1 / (nir || 1e-6),
+    // "hot" (زي FIRE/FRP) — مؤكد موجود، بيدّي تدرّج أسود->أحمر->أصفر مناسب
+    // لإشارة أكسيد الحديد بدل تخمين اسم colormap جديد.
+    defaultColormap: "hot",
+    defaultMin: 0.2,
+    defaultMax: 2,
+  },
+  ioi: {
+    // Iron Oxide ratio (ESRI): Red/Blue (B04/B02). Simple ratio, self-cancels
+    // illumination like cmr/fmr above — no ÷10000 needed.
+    kind: "index", bandCount: 2, label: "IOI Iron Oxide ratio (Red,Blue — e.g. B04,B02)",
+    formula: (red, blue) => red / (blue || 1e-6),
+    defaultColormap: "magma",
+    defaultMin: 0.8,
+    defaultMax: 2.5,
+  },
+  ndci: {
+    // Normalized Difference Chlorophyll Index (Mishra & Mishra 2012) —
+    // (RedEdge1-Red)/(RedEdge1+Red), B05/B04. Same normalized-difference
+    // shape as NDVI, calibrated for chlorophyll-a in turbid/productive
+    // (case-2) water rather than open ocean. Scale-invariant, no ÷10000 needed.
+    kind: "index", bandCount: 2, label: "NDCI Chlorophyll-a, turbid water (RedEdge1,Red — e.g. B05,B04)",
+    formula: (redEdge1, red) => (redEdge1 - red) / (redEdge1 + red || 1e-6),
+    defaultColormap: "turbo",
+    defaultMin: -0.2,
+    defaultMax: 0.4,
+  },
+  fai: {
+    // Floating Algae Index (Hu 2009) — NIR minus a linear baseline
+    // interpolated between Red and SWIR1 at the NIR wavelength. Central
+    // wavelengths (Sentinel-2A): Red≈664.6nm, NIR≈832.8nm, SWIR1≈1613.7nm,
+    // giving baseline weight (832.8-664.6)/(1613.7-664.6) ≈ 0.1772.
+    // ⚠️ Scale-invariant like a normalized difference (all three bands enter
+    // linearly), so raw DN works fine, no ÷10000 needed. Threshold-dependent
+    // in practice — published studies use ~0.05-0.07 to flag floating algae.
+    kind: "index", bandCount: 3, label: "FAI Floating Algae Index (NIR,Red,SWIR1 — e.g. B08,B04,B11)",
+    formula: (nir, red, swir1) => nir - (red + (swir1 - red) * 0.1772),
+    defaultColormap: "greens",
+    defaultMin: -0.05,
+    defaultMax: 0.1,
+  },
+  mndwi: {
+    // Modified NDWI (Xu 2006) — (Green-SWIR1)/(Green+SWIR1), B03/B11. ⚠️
+    // Exact same formula/bands as ndsi above — same calculation, just read
+    // here as a water-extraction signal (SWIR1 absorption by water is much
+    // stronger than by snow/ice) instead of snow/ice cover. Same
+    // normalized-difference shape as NDWI/NDSI, no ÷10000 needed.
+    kind: "index", bandCount: 2, label: "MNDWI (Green,SWIR1 — e.g. B03,B11)",
+    formula: (green, swir1) => (green - swir1) / (green + swir1 || 1e-6),
+    defaultColormap: "rdbu",
+    defaultMin: -0.6,
+    defaultMax: 0.6,
+  },
+  gemi: {
+    // Global Environmental Monitoring Index (Pinty & Verhoef 1992) — a
+    // two-step non-linear function of NIR/Red reflectance, designed to stay
+    // stable across varying atmospheric conditions where NDVI drifts
+    // scene-to-scene. ⚠️ Unlike normalized-difference/simple-ratio indices
+    // above, this is NOT scale-invariant — the additive constants (0.5,
+    // 0.125, 1) are calibrated to true reflectance (0-1), so raw DN must be
+    // normalized ÷10000 first or the result is meaningless.
+    kind: "index", bandCount: 2, label: "GEMI (NIR,Red — e.g. B08,B04)",
+    formula: (nirRaw, redRaw) => {
+      const nir = nirRaw / 10000;
+      const red = redRaw / 10000;
+      const eta = (2 * (nir * nir - red * red) + 1.5 * nir + 0.5 * red) / (nir + red + 0.5 || 1e-6);
+      return eta * (1 - 0.25 * eta) - (red - 0.125) / (1 - red || 1e-6);
+    },
+    defaultColormap: "rdylgn",
+    defaultMin: -0.1,
+    defaultMax: 1,
+  },
+  mcari: {
+    // Modified Chlorophyll Absorption Ratio Index (Daughtry et al. 2000) —
+    // [(R700-R670) - 0.2*(R700-R550)] * (R700/R670), B05/B04/B03. Combines a
+    // red-edge/red chlorophyll-absorption difference with a green correction
+    // term (suppresses non-photosynthetic/soil background) and a ratio
+    // multiplier. ⚠️ Difference-times-ratio shape, NOT scale-invariant like
+    // reci/gci/msi — same reasoning as cvi/tvi/mtvi above, raw DN must be
+    // converted to true reflectance (÷10000) first.
+    kind: "index", bandCount: 3, label: "MCARI (RedEdge1,Red,Green — e.g. B05,B04,B03)",
+    formula: (redEdge1Raw, redRaw, greenRaw) => {
+      const re1 = redEdge1Raw / 10000;
+      const red = redRaw / 10000;
+      const green = greenRaw / 10000;
+      return ((re1 - red) - 0.2 * (re1 - green)) * (re1 / (red || 1e-6));
+    },
+    defaultColormap: "rdylgn",
+    defaultMin: 0,
+    defaultMax: 1.5,
+  },
+  cri1: {
+    // Carotenoid Reflectance Index 1 (Gitelson et al. 2002) —
+    // (1/R510)-(1/R550), approximated on Sentinel-2 as (1/Blue)-(1/Green),
+    // B02/B03. ⚠️ Difference of reciprocals (1/x) like ari above, NOT
+    // scale-invariant — raw DN must be converted to true reflectance
+    // (÷10000) before dividing, same reasoning as ari.
+    kind: "index", bandCount: 2, label: "CRI1 Carotenoid Reflectance Index (Blue,Green — e.g. B02,B03)",
+    formula: (blue, green) => (1 / (blue / 10000 || 1e-6)) - (1 / (green / 10000 || 1e-6)),
+    defaultColormap: "rdbu_r",
+    defaultMin: 0,
+    defaultMax: 15,
+  },
+  cri2: {
+    // Carotenoid Reflectance Index 2 (Gitelson et al. 2002) —
+    // (1/R510)-(1/R700), approximated on Sentinel-2 as (1/Blue)-(1/RedEdge1),
+    // B02/B05. Same carotenoid-isolation idea as cri1, substitutes red-edge
+    // (~700nm) for green (~550nm) — more robust on denser canopy where cri1
+    // saturates. Same reciprocal-difference caveat as cri1, needs ÷10000.
+    kind: "index", bandCount: 2, label: "CRI2 Carotenoid Reflectance Index, canopy-corrected (Blue,RedEdge1 — e.g. B02,B05)",
+    formula: (blue, redEdge1) => (1 / (blue / 10000 || 1e-6)) - (1 / (redEdge1 / 10000 || 1e-6)),
+    defaultColormap: "rdbu_r",
+    defaultMin: 0,
+    defaultMax: 10,
+  },
+  ci: {
+    // Cyanobacteria Index (Wynne et al. 2008) — baseline-subtraction
+    // ("spectral shape") around the ~681nm phycocyanin/chlorophyll
+    // fluorescence feature, originally built for MERIS/OLCI's exact
+    // 665/681/709nm bands. ⚠️ Sentinel-2 has no band at 681nm — this is an
+    // approximation substituting B04/B05/B06 (665/705/740nm). Same
+    // baseline-interpolation shape as fai above (linear in all three bands,
+    // so scale-invariant — no ÷10000 needed), but here measuring the dip at
+    // RedEdge1 below the Red→RedEdge2 baseline instead of a NIR peak above
+    // a Red→SWIR1 baseline. Treat as a coarse bloom-presence indicator, not
+    // the validated MERIS/OLCI algorithm — cross-check with RGB/ndci/turbidity
+    // before reporting a confirmed bloom.
+    kind: "index", bandCount: 3, label: "CI Cyanobacteria Index, approximated (Red,RedEdge1,RedEdge2 — e.g. B04,B05,B06)",
+    formula: (red, redEdge1, redEdge2) => (red + (redEdge2 - red) * ((705 - 665) / (740 - 665))) - redEdge1,
+    defaultColormap: "turbo",
+    defaultMin: -0.02,
+    defaultMax: 0.05,
+  },
+  evi2: {
+    // Two-band EVI (Jiang et al. 2008) — 2.5*(NIR-Red)/(NIR+2.4*Red+1).
+    // Drops the Blue-band atmospheric-correction term from standard EVI, for
+    // when Blue is unavailable/noisy — same coefficient style/DN treatment
+    // as evi above (no explicit ÷10000 here, consistent with that sibling).
+    kind: "index", bandCount: 2, label: "EVI2 (NIR,Red — e.g. B08,B04)",
+    formula: (nir, red) => (2.5 * (nir - red)) / (nir + 2.4 * red + 1 || 1e-6),
+    defaultColormap: "magma",
+  },
+  mtci: {
+    // MERIS Terrestrial Chlorophyll Index (Dash & Curran 2004) —
+    // (R753-R709)/(R709-R681) on MERIS. Sentinel-2 has no bands at those
+    // exact wavelengths, so this substitutes B06/B05/B04 (740/705/665nm) for
+    // 753/709/681nm: (RedEdge2-RedEdge1)/(RedEdge1-Red). Difference-over-
+    // difference shape, so it's scale-invariant like reci/gci — no ÷10000
+    // needed, any DN-to-reflectance scale factor cancels top and bottom.
+    kind: "index", bandCount: 3, label: "MTCI Chlorophyll, MERIS-heritage approximation (RedEdge2,RedEdge1,Red — e.g. B06,B05,B04)",
+    formula: (redEdge2, redEdge1, red) => (redEdge2 - redEdge1) / (redEdge1 - red || 1e-6),
+    defaultColormap: "spectral_r",
+    defaultMin: 0,
+    defaultMax: 5,
+  },
+  ndvi705: {
+    // Gitelson & Merzlyak (1994) — (R750-R705)/(R750+R705), approximated on
+    // Sentinel-2 as (RedEdge2-RedEdge1)/(RedEdge2+RedEdge1), B06/B05. ⚠️
+    // Numerically identical formula/bands to rendvi above — same
+    // calculation, kept as a separate dropdown entry under the more
+    // widely-cited literature name (same reasoning as mndwi/ndsi sharing
+    // one formula). Scale-invariant, no ÷10000 needed.
+    kind: "index", bandCount: 2, label: "NDVI705 (RedEdge2,RedEdge1 — e.g. B06,B05)",
+    formula: (re2, re1) => (re2 - re1) / (re2 + re1 || 1e-6),
+    defaultColormap: "spectral_r",
+    defaultMin: -1,
+    defaultMax: 1,
+  },
+  ndti: {
+    // Normalized Difference Turbidity Index (Lacaux et al. 2007) —
+    // (Red-Green)/(Red+Green), B04/B03. Suspended sediment scatters more
+    // strongly in red than green, so this rises with turbidity. Same
+    // normalized-difference shape as NDVI/NDWI, scale-invariant, no ÷10000
+    // needed. ⚠️ Different index from the SWIR-based "tillage" NDTI that
+    // shares this acronym in some agriculture literature — this one is
+    // water turbidity specifically.
+    // ⚠️ "ylorbr" مش اسم مؤكد موجود في RAMPS (نفس تحذير BSI/CMR القديم عن
+    // "oranges") — استخدمنا "salinity_clear" بدل كده (نفس اللي مستخدم فعليًا
+    // لـ SI)، بيدّي نفس الإحساس (تيل صافي -> أصفر/ذهبي -> أحمر عكارة عالية).
+    kind: "index", bandCount: 2, label: "NDTI Water Turbidity (Red,Green — e.g. B04,B03)",
+    formula: (red, green) => (red - green) / (red + green || 1e-6),
+    defaultColormap: "salinity_clear",
+    defaultMin: -0.2,
+    defaultMax: 0.4,
+  },
+  tcari: {
+    // Transformed Chlorophyll Absorption Reflectance Index (Haboudane et al.
+    // 2002) — 3*[(R700-R670) - 0.2*(R700-R550)*(R700/R670)], B05/B04/B03.
+    // Companion to mcari above, same three bands, but the soil-correction
+    // term (0.2*(R700-R550)) is scaled by the ratio only rather than the
+    // whole bracket — different soil/PAR sensitivity than mcari. ⚠️ Needs
+    // true reflectance (÷10000), same reasoning as mcari/cvi/tvi — not
+    // scale-invariant.
+    kind: "index", bandCount: 3, label: "TCARI (RedEdge1,Red,Green — e.g. B05,B04,B03)",
+    formula: (redEdge1Raw, redRaw, greenRaw) => {
+      const re1 = redEdge1Raw / 10000;
+      const red = redRaw / 10000;
+      const green = greenRaw / 10000;
+      return 3 * ((re1 - red) - 0.2 * (re1 - green) * (re1 / (red || 1e-6)));
+    },
+    defaultColormap: "rdylgn",
+    defaultMin: 0,
+    defaultMax: 2,
+  },
   change_rgb: {
     // True-color composite has no normalized index, so "before"/"after" are
     // reduced to standard perceptual luminance (Rec. 709 weights) and compared
@@ -721,6 +1109,284 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     gainLabel: "Bare Soil Gain", lossLabel: "Bare Soil Loss",
   },
 
+  // ── Change classification for the 9 add-on indices (2026-08-16) ────────────
+  // Same formula as the matching "index" entry above in every case — only
+  // bandCount doubles (before + after) and gainLabel/lossLabel replace
+  // defaultColormap/defaultMin/defaultMax. ⚠️ ChangeDetectionPanel.tsx sends a
+  // pre-scaled ?threshold=&classThreshold= for these 9 (computed from each
+  // index's rescale range) instead of relying on this route's flat 0.08/0.25
+  // fallback — that fallback was tuned for -1..1-ish indices and is much too
+  // coarse/fine for ratio- or wavelength-scale outputs like MSI/GCI/RED_EDGE/TVI.
+  change_nbri: {
+    kind: "change", bandCount: 4, label: "Change NBRI (beforeNIR,beforeSWIR2,afterNIR,afterSWIR2 — e.g. B08,B12,B08,B12)",
+    formula: (nir, swir2) => (nir - swir2) / (nir + swir2 || 1e-6),
+    gainLabel: "Vegetation Gain (Burn Recovery)", lossLabel: "Vegetation Loss (New Burn Scar)",
+  },
+  change_gci: {
+    kind: "change", bandCount: 4, label: "Change GCI (beforeNIR,beforeGreen,afterNIR,afterGreen — e.g. B08,B03,B08,B03)",
+    formula: (nir, green) => (nir / (green || 1e-6)) - 1,
+    gainLabel: "Chlorophyll Increase", lossLabel: "Chlorophyll Decrease",
+  },
+  change_vari: {
+    kind: "change", bandCount: 6, label: "Change VARI (beforeGreen,beforeRed,beforeBlue,afterGreen,afterRed,afterBlue — e.g. B03,B04,B02,B03,B04,B02)",
+    formula: (green, red, blue) => (green - red) / (green + red - blue || 1e-6),
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_red_edge: {
+    kind: "change", bandCount: 8,
+    label: "Change Red-Edge Position (beforeRed,beforeRedEdge1,beforeRedEdge2,beforeRedEdge3,afterRed,afterRedEdge1,afterRedEdge2,afterRedEdge3 — e.g. B04,B05,B06,B07,B04,B05,B06,B07)",
+    formula: (red, re1, re2, re3) => 705 + 35 * (((re3 + red) / 2 - re1) / (re2 - re1 || 1e-6)),
+    gainLabel: "Red-Edge Position Increase (More Vigor)", lossLabel: "Red-Edge Position Decrease (Less Vigor)",
+  },
+  change_mtvi: {
+    kind: "change", bandCount: 6, label: "Change MTVI2 (beforeNIR,beforeRed,beforeGreen,afterNIR,afterRed,afterGreen — e.g. B08,B04,B03,B08,B04,B03)",
+    formula: (nir, red, green) => {
+      const n = nir / 10000;
+      const r = red / 10000;
+      const g = green / 10000;
+      const num = 1.5 * (1.2 * (n - g) - 2.5 * (r - g));
+      const denom = Math.sqrt(Math.max(0, (2 * n + 1) * (2 * n + 1) - (6 * n - 5 * Math.sqrt(Math.max(0, r))) - 0.5));
+      return num / (denom || 1e-6);
+    },
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_tvi: {
+    kind: "change", bandCount: 6, label: "Change TVI (beforeNIR,beforeRed,beforeGreen,afterNIR,afterRed,afterGreen — e.g. B08,B04,B03,B08,B04,B03)",
+    formula: (nir, red, green) => {
+      const n = (nir / 10000) * 100;
+      const r = (red / 10000) * 100;
+      const g = (green / 10000) * 100;
+      return 0.5 * (120 * (n - g) - 200 * (r - g));
+    },
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_grvi: {
+    kind: "change", bandCount: 4, label: "Change GRVI (beforeGreen,beforeRed,afterGreen,afterRed — e.g. B03,B04,B03,B04)",
+    formula: (green, red) => (green - red) / (green + red || 1e-6),
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_msi: {
+    kind: "change", bandCount: 4, label: "Change MSI (beforeSWIR1,beforeNIR,afterSWIR1,afterNIR — e.g. B11,B08,B11,B08)",
+    formula: (swir1, nir) => swir1 / (nir || 1e-6),
+    // ⚠️ MSI is inverted vs. NDVI-style indices: higher = more water-stressed.
+    // A positive delta (renderChange's generic "gain") therefore means stress
+    // is INCREASING, not improving — label reflects that, doesn't just say "Gain".
+    gainLabel: "Moisture Stress Increase", lossLabel: "Moisture Stress Decrease",
+  },
+  change_ndsi: {
+    kind: "change", bandCount: 4, label: "Change NDSI (beforeGreen,beforeSWIR1,afterGreen,afterSWIR1 — e.g. B03,B11,B03,B11)",
+    formula: (green, swir1) => (green - swir1) / (green + swir1 || 1e-6),
+    gainLabel: "Snow/Ice Gain", lossLabel: "Snow/Ice Loss",
+  },
+
+  // ── Change classification, batch 2 (2026-08-16) — the rest of the
+  // previously preview-only indices. Formulas copied 1:1 from their "index"
+  // entries above; see that entry's comment for the formula's provenance.
+  change_ndre: {
+    kind: "change", bandCount: 4, label: "Change NDRE (beforeNIR,beforeRedEdge,afterNIR,afterRedEdge — e.g. B08,B05,B08,B05)",
+    formula: (nir, redEdge) => (nir - redEdge) / (nir + redEdge || 1e-6),
+    gainLabel: "Chlorophyll Gain", lossLabel: "Chlorophyll Loss",
+  },
+  change_gndvi: {
+    kind: "change", bandCount: 4, label: "Change GNDVI (beforeNIR,beforeGreen,afterNIR,afterGreen — e.g. B08,B03,B08,B03)",
+    formula: (nir, green) => (nir - green) / (nir + green || 1e-6),
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_msavi2: {
+    kind: "change", bandCount: 4, label: "Change MSAVI2 (beforeNIR,beforeRed,afterNIR,afterRed — e.g. B08,B04,B08,B04)",
+    formula: (nir, red) => {
+      const term = 2 * nir + 1;
+      const inner = term * term - 8 * (nir - red);
+      return (term - Math.sqrt(Math.max(0, inner))) / 2;
+    },
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_ccci: {
+    kind: "change", bandCount: 6, label: "Change CCCI (beforeNIR,beforeRedEdge,beforeRed,afterNIR,afterRedEdge,afterRed — e.g. B08,B05,B04,B08,B05,B04)",
+    formula: (nir, redEdge, red) => {
+      const ndre = (nir - redEdge) / (nir + redEdge || 1e-6);
+      const ndvi = (nir - red) / (nir + red || 1e-6);
+      return ndre / (ndvi || 1e-6);
+    },
+    gainLabel: "Chlorophyll/Nitrogen Gain", lossLabel: "Chlorophyll/Nitrogen Loss",
+  },
+  change_nddi: {
+    kind: "change", bandCount: 6, label: "Change NDDI (beforeNIR,beforeRed,beforeGreen,afterNIR,afterRed,afterGreen — e.g. B08,B04,B03,B08,B04,B03)",
+    formula: (nir, red, green) => {
+      const ndvi = (nir - red) / (nir + red || 1e-6);
+      const ndwi = (green - nir) / (green + nir || 1e-6);
+      return (ndvi - ndwi) / (ndvi + ndwi || 1e-6);
+    },
+    gainLabel: "Drought Stress Increase", lossLabel: "Drought Stress Decrease",
+  },
+  change_si: {
+    kind: "change", bandCount: 4, label: "Change SI (beforeRed,beforeNIR,afterRed,afterNIR — e.g. B04,B08,B04,B08)",
+    formula: (red, nir) => (red - nir) / (red + nir || 1e-6),
+    gainLabel: "Salinity Increase", lossLabel: "Salinity Decrease",
+  },
+  change_cvi: {
+    kind: "change", bandCount: 6, label: "Change CVI (beforeNIR,beforeRed,beforeGreen,afterNIR,afterRed,afterGreen — e.g. B08,B04,B03,B08,B04,B03)",
+    formula: (nir, red, green) => {
+      const n = nir / 10000;
+      const r = red / 10000;
+      const g = green / 10000 || 1e-6;
+      return n * (r / (g * g || 1e-6));
+    },
+    gainLabel: "Chlorophyll Increase", lossLabel: "Chlorophyll Decrease",
+  },
+  change_reci: {
+    kind: "change", bandCount: 4, label: "Change RECI (beforeNIR,beforeRedEdge,afterNIR,afterRedEdge — e.g. B08,B05,B08,B05)",
+    formula: (nir, redEdge) => (nir / (redEdge || 1e-6)) - 1,
+    gainLabel: "Chlorophyll Increase", lossLabel: "Chlorophyll Decrease",
+  },
+  change_sipi: {
+    kind: "change", bandCount: 6, label: "Change SIPI (beforeNIR,beforeBlue,beforeRed,afterNIR,afterBlue,afterRed — e.g. B08,B02,B04,B08,B02,B04)",
+    formula: (nir, blue, red) => (nir - blue) / (nir - red || 1e-6),
+    gainLabel: "Pigment Stress Increase", lossLabel: "Pigment Stress Decrease",
+  },
+  change_psri: {
+    kind: "change", bandCount: 6, label: "Change PSRI (beforeRed,beforeBlue,beforeRedEdge2,afterRed,afterBlue,afterRedEdge2 — e.g. B04,B02,B06,B04,B02,B06)",
+    formula: (red, blue, redEdge2) => (red - blue) / (redEdge2 || 1e-6),
+    // ⚠️ PSRI is inverted like MSI — negative = healthy, positive = senescing/
+    // stressed. A positive delta ("gain") means MORE stress/senescence.
+    gainLabel: "Senescence/Stress Increase", lossLabel: "Senescence/Stress Decrease",
+  },
+  change_osi: {
+    kind: "change", bandCount: 6, label: "Change OSI (beforeRed,beforeBlue,beforeGreen,afterRed,afterBlue,afterGreen — e.g. B04,B02,B03,B04,B02,B03)",
+    formula: (red, blue, green) => ((red + blue) - green) / ((red + blue) + green || 1e-6),
+    gainLabel: "Oil Sheen Signal Increase", lossLabel: "Oil Sheen Signal Decrease",
+  },
+  change_rendvi: {
+    kind: "change", bandCount: 4, label: "Change RENDVI (beforeRedEdge2,beforeRedEdge1,afterRedEdge2,afterRedEdge1 — e.g. B06,B05,B06,B05)",
+    formula: (re2, re1) => (re2 - re1) / (re2 + re1 || 1e-6),
+    gainLabel: "Chlorophyll Gain", lossLabel: "Chlorophyll Loss",
+  },
+  change_reip: {
+    kind: "change", bandCount: 8,
+    label: "Change REIP (beforeRed,beforeRedEdge1,beforeRedEdge2,beforeRedEdge3,afterRed,afterRedEdge1,afterRedEdge2,afterRedEdge3 — e.g. B04,B05,B06,B07,B04,B05,B06,B07)",
+    formula: (red, re1, re2, re3) => 700 + 40 * (((red + re3) / 2 - re1) / (re2 - re1 || 1e-6)),
+    gainLabel: "Red-Edge Position Increase (More Vigor)", lossLabel: "Red-Edge Position Decrease (Less Vigor)",
+  },
+  change_nmdi_soil: {
+    kind: "change", bandCount: 6, label: "Change NMDI soil (beforeNIR,beforeSWIR1,beforeSWIR2,afterNIR,afterSWIR1,afterSWIR2 — e.g. B08,B11,B12,B08,B11,B12)",
+    formula: (nir, swir1, swir2) => (nir - (swir1 - swir2)) / (nir + (swir1 - swir2) || 1e-6),
+    // Rising NMDI reads as drier soil on bare/sparse ground (see nmdi_soil
+    // index comment above) — a positive delta means drying, not "gain".
+    gainLabel: "NMDI Increase (Drier Soil)", lossLabel: "NMDI Decrease (Wetter Soil)",
+  },
+  change_nmdi_veg: {
+    kind: "change", bandCount: 6, label: "Change NMDI vegetation (beforeNIR,beforeSWIR1,beforeSWIR2,afterNIR,afterSWIR1,afterSWIR2 — e.g. B08,B11,B12,B08,B11,B12)",
+    formula: (nir, swir1, swir2) => (nir - (swir1 - swir2)) / (nir + (swir1 - swir2) || 1e-6),
+    // Same formula as nmdi_soil, opposite reading on dense canopy — rising
+    // NMDI here means a wetter/better-watered canopy.
+    gainLabel: "Canopy Moisture Increase", lossLabel: "Canopy Moisture Decrease",
+  },
+  change_ari: {
+    kind: "change", bandCount: 4, label: "Change ARI (beforeGreen,beforeRedEdge1,afterGreen,afterRedEdge1 — e.g. B03,B05,B03,B05)",
+    formula: (green, redEdge1) => (1 / (green / 10000 || 1e-6)) - (1 / (redEdge1 / 10000 || 1e-6)),
+    gainLabel: "Anthocyanin Increase", lossLabel: "Anthocyanin Decrease",
+  },
+  change_ari2: {
+    kind: "change", bandCount: 6, label: "Change ARI2 (beforeNIR,beforeGreen,beforeRedEdge1,afterNIR,afterGreen,afterRedEdge1 — e.g. B07,B03,B05,B07,B03,B05)",
+    formula: (nir, green, redEdge1) => (nir / (green || 1e-6)) - (nir / (redEdge1 || 1e-6)),
+    gainLabel: "Anthocyanin Increase (Leaf-Corrected)", lossLabel: "Anthocyanin Decrease (Leaf-Corrected)",
+  },
+  change_cmr: {
+    kind: "change", bandCount: 4, label: "Change CMR (beforeSWIR1,beforeSWIR2,afterSWIR1,afterSWIR2 — e.g. B11,B12,B11,B12)",
+    formula: (swir1, swir2) => swir1 / (swir2 || 1e-6),
+    gainLabel: "Clay Mineral Signal Increase", lossLabel: "Clay Mineral Signal Decrease",
+  },
+  change_fmr: {
+    kind: "change", bandCount: 4, label: "Change FMR (beforeSWIR1,beforeNIR,afterSWIR1,afterNIR — e.g. B11,B08,B11,B08)",
+    formula: (swir1, nir) => swir1 / (nir || 1e-6),
+    gainLabel: "Ferrous Mineral Signal Increase", lossLabel: "Ferrous Mineral Signal Decrease",
+  },
+  change_ioi: {
+    kind: "change", bandCount: 4, label: "Change IOI (beforeRed,beforeBlue,afterRed,afterBlue — e.g. B04,B02,B04,B02)",
+    formula: (red, blue) => red / (blue || 1e-6),
+    gainLabel: "Iron Oxide Signal Increase", lossLabel: "Iron Oxide Signal Decrease",
+  },
+  change_ndci: {
+    kind: "change", bandCount: 4, label: "Change NDCI (beforeRedEdge1,beforeRed,afterRedEdge1,afterRed — e.g. B05,B04,B05,B04)",
+    formula: (redEdge1, red) => (redEdge1 - red) / (redEdge1 + red || 1e-6),
+    gainLabel: "Chlorophyll-a Increase", lossLabel: "Chlorophyll-a Decrease",
+  },
+  change_fai: {
+    kind: "change", bandCount: 6, label: "Change FAI (beforeNIR,beforeRed,beforeSWIR1,afterNIR,afterRed,afterSWIR1 — e.g. B08,B04,B11,B08,B04,B11)",
+    formula: (nir, red, swir1) => nir - (red + (swir1 - red) * 0.1772),
+    gainLabel: "Floating Algae Signal Increase", lossLabel: "Floating Algae Signal Decrease",
+  },
+  change_mndwi: {
+    kind: "change", bandCount: 4, label: "Change MNDWI (beforeGreen,beforeSWIR1,afterGreen,afterSWIR1 — e.g. B03,B11,B03,B11)",
+    formula: (green, swir1) => (green - swir1) / (green + swir1 || 1e-6),
+    gainLabel: "Water Extent Gain", lossLabel: "Water Extent Loss",
+  },
+  change_gemi: {
+    kind: "change", bandCount: 4, label: "Change GEMI (beforeNIR,beforeRed,afterNIR,afterRed — e.g. B08,B04,B08,B04)",
+    formula: (nirRaw, redRaw) => {
+      const nir = nirRaw / 10000;
+      const red = redRaw / 10000;
+      const eta = (2 * (nir * nir - red * red) + 1.5 * nir + 0.5 * red) / (nir + red + 0.5 || 1e-6);
+      return eta * (1 - 0.25 * eta) - (red - 0.125) / (1 - red || 1e-6);
+    },
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_mcari: {
+    kind: "change", bandCount: 6, label: "Change MCARI (beforeRedEdge1,beforeRed,beforeGreen,afterRedEdge1,afterRed,afterGreen — e.g. B05,B04,B03,B05,B04,B03)",
+    formula: (redEdge1Raw, redRaw, greenRaw) => {
+      const re1 = redEdge1Raw / 10000;
+      const red = redRaw / 10000;
+      const green = greenRaw / 10000;
+      return ((re1 - red) - 0.2 * (re1 - green)) * (re1 / (red || 1e-6));
+    },
+    gainLabel: "Chlorophyll Absorption Increase", lossLabel: "Chlorophyll Absorption Decrease",
+  },
+  change_cri1: {
+    kind: "change", bandCount: 4, label: "Change CRI1 (beforeBlue,beforeGreen,afterBlue,afterGreen — e.g. B02,B03,B02,B03)",
+    formula: (blue, green) => (1 / (blue / 10000 || 1e-6)) - (1 / (green / 10000 || 1e-6)),
+    gainLabel: "Carotenoid Signal Increase", lossLabel: "Carotenoid Signal Decrease",
+  },
+  change_cri2: {
+    kind: "change", bandCount: 4, label: "Change CRI2 (beforeBlue,beforeRedEdge1,afterBlue,afterRedEdge1 — e.g. B02,B05,B02,B05)",
+    formula: (blue, redEdge1) => (1 / (blue / 10000 || 1e-6)) - (1 / (redEdge1 / 10000 || 1e-6)),
+    gainLabel: "Carotenoid Signal Increase (Canopy-Corrected)", lossLabel: "Carotenoid Signal Decrease (Canopy-Corrected)",
+  },
+  change_ci: {
+    kind: "change", bandCount: 6, label: "Change CI (beforeRed,beforeRedEdge1,beforeRedEdge2,afterRed,afterRedEdge1,afterRedEdge2 — e.g. B04,B05,B06,B04,B05,B06)",
+    formula: (red, redEdge1, redEdge2) => (red + (redEdge2 - red) * ((705 - 665) / (740 - 665))) - redEdge1,
+    gainLabel: "Cyanobacteria Bloom Signal Increase", lossLabel: "Cyanobacteria Bloom Signal Decrease",
+  },
+  change_evi2: {
+    kind: "change", bandCount: 4, label: "Change EVI2 (beforeNIR,beforeRed,afterNIR,afterRed — e.g. B08,B04,B08,B04)",
+    formula: (nir, red) => (2.5 * (nir - red)) / (nir + 2.4 * red + 1 || 1e-6),
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_mtci: {
+    kind: "change", bandCount: 6, label: "Change MTCI (beforeRedEdge2,beforeRedEdge1,beforeRed,afterRedEdge2,afterRedEdge1,afterRed — e.g. B06,B05,B04,B06,B05,B04)",
+    formula: (redEdge2, redEdge1, red) => (redEdge2 - redEdge1) / (redEdge1 - red || 1e-6),
+    gainLabel: "Chlorophyll Increase", lossLabel: "Chlorophyll Decrease",
+  },
+  change_ndvi705: {
+    kind: "change", bandCount: 4, label: "Change NDVI705 (beforeRedEdge2,beforeRedEdge1,afterRedEdge2,afterRedEdge1 — e.g. B06,B05,B06,B05)",
+    formula: (re2, re1) => (re2 - re1) / (re2 + re1 || 1e-6),
+    gainLabel: "Chlorophyll Gain", lossLabel: "Chlorophyll Loss",
+  },
+  change_ndti: {
+    kind: "change", bandCount: 4, label: "Change NDTI (beforeRed,beforeGreen,afterRed,afterGreen — e.g. B04,B03,B04,B03)",
+    formula: (red, green) => (red - green) / (red + green || 1e-6),
+    gainLabel: "Turbidity Increase", lossLabel: "Turbidity Decrease",
+  },
+  change_tcari: {
+    kind: "change", bandCount: 6, label: "Change TCARI (beforeRedEdge1,beforeRed,beforeGreen,afterRedEdge1,afterRed,afterGreen — e.g. B05,B04,B03,B05,B04,B03)",
+    formula: (redEdge1Raw, redRaw, greenRaw) => {
+      const re1 = redEdge1Raw / 10000;
+      const red = redRaw / 10000;
+      const green = greenRaw / 10000;
+      return 3 * ((re1 - red) - 0.2 * (re1 - green) * (re1 / (red || 1e-6)));
+    },
+    gainLabel: "Chlorophyll Absorption Increase", lossLabel: "Chlorophyll Absorption Decrease",
+  },
+
   // ── Sentinel-1 (Radar / SAR) ──────────────────────────────────────────────
   // VV/VH بيجوا كـ band واحد جاهز (قيم dB) من الـ STAC item — formula هنا
   // identity (v => v) لأن مفيش حساب index، بس بنستفيد من نفس pipeline الـ
@@ -752,6 +1418,19 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     kind: "change", bandCount: 2, label: "Surface Change — VH (beforeVH,afterVH)",
     formula: (v) => v > 0 ? 20 * Math.log10(v) : -40,
     gainLabel: "Backscatter Gain", lossLabel: "Backscatter Loss",
+  },
+  // ── Copernicus DEM change (2026-08-18) ──────────────────────────────────
+  // Identity formula — no dB/ratio conversion like SAR, no ÷10000 reflectance
+  // normalization like the optical indices. beforeVal/afterVal in renderChange()
+  // are just the raw elevation (metres) at that pixel, so `delta` is a literal
+  // before→after height change. threshold/classThreshold arrive already scaled
+  // to metres by ChangeDetectionPanel.tsx's getChangeThresholdParams (using
+  // PREVIEW_DEFS.ELEVATION.rescale = "0,1500") — same mechanism as MSI/GCI/TVI/
+  // RED_EDGE above, not the flat 0.08/0.25 optical-index default.
+  change_elevation: {
+    kind: "change", bandCount: 2, label: "Surface Elevation Change — DEM (beforeElevation,afterElevation)",
+    formula: (v) => v,
+    gainLabel: "Elevation Gain", lossLabel: "Elevation Loss",
   },
   vv_vh_ratio: {
     // Same dB conversion as vv/vh above, applied to both bands, then subtracted
@@ -883,6 +1562,63 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     kind: "index", bandCount: 1, label: "OLCI chlorophyll-a concentration, neural-net algorithm (mg/m³, single band from COG)",
     formula: (v) => v, defaultColormap: "greens",
     defaultMin: 0, defaultMax: 10,
+  },
+
+  // ── Sentinel-5P / Sentinel-3 change detection (2026-08-18) ─────────────
+  // All identity-formula (raw physical value, same units as the single-scene
+  // "index" entries above) — a real before→after diff in these units (mol/m²,
+  // ppb, K, mg/m³, MW) is already directly meaningful, no dB/ratio conversion
+  // needed like SAR. threshold/classThreshold arrive pre-scaled from
+  // ChangeDetectionPanel.tsx's getChangeThresholdParams (using each
+  // PREVIEW_DEFS entry's own rescale range), same mechanism as change_elevation.
+  change_no2: {
+    kind: "change", bandCount: 2, label: "Change — NO2 tropospheric column (beforeNO2,afterNO2)",
+    formula: (v) => v, gainLabel: "NO2 Increase", lossLabel: "NO2 Decrease",
+  },
+  change_so2: {
+    kind: "change", bandCount: 2, label: "Change — SO2 column density (beforeSO2,afterSO2)",
+    formula: (v) => v, gainLabel: "SO2 Increase", lossLabel: "SO2 Decrease",
+  },
+  change_co: {
+    kind: "change", bandCount: 2, label: "Change — CO column density (beforeCO,afterCO)",
+    formula: (v) => v, gainLabel: "CO Increase", lossLabel: "CO Decrease",
+  },
+  change_ozone: {
+    kind: "change", bandCount: 2, label: "Change — Total column ozone (beforeOzone,afterOzone)",
+    formula: (v) => v, gainLabel: "Ozone Increase", lossLabel: "Ozone Decrease",
+  },
+  // "change_o3" == "change_ozone" exactly — same alias reasoning as o3/ozone above.
+  change_o3: {
+    kind: "change", bandCount: 2, label: "Change — Total column ozone (beforeOzone,afterOzone)",
+    formula: (v) => v, gainLabel: "Ozone Increase", lossLabel: "Ozone Decrease",
+  },
+  change_ch4: {
+    kind: "change", bandCount: 2, label: "Change — CH4 column-averaged mixing ratio (beforeCH4,afterCH4)",
+    formula: (v) => v, gainLabel: "CH4 Increase", lossLabel: "CH4 Decrease",
+  },
+  change_hcho: {
+    kind: "change", bandCount: 2, label: "Change — HCHO tropospheric column (beforeHCHO,afterHCHO)",
+    formula: (v) => v, gainLabel: "HCHO Increase", lossLabel: "HCHO Decrease",
+  },
+  change_cloud: {
+    kind: "change", bandCount: 2, label: "Change — Cloud fraction (beforeCloud,afterCloud)",
+    formula: (v) => v, gainLabel: "Cloud Fraction Increase", lossLabel: "Cloud Fraction Decrease",
+  },
+  change_sst: {
+    kind: "change", bandCount: 2, label: "Change — Sea surface temperature (beforeSST,afterSST)",
+    formula: (v) => v, gainLabel: "SST Warming", lossLabel: "SST Cooling",
+  },
+  change_lst: {
+    kind: "change", bandCount: 2, label: "Change — SLSTR land surface temperature (beforeLST,afterLST)",
+    formula: (v) => v, gainLabel: "LST Warming", lossLabel: "LST Cooling",
+  },
+  change_frp_mwir: {
+    kind: "change", bandCount: 2, label: "Change — Fire radiative power, MWIR (beforeFRP,afterFRP)",
+    formula: (v) => v, gainLabel: "Fire Radiative Power Increase", lossLabel: "Fire Radiative Power Decrease",
+  },
+  change_chl_nn: {
+    kind: "change", bandCount: 2, label: "Change — OLCI chlorophyll-a concentration (beforeChl,afterChl)",
+    formula: (v) => v, gainLabel: "Chlorophyll Increase", lossLabel: "Chlorophyll Decrease",
   },
 };
 

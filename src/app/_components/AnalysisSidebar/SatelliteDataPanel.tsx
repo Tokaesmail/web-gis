@@ -711,6 +711,26 @@ const displayVertices = useMemo(() => {
     { key: "OSI", label: "OSI", desc: "Oil spill index (optical, heuristic — visible bands)", color: "#7c3aed" },
     { key: "RENDVI", label: "RENDVI", desc: "Red-edge NDVI (early chlorophyll stress)", color: "#65a30d" },
     { key: "REIP", label: "REIP", desc: "Red-edge inflection point, nm (classic formula)", color: "#ca8a04" },
+    { key: "NMDI_SOIL", label: "NMDI (Soil)", desc: "Drought index — soil moisture (bare/sparse ground)", color: "#b45309" },
+    { key: "NMDI_VEG", label: "NMDI (Veg)", desc: "Drought index — canopy water content (dense vegetation)", color: "#0891b2" },
+    { key: "ARI", label: "ARI", desc: "Anthocyanin pigment (stress / senescence / fruit ripeness)", color: "#be123c" },
+    { key: "ARI2", label: "ARI2 (mARI)", desc: "Anthocyanin pigment, leaf-density corrected", color: "#9f1239" },
+    { key: "CMR", label: "Clay Minerals", desc: "Geology — hydrous mineral (clay/alunite) signal", color: "#b45309" },
+    { key: "FMR", label: "Ferrous Minerals", desc: "Geology — iron-oxide signal (same ratio as MSI)", color: "#c2410c" },
+    { key: "IOI", label: "Iron Oxide", desc: "Geology — surface iron-oxide staining (Red/Blue)", color: "#9a3412" },
+    { key: "NDCI", label: "NDCI", desc: "Chlorophyll-a in turbid/productive water", color: "#0e7490" },
+    { key: "FAI", label: "FAI", desc: "Floating algae / surface vegetation on water", color: "#166534" },
+    { key: "MNDWI", label: "MNDWI", desc: "Water body extraction (same ratio as NDSI)", color: "#2166ac" },
+    { key: "GEMI", label: "GEMI", desc: "Atmosphere-resistant vegetation index", color: "#4d9221" },
+    { key: "MCARI", label: "MCARI", desc: "Chlorophyll absorption, soil/PAR resistant", color: "#78c679" },
+    { key: "CRI1", label: "CRI1", desc: "Carotenoid pigment index", color: "#f97316" },
+    { key: "CRI2", label: "CRI2", desc: "Carotenoid pigment, canopy-corrected", color: "#ea580c" },
+    { key: "CI", label: "CI", desc: "Cyanobacteria index (harmful algal bloom, water)", color: "#0e7490" },
+    { key: "EVI2", label: "EVI2", desc: "Two-band enhanced vegetation (no Blue needed)", color: "#ec4899" },
+    { key: "MTCI", label: "MTCI", desc: "Chlorophyll, MERIS-heritage approximation", color: "#65a30d" },
+    { key: "NDVI705", label: "NDVI705", desc: "Red-edge NDVI (same ratio as RENDVI)", color: "#4575b4" },
+    { key: "NDTI", label: "NDTI", desc: "Water turbidity", color: "#f59e0b" },
+    { key: "TCARI", label: "TCARI", desc: "Transformed chlorophyll absorption (companion to MCARI)", color: "#a3d977" },
     // Sentinel-1 (Radar)
     { key: "VV", label: "VV", desc: "Co-polarized backscatter", color: "#818cf8" },
     { key: "VH", label: "VH", desc: "Cross-polarized backscatter", color: "#c084fc" },
@@ -1265,6 +1285,203 @@ const scenes = useMemo(
           type: "reip",
         };
 
+      case "NMDI_SOIL":
+      case "NMDI_VEG":
+        // Normalized Multi-band Drought Index (Wang & Qu 2007) — exact same
+        // formula for both entries, they only differ in legend/colormap
+        // (getIndexPreviewStyle below) since the same value reads opposite
+        // directions depending on whether the ground is bare/sparse (soil)
+        // or densely vegetated (canopy water content).
+        return {
+          assets: ["B08", "B11", "B12"],
+          expression: "(B08-(B11-B12))/(B08+(B11-B12))",
+          type: analysis === "NMDI_SOIL" ? "nmdi_soil" : "nmdi_veg",
+        };
+
+      case "ARI":
+        // Anthocyanin Reflectance Index — Gitelson et al. 2001. ⚠️ Difference
+        // of reciprocals (1/x), not a direct ratio like RECI/GCI, so raw DN
+        // needs ÷10000 normalization to true reflectance first or the result
+        // is ~10000× too small (same reasoning as CVI/TVI/MTVI above).
+        return {
+          assets: ["B03", "B05"],
+          expression: "(10000/B03)-(10000/B05)",
+          type: "ari",
+        };
+
+      case "ARI2":
+        // Modified ARI (mARI) — ARI × NIR reflectance (B07), corrects for
+        // leaf density/thickness. ⚠️ Algebraically scale-invariant (unlike
+        // plain ARI above) — the ÷10000 normalization cancels out exactly,
+        // so raw DN is used directly here with no /10000 in the expression.
+        return {
+          assets: ["B07", "B03", "B05"],
+          expression: "(B07/B03)-(B07/B05)",
+          type: "ari2",
+        };
+
+      case "CMR":
+        // Clay Minerals Ratio (ESRI) — SWIR1/SWIR2 simple ratio.
+        return {
+          assets: ["B11", "B12"],
+          expression: "B11/B12",
+          type: "cmr",
+        };
+
+      case "FMR":
+        // Ferrous Minerals Ratio (ESRI, after Segal 1982) — SWIR1/NIR. ⚠️
+        // Exact same assets/expression as MSI above — same calculation, only
+        // the legend/colormap below (getIndexPreviewStyle) differs, reading
+        // this as a geology signal instead of vegetation moisture stress.
+        return {
+          assets: ["B11", "B08"],
+          expression: "B11/B08",
+          type: "fmr",
+        };
+
+      case "IOI":
+        // Iron Oxide ratio (ESRI) — Red/Blue.
+        return {
+          assets: ["B04", "B02"],
+          expression: "B04/B02",
+          type: "ioi",
+        };
+
+      case "NDCI":
+        // Normalized Difference Chlorophyll Index (Mishra & Mishra 2012) —
+        // (RedEdge1-Red)/(RedEdge1+Red). Calibrated for turbid/productive water.
+        return {
+          assets: ["B05", "B04"],
+          expression: "(B05-B04)/(B05+B04)",
+          type: "ndci",
+        };
+
+      case "FAI":
+        // Floating Algae Index (Hu 2009) — NIR minus a linear Red→SWIR1
+        // baseline at the NIR wavelength. 0.1772 = (832.8-664.6)/(1613.7-664.6),
+        // the Sentinel-2A central-wavelength interpolation weight.
+        return {
+          assets: ["B08", "B04", "B11"],
+          expression: "B08-(B04+(B11-B04)*0.1772)",
+          type: "fai",
+        };
+
+      case "MNDWI":
+        // Modified NDWI (Xu 2006) — (Green-SWIR1)/(Green+SWIR1). ⚠️ Exact
+        // same assets/expression as NDSI above — same calculation, only the
+        // legend/colormap below (getIndexPreviewStyle) differs, reading this
+        // as a water-extraction signal instead of snow/ice.
+        return {
+          assets: ["B03", "B11"],
+          expression: "(B03-B11)/(B03+B11)",
+          type: "mndwi",
+        };
+
+      case "GEMI":
+        // Global Environmental Monitoring Index (Pinty & Verhoef 1992) —
+        // non-linear NIR/Red function, atmosphere-resistant. ⚠️ Needs
+        // reflectance (÷10000) not raw DN — the additive constants (0.5,
+        // 0.125, 1) are calibrated to the 0-1 scale.
+        return {
+          assets: ["B08", "B04"],
+          // eta = (2*(nir*nir-red*red)+1.5*nir+0.5*red)/(nir+red+0.5), written out
+          // with squares as nir*nir (no ^ operator, same style as MSAVI2 above).
+          expression:
+            "(((2*(((B08/10000)*(B08/10000))-((B04/10000)*(B04/10000)))+1.5*(B08/10000)+0.5*(B04/10000))/((B08/10000)+(B04/10000)+0.5))*(1-0.25*((2*(((B08/10000)*(B08/10000))-((B04/10000)*(B04/10000)))+1.5*(B08/10000)+0.5*(B04/10000))/((B08/10000)+(B04/10000)+0.5))))-(((B04/10000)-0.125)/(1-(B04/10000)))",
+          type: "gemi",
+        };
+
+      case "MCARI":
+        // Daughtry et al. (2000) — [(R700-R670) - 0.2*(R700-R550)] * (R700/R670).
+        // Needs true reflectance (÷10000), same reasoning as CVI/TVI/MTVI.
+        return {
+          assets: ["B05", "B04", "B03"],
+          expression:
+            "(((B05/10000)-(B04/10000))-0.2*((B05/10000)-(B03/10000)))*((B05/10000)/(B04/10000))",
+          type: "mcari",
+        };
+
+      case "CRI1":
+        // Carotenoid Reflectance Index 1 (Gitelson et al. 2002) —
+        // (1/Blue)-(1/Green). Reciprocal difference like ARI — needs ÷10000.
+        return {
+          assets: ["B02", "B03"],
+          expression: "(1/(B02/10000))-(1/(B03/10000))",
+          type: "cri1",
+        };
+
+      case "CRI2":
+        // Carotenoid Reflectance Index 2 (Gitelson et al. 2002) —
+        // (1/Blue)-(1/RedEdge1). Same reciprocal-difference caveat as CRI1.
+        return {
+          assets: ["B02", "B05"],
+          expression: "(1/(B02/10000))-(1/(B05/10000))",
+          type: "cri2",
+        };
+
+      case "CI":
+        // Cyanobacteria Index (Wynne et al. 2008), Sentinel-2 approximation —
+        // baseline between Red(665)/RedEdge2(740), measured dip at
+        // RedEdge1(705). 0.5333 = (705-665)/(740-665). ⚠️ Substitutes for
+        // the original 665/681/709nm MERIS/OLCI bands (no 681nm on S2).
+        return {
+          assets: ["B04", "B05", "B06"],
+          expression: "(B04+(B06-B04)*0.5333)-B05",
+          type: "ci",
+        };
+
+      case "EVI2":
+        // Two-band EVI (Jiang et al. 2008) — 2.5*(NIR-Red)/(NIR+2.4*Red+1).
+        // Same DN treatment as EVI above (no explicit ÷10000).
+        return {
+          assets: ["B08", "B04"],
+          expression: "2.5*(B08-B04)/(B08+2.4*B04+1)",
+          type: "evi2",
+        };
+
+      case "MTCI":
+        // MERIS Terrestrial Chlorophyll Index (Dash & Curran 2004),
+        // Sentinel-2 approximation — (RedEdge2-RedEdge1)/(RedEdge1-Red),
+        // substituting B06/B05/B04 (740/705/665nm) for the original
+        // 753/709/681nm MERIS bands.
+        return {
+          assets: ["B06", "B05", "B04"],
+          expression: "(B06-B05)/(B05-B04)",
+          type: "mtci",
+        };
+
+      case "NDVI705":
+        // Gitelson & Merzlyak (1994) — (R750-R705)/(R750+R705). ⚠️ Exact
+        // same assets/expression as RENDVI above — same calculation, only
+        // the legend below (getIndexPreviewStyle) differs, under the more
+        // widely-cited literature name.
+        return {
+          assets: ["B06", "B05"],
+          expression: "(B06-B05)/(B06+B05)",
+          type: "ndvi705",
+        };
+
+      case "NDTI":
+        // Normalized Difference Turbidity Index (Lacaux et al. 2007) —
+        // (Red-Green)/(Red+Green). Water turbidity, not the SWIR-based
+        // "tillage" NDTI that shares this acronym elsewhere.
+        return {
+          assets: ["B04", "B03"],
+          expression: "(B04-B03)/(B04+B03)",
+          type: "ndti",
+        };
+
+      case "TCARI":
+        // Haboudane et al. (2002) — 3*[(R700-R670) - 0.2*(R700-R550)*(R700/R670)].
+        // Companion to MCARI, same bands, soil-correction term scaled by the
+        // ratio only (not the whole bracket) — needs true reflectance (÷10000).
+        return {
+          assets: ["B05", "B04", "B03"],
+          expression:
+            "3*(((B05/10000)-(B04/10000))-0.2*((B05/10000)-(B03/10000))*((B05/10000)/(B04/10000)))",
+          type: "tcari",
+        };
+
       default:
         return {
           assets: ["B04", "B03", "B02"],
@@ -1507,6 +1724,103 @@ useEffect(() => {
         // Baret 1988 الكلاسيكية بدل Frampton 2013، فمش هتدّي نفس القيمة
         // بالظبط حتى على نفس الصورة.
         return { rescale: "700,740", colormap: "spectral_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "NMDI_SOIL":
+        // ⚠️ (2026-08-15) Wang & Qu (2007) — نفس معادلة NMDI_VEG بالظبط، بس
+        // هنا للقراءة على تربة عارية/غطاء خفيف: قيمة عالية = تربة جافة.
+        // "rdbu_r" زي MSI/OSI — قيمة منخفضة=رطب (أزرق)، قيمة عالية=جاف (أحمر).
+        return { rescale: "0.15,0.85", colormap: "rdbu_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "NMDI_VEG":
+        // ⚠️ (2026-08-15) نفس معادلة NMDI_SOIL بالظبط، بس هنا للقراءة على
+        // غطاء نباتي كثيف: قيمة منخفضة = إجهاد مائي بالمحصول. "rdbu" (مش
+        // معكوس) زي NDSI عمدًا — عكس NMDI_SOIL لإن اتجاه القراءة معكوس.
+        return { rescale: "0.15,0.85", colormap: "rdbu", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "ARI":
+        // ⚠️ (2026-08-15) Gitelson et al. (2001) — مدى نموذجي 0-0.2 (فرق
+        // reciprocals، مش -1..1). "rdbu_r" زي PSRI — قيمة منخفضة=كلوروفيل
+        // غالب/سليم (أزرق)، قيمة عالية=أنثوسيانين مرتفع/إجهاد (أحمر).
+        return { rescale: "0,0.2", colormap: "rdbu_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "ARI2":
+        // ⚠️ (2026-08-15) mARI — نفس منطق/colormap ARI بالظبط، بس مداه أوسع
+        // بكتير (0-8 بدل 0-0.2) لإنه مضروب في NIR reflectance كمان (تصحيح
+        // كثافة الورقة). فعليًا scale-invariant زي RECI/GCI — مش محتاج ÷10000
+        // صريح في الـ expression نفسها (شوفي getVisualization case ARI2 فوق).
+        return { rescale: "0,8", colormap: "rdbu_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "CMR":
+        // ⚠️ (2026-08-15) ESRI Clay Minerals Ratio — simple ratio (SWIR1/SWIR2),
+        // مش -1..1. "inferno" (زي LST/THERMAL) بدل تخمين اسم colormap جديد —
+        // فاتح=إشارة طينية منخفضة، غامق/برتقالي=إشارة طينية/ألونيت عالية.
+        return { rescale: "0.8,2.5", colormap: "inferno", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "FMR":
+        // ⚠️ (2026-08-15) ESRI Ferrous Minerals Ratio — نفس بانداتات/rescale
+        // MSI بالظبط رياضيًا (B11/B08)، بس "hot" (زي FIRE/FRP) بدل "rdbu_r"
+        // بتاعت MSI عشان يتقرا كإشارة جيولوجية (أكسيد حديد) مش إجهاد مائي.
+        return { rescale: "0.2,2", colormap: "hot", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "IOI":
+        // ⚠️ (2026-08-15) ESRI Iron Oxide ratio — simple ratio (Red/Blue).
+        // "magma" (زي THERMAL) — مؤكد موجود.
+        return { rescale: "0.8,2.5", colormap: "magma", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "NDCI":
+        // ⚠️ (2026-08-15) Mishra & Mishra 2012 — normalized-difference زي
+        // NDVI. "turbo" — نفس colormap CHLOROPHYLL (Sentinel-3) بالظبط عمدًا،
+        // عشان تتقري بنفس منطق تركيز كلوروفيل-a.
+        return { rescale: "-0.2,0.4", colormap: "turbo", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "FAI":
+        // ⚠️ (2026-08-15) Hu 2009 — مش -1..1، مدى ضيق حوالين الصفر. "greens"
+        // (زي NDMI/GCI) — مية صافية فاتح، طحالب/غطاء عائم غامق.
+        return { rescale: "-0.05,0.1", colormap: "greens", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "MNDWI":
+        // ⚠️ (2026-08-15) Xu 2006 — نفس بالظبط بانداتات/rescale NDSI فوق
+        // (B03/B11)، بس "rdbu" زي NDWI عمدًا (عالي=مية أزرق) بدل "rdbu"
+        // بتاعت NDSI اللي بتتقرا ثلج/جليد — نفس القيمة، تفسير مختلف بس.
+        return { rescale: "-0.6,0.6", colormap: "rdbu", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "GEMI":
+        // ⚠️ (2026-08-15) Pinty & Verhoef 1992 — مدى قريب من NDVI (0..1
+        // تقريبًا) بس مش نفس المعادلة. "rdylgn" زي NDVI/MSAVI2 عمدًا عشان
+        // يتقرا بنفس منطق الغطاء النباتي.
+        return { rescale: "-0.1,1", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "MCARI":
+        // ⚠️ (2026-08-15) Daughtry et al. 2000 — فرق×نسبة زي CVI، مدى
+        // نموذجي 0-1.5 بعد تطبيع الـ reflectance. "rdylgn" زي NDVI/GEMI
+        // عشان نفس منطق الغطاء النباتي/الكلوروفيل.
+        return { rescale: "0,1.5", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "CRI1":
+        // ⚠️ (2026-08-15) Gitelson et al. 2002 — فرق reciprocals زي ARI،
+        // مدى نموذجي 0-15. "rdbu_r" زي ARI عمدًا (منخفض=كاروتينويد قليل
+        // أزرق، مرتفع=كاروتينويد عالي أحمر).
+        return { rescale: "0,15", colormap: "rdbu_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "CRI2":
+        // ⚠️ (2026-08-15) نفس منطق CRI1 بالظبط، بس مدى أضيق (0-10) لإن
+        // RedEdge1 محل Green بيقلل حجم الفرق. نفس colormap CRI1.
+        return { rescale: "0,10", colormap: "rdbu_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "CI":
+        // ⚠️ (2026-08-15) Wynne et al. 2008 (تقريب S2) — مدى ضيق حوالين
+        // الصفر زي FAI (baseline-subtraction shape). "turbo" زي NDCI/
+        // CHLOROPHYLL عمدًا عشان يتقرا بنفس منطق تركيز الصبغة/bloom.
+        return { rescale: "-0.02,0.05", colormap: "turbo", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "EVI2":
+        // ⚠️ (2026-08-15) Jiang et al. 2008 — نفس معاملات/مدى EVI تقريبًا
+        // (بدون Blue). "magma" زي EVI نفسها عمدًا.
+        return { rescale: "0,1", colormap: "magma", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "MTCI":
+        // ⚠️ (2026-08-15) Dash & Curran 2004 (تقريب S2) — فرق فوق فرق
+        // (scale-invariant)، مدى نموذجي 0-5. "spectral_r" زي NDRE/RECI عمدًا
+        // عشان نفس منطق كلوروفيل الـ red-edge.
+        return { rescale: "0,5", colormap: "spectral_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "NDVI705":
+        // ⚠️ (2026-08-15) Gitelson & Merzlyak 1994 — نفس بالظبط
+        // بانداتات/rescale RENDVI فوق (نفس المعادلة)، "spectral_r" نفس
+        // colormap RENDVI عمدًا عشان يتقرا بنفس المنطق.
+        return { rescale: "-1,1", colormap: "spectral_r", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "NDTI":
+        // ⚠️ (2026-08-15) Lacaux et al. 2007 — normalized-difference زي
+        // NDVI/NDWI. "salinity_clear" زي SI عمدًا (تيل صافي -> ذهبي -> أحمر
+        // عكارة عالية) بدل تخمين اسم colormap جديد.
+        return { rescale: "-0.2,0.4", colormap: "salinity_clear", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "TCARI":
+        // ⚠️ (2026-08-15) Haboudane et al. 2002 — رفيقة MCARI بمعادلة
+        // مختلفة شوية، مدى نموذجي 0-2 بعد تطبيع الـ reflectance. "rdylgn"
+        // زي MCARI/NDVI عمدًا.
+        return { rescale: "0,2", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.22" };
 
       // ⚠️ القيم تحت (rescale) placeholder مبني على مدى نظري للبيانات —
       // لازم تتظبط لما نشوف قيم حقيقية راجعة من الباك بعد ما تبعتي الـ route.
