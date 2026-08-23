@@ -36,18 +36,94 @@ const EXPRESSION_PRESETS: { key: string; label: string; expression: string; colo
   // NDVI: real-world desert-agriculture range is roughly -0.1 (sand) to 0.75 (dense crops).
   // Using viridis clips variation — rdylgn maps red(bare)→green(vegetation) which is intuitive.
   { key: "NDVI", label: "NDVI",  expression: "(B08-B04)/(B08+B04)",         colormap: "rdylgn", rescale: [-0.2, 0.9],  desc: "Vegetation vigor" },
-  // NDWI: water is positive, dry land negative. rdbu: blue=water, red=dry.
-  { key: "NDWI", label: "NDWI",  expression: "(B03-B08)/(B03+B08)",         colormap: "rdbu",   rescale: [-0.5, 0.5],  desc: "Water content" },
-  // NDMI: moisture stress. Full -1→1 range, reversed so moist=blue, dry=brown.
-  { key: "NDMI", label: "NDMI",  expression: "(B8A-B11)/(B8A+B11)",         colormap: "rdbu_r", rescale: [-0.5, 0.5],  desc: "Moisture / drought stress" },
-  // NDBI: built-up positive, vegetation negative. magma shows density well.
-  { key: "NDBI", label: "NDBI",  expression: "(B11-B08)/(B11+B08)",         colormap: "magma",  rescale: [-0.5, 0.5],  desc: "Built-up / urban areas" },
-  // SAVI: soil-adjusted, values ~0 (bare)→0.7 (dense). rdylgn matches NDVI palette.
-  { key: "SAVI", label: "SAVI",  expression: "1.5*(B08-B04)/(B08+B04+0.5)", colormap: "rdylgn", rescale: [0.0, 0.7],   desc: "Soil-adjusted vegetation" },
-  // EVI: enhanced vegetation, range wider than NDVI in dense canopy.
-  { key: "EVI",  label: "EVI",   expression: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)", colormap: "rdylgn", rescale: [-0.1, 0.8], desc: "Enhanced vegetation" },
-  // True Color: R/G/B visual composite — rescale 0→3000 SR → 0→255.
-  { key: "BSI",  label: "BSI",   expression: "((B11+B04)-(B08+B02))/((B11+B04)+(B08+B02))", colormap: "spectral_r", rescale: [-0.5, 0.5], desc: "Bare soil index" },
+  // NDWI: matched to SatelliteDataPanel's getIndexPreviewStyle (rdbu, -0.3→0.8:
+  // -0.3 dry land → 0.8 open water) so the map colors line up 1:1 with the
+  // Satellite Data panel's NDWI heatmap.
+  { key: "NDWI", label: "NDWI",  expression: "(B03-B08)/(B03+B08)",         colormap: "rdbu",   rescale: [-0.3, 0.8],  desc: "Water content" },
+  // NDMI: matched to SatelliteDataPanel (greens, -0.6→0.6) — was rdbu_r/-0.5..0.5
+  // here, which rendered a completely different palette for the same index.
+  { key: "NDMI", label: "NDMI",  expression: "(B8A-B11)/(B8A+B11)",         colormap: "greens", rescale: [-0.6, 0.6],  desc: "Moisture / drought stress" },
+  // NDBI: matched to SatelliteDataPanel (inferno, -0.5→0.4) — was magma/-0.5..0.5.
+  { key: "NDBI", label: "NDBI",  expression: "(B11-B08)/(B11+B08)",         colormap: "inferno",  rescale: [-0.5, 0.4],  desc: "Built-up / urban areas" },
+  // SAVI: matched to SatelliteDataPanel (spectral, -0.2→0.9) — was rdylgn/0..0.7.
+  { key: "SAVI", label: "SAVI",  expression: "1.5*(B08-B04)/(B08+B04+0.5)", colormap: "spectral", rescale: [-0.2, 0.9],   desc: "Soil-adjusted vegetation" },
+  // EVI: matched to SatelliteDataPanel (magma, -0.2→0.8) — was rdylgn/-0.1..0.8.
+  { key: "EVI",  label: "EVI",   expression: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)", colormap: "magma", rescale: [-0.2, 0.8], desc: "Enhanced vegetation" },
+  // BSI: matched to SatelliteDataPanel (rdbu_r, -0.3→0.4) — was spectral_r/-0.5..0.5.
+  { key: "BSI",  label: "BSI",   expression: "((B11+B04)-(B08+B02))/((B11+B04)+(B08+B02))", colormap: "rdbu_r", rescale: [-0.3, 0.4], desc: "Bare soil index" },
+
+  // ── Sentinel-2 add-on indices (2026-08-24) — every index from the
+  // Satellite Data tab's Sentinel-2 index picker, ported to plain
+  // B-band expressions for this raster-calc backend. Each `expression`
+  // below is a direct 1:1 transcription of that same index's `formula` in
+  // route.ts's ANALYSIS_CONFIG (same bands, same arithmetic, same ÷10000
+  // reflectance-normalization steps where route.ts has them) — since this
+  // panel's webgiss.duckdns.org/gis/raster-calc backend reads Sentinel-2
+  // COG assets the same raw-DN way route.ts's own pixel reader does, not
+  // pre-normalized reflectance, an expression written on raw B-letters here
+  // matches route.ts's own per-pixel math term-for-term. `colormap`/
+  // `rescale` are copied from SatelliteDataPanel.tsx's getIndexPreviewStyle
+  // (the function that actually colors the map there) rather than route.ts's
+  // ANALYSIS_CONFIG defaultColormap/defaultMin/Max fallbacks, so a preset
+  // here renders identically to picking the same index in the Satellite
+  // Data tab — same heatmap, one call.
+  //
+  // ⚠️ NOT ported: MSAVI2 and MTVI (MTVI2). Both need a real Math.sqrt() (MTVI2
+  // needs two, one nested inside a Math.max(0, ...) clamp to guard against a
+  // negative value under the outer sqrt on edge pixels) — this panel's
+  // validateExpression() only accepts band-letter tokens and plain arithmetic
+  // operators (+,-,*,/), and the raster-calc backend's expression parser has
+  // never been exercised with a function call in this codebase. Rather than
+  // ship an expression that could silently return NaN tiles for those two,
+  // they stay exclusive to the Satellite Data tab. Everything else (39 of 41
+  // Sentinel-2 add-on indices) is scale-invariant ratios, normalized
+  // differences, or plain polynomial arithmetic, so it ports cleanly.
+  { key: "NDRE", label: "NDRE", expression: "(B08-B05)/(B08+B05)", colormap: "spectral_r", rescale: [0, 0.4], desc: "Red-edge chlorophyll (late season)" },
+  { key: "GNDVI", label: "GNDVI", expression: "(B08-B03)/(B08+B03)", colormap: "gndvi_warm", rescale: [-0.2, 0.8], desc: "Green-band vegetation / nitrogen" },
+  { key: "CCCI", label: "CCCI", expression: "((B08-B05)/(B08+B05))/((B08-B04)/(B08+B04))", colormap: "rdbu", rescale: [0, 1.2], desc: "Canopy chlorophyll / nitrogen status" },
+  { key: "NDDI", label: "NDDI", expression: "(((B08-B04)/(B08+B04))-((B03-B08)/(B03+B08)))/(((B08-B04)/(B08+B04))+((B03-B08)/(B03+B08)))", colormap: "greens", rescale: [-1, 1], desc: "Drought index (NDVI + NDWI)" },
+  { key: "SI", label: "SI", expression: "(B04-B08)/(B04+B08)", colormap: "salinity_clear", rescale: [-0.3, 0.3], desc: "Soil salinity" },
+  { key: "CVI", label: "CVI", expression: "(B08/10000)*((B04/10000)/((B03/10000)*(B03/10000)))", colormap: "cvi_ocean", rescale: [0, 15], desc: "Chlorophyll vegetation (early-mid season)" },
+  { key: "VARI", label: "VARI", expression: "(B03-B04)/(B03+B04-B02)", colormap: "rdylgn", rescale: [-0.3, 0.6], desc: "Visible-only vegetation (no NIR needed)" },
+  { key: "RED_EDGE", label: "Red Edge (S2REP)", expression: "705+35*(((B07+B04)/2-B05)/(B06-B05))", colormap: "spectral_r", rescale: [700, 740], desc: "Red-edge position, nm — chlorophyll/nitrogen" },
+  { key: "TVI", label: "TVI", expression: "0.5*(120*(((B08/10000)*100)-((B03/10000)*100))-200*(((B04/10000)*100)-((B03/10000)*100)))", colormap: "spectral", rescale: [0, 50], desc: "Triangular vegetation (chlorophyll)" },
+  { key: "GRVI", label: "GRVI", expression: "(B03-B04)/(B03+B04)", colormap: "rdylgn", rescale: [-0.3, 0.5], desc: "Green-red vegetation (visible-only, no NIR)" },
+  { key: "RECI", label: "RECI", expression: "(B08/B05)-1", colormap: "spectral_r", rescale: [0, 3], desc: "Red-edge chlorophyll (simple ratio)" },
+  { key: "SIPI", label: "SIPI", expression: "(B08-B02)/(B08-B04)", colormap: "rdbu_r", rescale: [0, 2], desc: "Pigment ratio (carotenoid/chlorophyll stress)" },
+  { key: "GCI", label: "GCI", expression: "(B08/B03)-1", colormap: "greens", rescale: [0, 4], desc: "Green chlorophyll (simple ratio)" },
+  { key: "PSRI", label: "PSRI", expression: "(B04-B02)/B06", colormap: "rdbu_r", rescale: [-0.2, 0.2], desc: "Plant senescence / stress (inverted scale)" },
+  { key: "NBRI", label: "NBRI", expression: "(B08-B12)/(B08+B12)", colormap: "rdylgn", rescale: [-0.5, 0.7], desc: "Burn severity (NIR/SWIR2)" },
+  { key: "MSI", label: "MSI", expression: "B11/B08", colormap: "rdbu_r", rescale: [0.2, 2], desc: "Moisture stress (SWIR1/NIR ratio)" },
+  { key: "NDSI", label: "NDSI", expression: "(B03-B11)/(B03+B11)", colormap: "rdbu", rescale: [-0.2, 0.6], desc: "Snow / ice cover (Green,SWIR1)" },
+  { key: "RENDVI", label: "RENDVI", expression: "(B06-B05)/(B06+B05)", colormap: "spectral_r", rescale: [0, 0.3], desc: "Red-edge NDVI (early chlorophyll stress)" },
+  { key: "REIP", label: "REIP", expression: "700+40*(((B04+B07)/2-B05)/(B06-B05))", colormap: "spectral_r", rescale: [700, 740], desc: "Red-edge inflection point, nm (classic formula)" },
+  { key: "NMDI_SOIL", label: "NMDI (Soil)", expression: "(B08-(B11-B12))/(B08+(B11-B12))", colormap: "rdbu_r", rescale: [0.15, 0.85], desc: "Drought index — soil moisture (bare/sparse ground)" },
+  { key: "NMDI_VEG", label: "NMDI (Veg)", expression: "(B08-(B11-B12))/(B08+(B11-B12))", colormap: "rdbu", rescale: [0.15, 0.85], desc: "Drought index — canopy water content (dense vegetation)" },
+  { key: "ARI", label: "ARI", expression: "(1/(B03/10000))-(1/(B05/10000))", colormap: "rdbu_r", rescale: [0, 0.2], desc: "Anthocyanin pigment (stress / senescence / fruit ripeness)" },
+  { key: "ARI2", label: "ARI2 (mARI)", expression: "(B07/B03)-(B07/B05)", colormap: "rdbu_r", rescale: [0, 8], desc: "Anthocyanin pigment, leaf-density corrected" },
+  { key: "CMR", label: "Clay Minerals", expression: "B11/B12", colormap: "inferno", rescale: [0.8, 2.5], desc: "Geology — hydrous mineral (clay/alunite) signal" },
+  { key: "FMR", label: "Ferrous Minerals", expression: "B11/B08", colormap: "hot", rescale: [0.2, 2], desc: "Geology — iron-oxide signal (same ratio as MSI)" },
+  { key: "IOI", label: "Iron Oxide", expression: "B04/B02", colormap: "magma", rescale: [0.8, 2.5], desc: "Geology — surface iron-oxide staining (Red/Blue)" },
+  { key: "NDCI", label: "NDCI", expression: "(B05-B04)/(B05+B04)", colormap: "turbo", rescale: [-0.2, 0.4], desc: "Chlorophyll-a in turbid/productive water" },
+  { key: "FAI", label: "FAI", expression: "B08-(B04+(B11-B04)*0.1772)", colormap: "greens", rescale: [-0.05, 0.1], desc: "Floating algae / surface vegetation on water" },
+  { key: "MNDWI", label: "MNDWI", expression: "(B03-B11)/(B03+B11)", colormap: "rdbu", rescale: [-0.6, 0.6], desc: "Water body extraction (same ratio as NDSI)" },
+  // GEMI: not scale-invariant (additive constants 0.5/0.125/1 are calibrated
+  // to true 0..1 reflectance) — same ÷10000 normalization route.ts applies,
+  // just inlined twice (once per `eta` occurrence) since this expression
+  // format has no intermediate variables.
+  { key: "GEMI", label: "GEMI", expression: "((2*(((B08/10000)*(B08/10000))-((B04/10000)*(B04/10000)))+1.5*(B08/10000)+0.5*(B04/10000))/((B08/10000)+(B04/10000)+0.5))*(1-0.25*((2*(((B08/10000)*(B08/10000))-((B04/10000)*(B04/10000)))+1.5*(B08/10000)+0.5*(B04/10000))/((B08/10000)+(B04/10000)+0.5)))-(((B04/10000)-0.125)/(1-(B04/10000)))", colormap: "rdylgn", rescale: [-0.1, 1], desc: "Atmosphere-resistant vegetation index" },
+  { key: "MCARI", label: "MCARI", expression: "((B05/10000-B04/10000)-0.2*(B05/10000-B03/10000))*((B05/10000)/(B04/10000))", colormap: "rdylgn", rescale: [0, 1.5], desc: "Chlorophyll absorption, soil/PAR resistant" },
+  { key: "CRI1", label: "CRI1", expression: "(1/(B02/10000))-(1/(B03/10000))", colormap: "rdbu_r", rescale: [0, 15], desc: "Carotenoid pigment index" },
+  { key: "CRI2", label: "CRI2", expression: "(1/(B02/10000))-(1/(B05/10000))", colormap: "rdbu_r", rescale: [0, 10], desc: "Carotenoid pigment, canopy-corrected" },
+  { key: "CI", label: "CI", expression: "(B04+(B06-B04)*((705-665)/(740-665)))-B05", colormap: "turbo", rescale: [-0.02, 0.05], desc: "Cyanobacteria index (harmful algal bloom, water)" },
+  { key: "EVI2", label: "EVI2", expression: "(2.5*(B08-B04))/(B08+2.4*B04+1)", colormap: "magma", rescale: [0, 1], desc: "Two-band enhanced vegetation (no Blue needed)" },
+  { key: "MTCI", label: "MTCI", expression: "(B06-B05)/(B05-B04)", colormap: "spectral_r", rescale: [0, 5], desc: "Chlorophyll, MERIS-heritage approximation" },
+  // NDVI705: numerically identical formula/bands to RENDVI above — kept as
+  // its own preset under the more widely-cited literature name, same as
+  // route.ts keeps them as two separate ANALYSIS_CONFIG entries.
+  { key: "NDVI705", label: "NDVI705", expression: "(B06-B05)/(B06+B05)", colormap: "spectral_r", rescale: [-1, 1], desc: "Red-edge NDVI (same ratio as RENDVI)" },
+  { key: "NDTI", label: "NDTI", expression: "(B04-B03)/(B04+B03)", colormap: "salinity_clear", rescale: [-0.2, 0.4], desc: "Water turbidity" },
+  { key: "TCARI", label: "TCARI", expression: "3*((B05/10000-B04/10000)-0.2*(B05/10000-B03/10000)*((B05/10000)/(B04/10000)))", colormap: "rdylgn", rescale: [0, 2], desc: "Transformed chlorophyll absorption (companion to MCARI)" },
 ];
 // ─── Color ramps shown as visual swatches (matching the app's existing
 // "Water / Vegetation / Spectral" style) instead of a plain colormap name list ──
@@ -2022,5 +2098,3 @@ function TimeSeriesChartModal({
   // في الصفحة، بالظبط زي فتح صورة PNG عادية مستقلة ────────────────────
   return createPortal(modal, document.body);
 }
-
-// (end of file — dead SavedAnalysesModal code removed)

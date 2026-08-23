@@ -310,6 +310,39 @@ export const SOURCE_ANALYSIS_COLLECTIONS: Partial<
   },
 };
 
+// ⚠️ (2026-08-21) sentinel-5p-l2-netcdf عبارة عن collection واحد بيجمع كل
+// الغازات مع بعض (NO2/SO2/CO/O3/CH4/HCHO/CLOUD) — على عكس MODIS/Sentinel-3
+// اللي كل analysis فيهم collection منفصل خالص. من غير فلترة الـ STAC query
+// بـ "producttype" الحقيقي بتاع كل غاز، searchScenes (في
+// ChangeDetectionPanel.tsx) بترجع items مخلوطة من كل الغازات سوا — فاختيار
+// مثلًا SO2 ممكن يرجع scene فعليًا item من نوع NO2 (لسه بيحقق بس bbox/date)،
+// وبعدين طلب /gis/sentinel5p/decode بـ variable=SO2 على item من نوع تاني
+// يفشل (الملف مفيهوش المتغير ده أصلًا) — نفس فئة الباگ اللي كانت في MODIS
+// FIRE/LST (item من collection غلط)، بس هنا داخل نفس الـ collection مش
+// collection مختلف، فمحتاج فلترة على مستوى الـ query مش الـ collection.
+// ✅ (2026-08-22) أسماء الـ product type codes دي (L2__XX___) اتأكدت فعليًا
+// من item حقيقي على Planetary Computer (S5P_L2_SO2____...45855):
+// "s5p:product_type": "L2__SO2___" — مطابقة تمامًا للي كان متحطوط هنا. الحاجة
+// الوحيدة اللي كانت غلط هي اسم الـ property نفسه (SENTINEL5P_PRODUCT_TYPE_PROPERTY
+// تحت، كان "s5p:producttype" من غير underscore) — ده اللي كان بيخلي الفلتر
+// كله يرجع صفر نتائج مهما كان الـ AOI أو التاريخ.
+export const SENTINEL5P_PRODUCT_TYPE: Partial<Record<SatelliteAnalysisType, string>> = {
+  NO2:   "L2__NO2___",
+  SO2:   "L2__SO2___",
+  CO:    "L2__CO____",
+  OZONE: "L2__O3____",
+};
+// اسم الخاصية نفسها في properties الـ STAC item — منفصل عن القيم فوق عشان
+// لو طلع غلط يبقى محتاج يتغيّر مكان واحد بس.
+// ✅ (2026-08-22) اتأكدت مباشرة من item حقيقي (S5P_L2_SO2____...45855) على
+// Planetary Computer: الاسم الصح هو "s5p:product_type" (بـ underscore بين
+// product و type) — كان مكتوب هنا "s5p:producttype" (من غير underscore)،
+// فالـ query كان بيفلتر على property مش موجودة أصلًا في properties الـ item،
+// فيرجع صفر نتائج دايمًا لأي غاز ولأي AOI/تاريخ — مش مشكلة AOI ولا تاريخ
+// خالص. القيم نفسها ("L2__NO2___"... إلخ) كانت صح زي ما هي، اتأكدت من
+// "s5p:product_type": "L2__SO2___" في نفس الـ item.
+export const SENTINEL5P_PRODUCT_TYPE_PROPERTY = "s5p:product_type";
+
 export const SOURCE_META: Record<SatSource, {
   title: string; subtitle: string; resolution: string; cadence: string; color: string;
 }> = {
@@ -339,6 +372,15 @@ export type TitilerStyle = {
   variable?: string;         // NetCDF variable name (xarray tiler) — لازم لـ SST
   bidx?: number | number[];  // band index (1-based) — لازم لو الـ asset راجع بيه أكتر من band وTiTiler مش عارف يفهم لوحده أي واحد يعرض (زي MODIS FireMask). Array = كذا bidx= param (RGB composite من ملف multi-band واحد، زي ASTER VNIR).
   dynamicRescale?: boolean;  // true = متجيبش rescale ثابت من هنا، دي بس fallback. نجيب الـ min/max الحقيقي من TiTiler /item/statistics على نفس الـ scene وقت العرض (شوفي fetchDynamicRescale تحت). لازم للمصادر اللي قيمها raw DN مش معايرة (زي ASTER TIR/SWIR).
+  // ⚠️ (2026-08-22) nodata/resampling اتضافوا عشان يحلوا مشكلة الـ "بقع"
+  // (مكان عليه بيانات ومكان فاضي جنبه في نفس الصورة) اللي كانت بتظهر في
+  // FireMask/LST: من غيرهم، TiTiler كان بيتعامل مع بيكسلات الـ fill/nodata
+  // الحقيقية كأنها قيمة عادية داخل الـ rescale، فيرسمها بلون (غالبًا نفس
+  // لون أقرب طرف للـ colormap)، وكمان الـ resampling الافتراضي (bilinear)
+  // كان بيخلط قيمة nodata مع البكسل الحقيقي جنبها عند تكبير الصورة لـ
+  // 512×512 فيطلع حواف ملوّنة غلط حوالين كل بقعة بيانات ناقصة.
+  nodata?: number;           // القيمة اللي المصدر بيحطها في البكسلات الناقصة (fill value)
+  resampling?: string;      // "nearest" لازم للبيانات الفئوية (زي FireMask: 0-9 categories) عشان التكبير ميخترعش قيم متوسطة وهمية بين الفئات
 };
 
 export const TITILER_STYLES: Partial<Record<SatelliteAnalysisType, TitilerStyle>> = {
@@ -350,13 +392,34 @@ export const TITILER_STYLES: Partial<Record<SatelliteAnalysisType, TitilerStyle>
   // ⚠️ FireMask بيرجع "Source data must be 1 band" من غير bidx — الأصل (asset)
   // فيه أكتر من band جوّه، وbidx=1 بيحدد للتيلر يقرا بس الباند الأول (فئة
   // الحريق نفسها). لو اتغيّر واتأكدنا إن الترقيم مختلف، غيّري الرقم هنا بس.
-  FIRE: { assets: ["FireMask"], bidx: 1, rescale: "0,9", colormapName: "hot" },
+  // ⚠️ (2026-08-21) dynamicRescale اتضافت هنا: كانت المشكلة إن FireMask
+  // غالبًا في أي AOI عادي (مفيهوش حريق فعلي وقت الـ scene) قيمه كلها واقعة
+  // في نطاق ضيق جدًا (0-1 "not processed"، أو 4 "non-fire land") من أصل
+  // المدى الكامل 0-9 — يعني كل الصورة بتتلوّن بلون شبه ثابت (أسود قريب من
+  // الصفر غالبًا مع colormap "hot")، فبتبان "مفيش heatmap خالص" رغم إن
+  // الطلب رجع بنجاح. نفس فئة الباگ اللي كانت في ASTER MINERALS/THERMAL فوق
+  // بالظبط، ونفس الحل: نجيب الـ range الحقيقي لنفس الـ scene بدل رقم ثابت.
+  // ⚠️ nodata: 255 = فئة "fill value" الحقيقية في FireMask (مش 0 — 0 لسه
+  // فئة معناها "not processed"، فمينفعش نعتبرها nodata أو هنشيل بيانات
+  // حقيقية). resampling: "nearest" عشان الفئات 0-9 رقمية مش قيمة قياس
+  // مستمرة — أي bilinear interpolation بين فئة 4 (أرض) وفئة 8 (حريق) بينتج
+  // رقم زي 6 مالوش معنى فيزيائي، وده كان سبب رئيسي في اختلاط الألوان.
+  FIRE: { assets: ["FireMask"], bidx: 1, rescale: "0,9", colormapName: "hot", dynamicRescale: true, nodata: 255, resampling: "nearest" },
   // MODIS LST — كلفن * 50 (scale factor 0.02) في الملف الخام. rescale ضُيّق
   // من المدى الكامل (260-330K) لمدى أكتر واقعية ليوم/منطقة واحدة (285-325K)
   // عشان فروق درجة الحرارة الصغيرة جوه AOI واحد تبان في الألوان بدل ما تضيع
   // في مدى واسع أوي كان بيخلي كل حاجة تبان لون شبه ثابت. لو منطقتك بارد جدًا
   // (شتاء/جبال) هتحتاجي تنزلي الرقم الأول لحد 250 مثلًا.
-  LST:  { assets: ["LST_Day_1km"], rescale: "14250,16250", colormapName: "inferno" },
+  // ⚠️ (2026-08-21) dynamicRescale اتضافت كمان هنا لنفس السبب: أي منطقة/يوم
+  // فعليًا برّه نطاق 285-325K الثابت (صحراء حارة جدًا، أو منطقة باردة/ليلية)
+  // كانت بتتقص بالكامل لطرف واحد من الـ colormap ("inferno") فتبان لون
+  // موحّد بدل heatmap حقيقي — نفس أعراض FireMask بالظبط. الرقم الثابت فاضل
+  // كـ fallback لو /item/statistics فشل.
+  // ⚠️ nodata: 0 = fill value الحقيقي لـ LST_Day_1km (البكسلات المتغطية
+  // بسحاب بتتحط صفر في الملف الخام). من غيرها كانت بتترسم كأنها "0 كلفن"
+  // حقيقي، يعني جزء من الصورة يطلع أسود تمامًا بدل شفاف — وده أقرب توصيف
+  // لـ"مكان فيه بيانات ومكان فاضي جنبه بلون غلط" اللي كانت بتظهر.
+  LST:  { assets: ["LST_Day_1km"], rescale: "14250,16250", colormapName: "inferno", dynamicRescale: true, nodata: 0 },
   // ⚠️ ASTER L1T (aster-l1t) اتصلحت (2026-08-02) — الـ item_assets الحقيقية
   // بتاعت الـ collection ده اتفحصت مباشرة، ومفيش asset لكل band لوحده خالص
   // (زي B01/B02/B03 اللي كانت متحطوطة هنا غلط، منسوخة من عادة Landsat/
@@ -521,7 +584,11 @@ async function fetchDynamicRescale(
 export async function buildTitilerTileUrl(
   collection: string,
   itemId: string,
-  analysis: SatelliteAnalysisType
+  analysis: SatelliteAnalysisType,
+  // ⚠️ (2026-08-22) overrideRescale: لو الكولر جاي من fetchPairDynamicRescale
+  // (شوفيها تحت)، بنستخدمه بدل ما نعمل fetchDynamicRescale لوحدها هنا —
+  // ده اللي بيخلي صورتين (قبل/بعد) يستخدموا نفس نطاق الألوان بالظبط.
+  overrideRescale?: string
 ): Promise<string | null> {
   const style = TITILER_STYLES[analysis];
   if (!style) return null;
@@ -544,12 +611,15 @@ export async function buildTitilerTileUrl(
   } else if (style.bidx) {
     params.set("bidx", String(style.bidx));
   }
-  const rescale = style.dynamicRescale
-    ? (await fetchDynamicRescale(collection, itemId, style)) ?? style.rescale
-    : style.rescale;
+  const rescale = overrideRescale
+    ?? (style.dynamicRescale
+      ? (await fetchDynamicRescale(collection, itemId, style)) ?? style.rescale
+      : style.rescale);
   params.set("rescale", rescale);
   if (style.colormapName) params.set("colormap_name", style.colormapName);
   if (style.colorFormula) params.set("color_formula", style.colorFormula);
+  if (style.nodata !== undefined) params.set("nodata", String(style.nodata));
+  if (style.resampling) params.set("resampling", style.resampling);
   params.set("format", "png");
 
   return `https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/{z}/{x}/{y}@2x.png?${params.toString()}`;
@@ -571,7 +641,13 @@ export async function buildTitilerBboxUrl(
   collection: string,
   itemId: string,
   analysis: SatelliteAnalysisType,
-  bbox: [number, number, number, number] // [west, south, east, north] WGS84
+  bbox: [number, number, number, number], // [west, south, east, north] WGS84
+  // ⚠️ (2026-08-22) overrideRescale: نفس فكرة buildTitilerTileUrl فوق —
+  // بيتبعت من ChangeDetectionPanel.tsx (fetchPairDynamicRescale) عشان
+  // صورة الـ "قبل" وصورة الـ "بعد" يستخدموا نفس نطاق الألوان بالظبط
+  // بدل ما كل واحدة تحسب rescale منفصل عن سيناتها هي بس (وده اللي كان
+  // بيخلي الألوان "تتغير كليًا" بين قبل/بعد رغم إنه نفس المؤشر).
+  overrideRescale?: string
 ): Promise<string | null> {
   const style = TITILER_STYLES[analysis];
   if (!style) return null;
@@ -590,16 +666,20 @@ export async function buildTitilerBboxUrl(
   } else if (style.bidx) {
     params.set("bidx", String(style.bidx));
   }
-  // ⚠️ نفس منطق buildTitilerTileUrl: لو dynamicRescale مفعّل، بنستنى
-  // /item/statistics ونستخدم الرينج الحقيقي بدل الرقم الثابت. الـ cache
-  // في fetchDynamicRescale بيمنع طلب مكرر لو buildTitilerTileUrl سبق
-  // ونادى على نفس الـ scene+style قبل كده.
-  const rescale = style.dynamicRescale
-    ? (await fetchDynamicRescale(collection, itemId, style)) ?? style.rescale
-    : style.rescale;
+  // ⚠️ نفس منطق buildTitilerTileUrl: لو dynamicRescale مفعّل ومفيش
+  // overrideRescale جاي من الكولر، بنستنى /item/statistics ونستخدم
+  // الرينج الحقيقي بدل الرقم الثابت. الـ cache في fetchDynamicRescale
+  // بيمنع طلب مكرر لو buildTitilerTileUrl سبق ونادى على نفس الـ scene+style
+  // قبل كده.
+  const rescale = overrideRescale
+    ?? (style.dynamicRescale
+      ? (await fetchDynamicRescale(collection, itemId, style)) ?? style.rescale
+      : style.rescale);
   params.set("rescale", rescale);
   if (style.colormapName) params.set("colormap_name", style.colormapName);
   if (style.colorFormula) params.set("color_formula", style.colorFormula);
+  if (style.nodata !== undefined) params.set("nodata", String(style.nodata));
+  if (style.resampling) params.set("resampling", style.resampling);
   // ⚠️ من غير width/height، TiTiler بيرجع الصورة بأصغر حجم ممكن يمثّل
   // البيانات فعليًا — لو الـ AOI أصغر من (أو قريب من) بيكسل واحد أصلي (زي
   // MODIS 1km LST على مساحة ~1كم)، بترجع صورة 1×1 بيكسل، يعني عمليًا مفيش
@@ -610,6 +690,47 @@ export async function buildTitilerBboxUrl(
   params.set("format", "png");
 
   return `https://planetarycomputer.microsoft.com/api/data/v1/item/bbox/${w},${s},${e},${n}.png?${params.toString()}`;
+}
+
+/**
+ * ⚠️ (2026-08-22) بتحل مشكلة "الألوان بتتغير كليًا بين قبل وبعد" في
+ * ChangeDetectionPanel.tsx للمؤشرات اللي عندها dynamicRescale (FIRE/LST/
+ * MINERALS/THERMAL): buildTitilerTileUrl/buildTitilerBboxUrl كانوا بيتناديوا
+ * مرتين مستقلتين تمامًا (مرة لسينة الـ"قبل" ومرة لسينة الـ"بعد")، وكل مرة
+ * كانت بتحسب /item/statistics *لنفس السينة دي بس*، يعني نفس القيمة الخام
+ * ممكن تترسم بلون مختلف تمامًا في الصورتين لإن كل واحدة بتتقص (rescale) على
+ * مدى مختلف عن التانية — ده مش "تغيّر حقيقي في البيانات"، ده بس اختلاف في
+ * مقياس الألوان نفسه.
+ *
+ * الحل: نجيب إحصائيات الصورتين مع بعض، وناخد أوسع مدى يغطيهم الاتنين، ونرجّع
+ * rescale واحد نستخدمه لصورة الـ"قبل" وصورة الـ"بعد" مع بعض — كده أي فرق لون
+ * بين الصورتين معناه فرق حقيقي في القيمة، مش مجرد اختلاف مقياس.
+ */
+export async function fetchPairDynamicRescale(
+  collection: string,
+  beforeItemId: string,
+  afterItemId: string,
+  analysis: SatelliteAnalysisType
+): Promise<string | null> {
+  const style = TITILER_STYLES[analysis];
+  if (!style || !style.dynamicRescale) return null;
+
+  const [beforeRange, afterRange] = await Promise.all([
+    fetchDynamicRescale(collection, beforeItemId, style),
+    fetchDynamicRescale(collection, afterItemId, style),
+  ]);
+
+  let lo = Infinity;
+  let hi = -Infinity;
+  [beforeRange, afterRange].forEach((range) => {
+    if (!range) return;
+    const [a, b] = range.split(",").map(Number);
+    if (Number.isFinite(a)) lo = Math.min(lo, a);
+    if (Number.isFinite(b)) hi = Math.max(hi, b);
+  });
+
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo >= hi) return null;
+  return `${lo},${hi}`;
 }
 
 export const SATELLITE_PIPELINES: Array<{

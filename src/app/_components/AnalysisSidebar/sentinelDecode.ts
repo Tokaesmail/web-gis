@@ -130,6 +130,10 @@ const NO_DATA_MESSAGE_PATTERNS = [
   /no (lat(itude)?|lon(gitude)?|coordinates)/i,
   /out of (bounds|range)/i,
   /does not (cover|overlap|intersect)/i,
+  // ⚠️ (2026-08-22) FRP-specific: الباك بيرجّع الرسالة دي تحديدًا لما مفيش
+  // حرايق نشطة في السينة/المنطقة دي — نفس معنى "no data for area" بالظبط،
+  // بس بصياغة مختلفة عن باقي الأنماط فوق (مش "no valid points/pixels").
+  /no active fires? detected/i,
 ];
 
 function looksLikeNoDataForArea(status: number, text: string): boolean {
@@ -163,6 +167,34 @@ type RawSentinelDecodeResponse = {
   };
 };
 
+// ── كاش + de-duplication لطلبات الـ decode ──────────────────────────────────
+// (2026-08-22) قبل كده كل preview لنفس السينة/الـ variable/الـ bbox كان
+// بيعيد نفس الرحلة الشبكية التقيلة لـ /gis/sentinel5p/decode من الصفر (فك
+// NetCDF جوّه الباك — العملية دي هي أغلب سبب الـ 2-3 دقايق انتظار)، حتى لو
+// المستخدم بس فتح نفس الـ scene تاني أو رجع لها بعد ما شاف واحدة غيرها.
+// دلوقتي:
+//   1) نتايج ناجحة بتتخزن في memory (Map) طول عمر التاب — أي طلب تاني بنفس
+//      المفتاح (source+itemId+variable+bbox) بيرجع فورًا من الكاش.
+//   2) طلبات "في نفس اللحظة" لنفس المفتاح (مثلًا useEffect اتنين اشتغلوا مع
+//      بعض) بيتشاركوا نفس الـ Promise بدل ما كل واحد يبعت request منفصل
+//      (de-duplication) — عن طريق الـ pending map تحت.
+// ⚠️ الكاش ده في الـ memory بس (مش sessionStorage/localStorage) — بيتصفّر
+// لو المستخدم عمل refresh للصفحة، وده مقصود: روابط الـ GeoTIFF الراجعة من
+// الباك على الأغلب presigned/مؤقتة (زي روابط PC الـ SAS-signed)، فمش آمن
+// نخزنها لمدة أطول من الـ session الحالية من غير ما نعرف مدة صلاحيتها فعليًا.
+const decodeResultCache = new Map<string, SentinelDecodeResult>();
+const decodePendingRequests = new Map<string, Promise<SentinelDecodeResult>>();
+
+function buildDecodeCacheKey(params: {
+  source: SentinelDecodeSource;
+  itemId: string;
+  variable: SentinelDecodeVariable;
+  bbox: [number, number, number, number];
+}): string {
+  const { source, itemId, variable, bbox } = params;
+  return `${source}::${itemId}::${variable}::${bbox.join(",")}`;
+}
+
 export async function decodeSentinelDataset(params: {
   /** JWT بتاع اليوزر — session.user.accessToken من next-auth (زي MapClient.tsx) */
   token?: string;
@@ -190,6 +222,48 @@ export async function decodeSentinelDataset(params: {
   if (source === "sentinel-3" && !(SENTINEL3_DECODE_VARIABLES as readonly string[]).includes(variable)) {
     throw new Error(`"${variable}" is not a valid Sentinel-3 variable (expected one of: ${SENTINEL3_DECODE_VARIABLES.join(", ")}).`);
   }
+
+  // 👇 كاش/de-dup — لو نفس (source+itemId+variable+bbox) اتفكت قبل كده أو
+  // لسه بتتفك دلوقتي (طلب تاني اشتغل في نفس اللحظة)، منعملش رحلة شبكية
+  // جديدة. شوفي الكومنت فوق decodeResultCache لتفاصيل أكتر.
+  const cacheKey = buildDecodeCacheKey({ source, itemId, variable, bbox });
+  const cached = decodeResultCache.get(cacheKey);
+  if (cached) {
+    console.log("[sentinelDecode] cache hit →", cacheKey);
+    return cached;
+  }
+  const pending = decodePendingRequests.get(cacheKey);
+  if (pending) {
+    console.log("[sentinelDecode] joining in-flight request →", cacheKey);
+    return pending;
+  }
+
+  const requestPromise = decodeSentinelDatasetUncached(params);
+  decodePendingRequests.set(cacheKey, requestPromise);
+  try {
+    const result = await requestPromise;
+    decodeResultCache.set(cacheKey, result);
+    return result;
+  } finally {
+    decodePendingRequests.delete(cacheKey);
+  }
+}
+
+// الجسم الفعلي القديم لـ decodeSentinelDataset (نفس اللوجيك زي ما هو) —
+// بس دلوقتي بيتنادى من ورا الكاش/de-dup فوق بدل ما يتنادى مباشرة، عشان
+// نضمن إن أي مكان بينادي decodeSentinelDataset (سواء من هنا أو من
+// decodeAndBuildHeatmapUrl) بيستفيد من الكاش تلقائيًا من غير تغيير في
+// الـ call sites بتاعته.
+async function decodeSentinelDatasetUncached(params: {
+  token?: string;
+  source: SentinelDecodeSource;
+  itemId: string;
+  variable: SentinelDecodeVariable;
+  collection?: string;
+  bbox: [number, number, number, number];
+  signal?: AbortSignal;
+}): Promise<SentinelDecodeResult> {
+  const { token, source, itemId, variable, collection, bbox, signal } = params;
 
   const requestBody = {
     source,
@@ -307,6 +381,13 @@ export type RasterStatistics = {
   height: number;
 };
 
+// نفس فكرة كاش/de-dup الـ decode بالظبط، بس هنا المفتاح هو الـ cogUrl نفسه
+// (+ percentile range) — لو نفس الـ GeoTIFF اتحسبله إحصائيات قبل كده (مثلًا
+// نفس السينة اتفتحت تاني بعد ما اتقفلت)، منعملش نفس حساب الـ percentiles
+// التقيل تاني من الصفر.
+const statisticsResultCache = new Map<string, RasterStatistics>();
+const statisticsPendingRequests = new Map<string, Promise<RasterStatistics>>();
+
 export async function getRasterStatistics(params: {
   cogUrl: string;
   /** lower/upper percentile — افتراضي 2/98 */
@@ -315,13 +396,31 @@ export async function getRasterStatistics(params: {
   signal?: AbortSignal;
 }): Promise<RasterStatistics> {
   const { cogUrl, low = 2, high = 98, signal } = params;
-  const qs = new URLSearchParams({ url: cogUrl, low: String(low), high: String(high) });
-  const res = await fetch(`${RASTER_STATISTICS_URL}?${qs.toString()}`, { signal });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error || `Raster statistics failed (${res.status}).`);
+  const cacheKey = `${cogUrl}::${low}::${high}`;
+
+  const cached = statisticsResultCache.get(cacheKey);
+  if (cached) return cached;
+  const pending = statisticsPendingRequests.get(cacheKey);
+  if (pending) return pending;
+
+  const requestPromise = (async () => {
+    const qs = new URLSearchParams({ url: cogUrl, low: String(low), high: String(high) });
+    const res = await fetch(`${RASTER_STATISTICS_URL}?${qs.toString()}`, { signal });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(body?.error || `Raster statistics failed (${res.status}).`);
+    }
+    return res.json() as Promise<RasterStatistics>;
+  })();
+
+  statisticsPendingRequests.set(cacheKey, requestPromise);
+  try {
+    const result = await requestPromise;
+    statisticsResultCache.set(cacheKey, result);
+    return result;
+  } finally {
+    statisticsPendingRequests.delete(cacheKey);
   }
-  return res.json();
 }
 
 // ── كل الخطوات مع بعض: decode → statistics → رابط heatmap ملوّن بدقة ───────
@@ -339,11 +438,28 @@ export async function decodeAndBuildHeatmapUrl(params: {
   bbox: [number, number, number, number];
   /** استخدمي p2/p98 (الافتراضي) بدل min/max الخام لتباين أوضح مع تجاهل القيم الشاذة */
   usePercentileStretch?: boolean;
+  // ⚠️ (2026-08-22) progressive rendering: الـ decode step (فك NetCDF جوّه
+  // الباك) هو أغلب وقت الانتظار (2-3 دقايق)، والـ statistics step بعده
+  // بياخد وقت إضافي فوق كده. من غير الكولباك ده، الواجهة كانت مضطرة تستنى
+  // الاتنين مع بعض قبل ما تعرض أي حاجة خالص. دلوقتي: لو الـ caller مرّر
+  // onDecoded، بننادّيه فورًا بمجرد ما الـ decode يخلص (برابط default
+  // rescale، من غير ما نستنى الـ statistics)، عشان الصورة تتعرض على طول —
+  // وبعدين لما الـ statistics توصل، بنرجّع النتيجة النهائية (بالتلوين
+  // الدقيق) من الـ Promise العادي زي ما هو، والـ caller يحدّث الصورة تاني.
+  // لو مفيش onDecoded، السلوك زي ما هو بالظبط (تستني الاتنين مع بعض).
+  onDecoded?: (preview: { tileUrl: string; cogUrl: string }) => void;
   signal?: AbortSignal;
 }): Promise<{ tileUrl: string; cogUrl: string; stats: RasterStatistics | null }> {
-  const { token, source, itemId, variable, collection, bbox, usePercentileStretch = true, signal } = params;
+  const { token, source, itemId, variable, collection, bbox, usePercentileStretch = true, onDecoded, signal } = params;
 
   const { url: cogUrl } = await decodeSentinelDataset({ token, source, itemId, variable, collection, bbox, signal });
+
+  if (onDecoded) {
+    // 👇 default rescale (من غير min/max) — route.ts هيستخدم الـ default
+    // بتاعه لحد ما نرجّع نستدعيها تاني بالقيم الدقيقة تحت. مش مثالي لونيًا
+    // بس بيوري المستخدم إن فيه صورة جاية بدل ما يفضل يستني شاشة فاضية.
+    onDecoded({ tileUrl: buildRasterProxyAnalyzeUrl({ cogUrl, variable, bbox }), cogUrl });
+  }
 
   let stats: RasterStatistics | null = null;
   try {

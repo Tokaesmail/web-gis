@@ -93,6 +93,11 @@
 //   vv_vh_ratio → urls = vv,vh   (VV, VH amplitude assets) — dB difference: 20·log10(VV) − 20·log10(VH)
 //   sar_rgb     → urls = vv,vh   (VV, VH amplitude assets) — composite: R=VV dB, G=VH dB, B=VV/VH ratio dB
 //     (كل قناة بتتحسب dB لوحدها وبعدين تتعمللها 2%-98% stretch مستقلة، زي composite العادي)
+//   change_ratio   → urls = beforeVV,beforeVH,afterVV,afterVH — نفس معادلة vv_vh_ratio (dB
+//                    difference) بس بتتحسب مرتين (قبل/بعد) وتتصنف على الفرق، زي أي change_<index>
+//   change_sar_rgb → urls = beforeVV,beforeVH,afterVV,afterVH — sar_rgb مفهوش index حقيقي، فبنرجع
+//                    الـ 3 قنوات بتاعته (VV dB, VH dB, ratio dB) لقيمة واحدة بنفس أوزان Rec.709
+//                    اللي change_rgb/change_swir بتستخدمها، وبعدين نصنف على الفرق زي أي change_<index>
 //
 // اختياري لـ composite: gamma (افتراضي 1.1), sharpen (0/1), low/high (2/98)
 // اختياري لـ index: colormap, min/max (افتراضي -1/1), zero, alphaLow/alphaHigh, transparent
@@ -274,6 +279,13 @@ type AnalysisType =
   // Sentinel-1 (Radar / SAR)
   | "vv" | "vh"  | "change_vv" | "change_vh"
   | "vv_vh_ratio" | "sar_rgb"
+  // ⚠️ change_ratio/change_sar_rgb (2026-08-23) — الاتنين indices الباقيين من
+  // Sentinel-1 اللي كانوا preview/swipe-only في ChangeDetectionPanel.tsx (شوفي
+  // isClassifiable()/CHANGE_API_TYPE هناك). change_ratio بيستخدم نفس معادلة
+  // vv_vh_ratio (dB difference)، وchange_sar_rgb بيرجّع الـ 3 قنوات بتاعت
+  // sar_rgb لقيمة واحدة بأوزان Rec.709 زي change_rgb/change_swir بالظبط —
+  // شوفي ANALYSIS_CONFIG تحت لتفاصيل المعادلة.
+  | "change_ratio" | "change_sar_rgb"
   // Copernicus DEM
   | "elevation" | "slope" | "hillshade" | "aspect" 
   // ⚠️ change_elevation (2026-08-18) — added to wire Copernicus DEM into
@@ -284,12 +296,30 @@ type AnalysisType =
   // change_vv/change_vh below, just with the identity formula (raw metres,
   // no dB conversion).
   | "change_elevation"
+  // ⚠️ change_slope/change_hillshade/change_aspect (2026-08-23) — the last 3
+  // Copernicus DEM products that were preview/swipe-only in
+  // ChangeDetectionPanel.tsx. Unlike change_elevation, these are "dem_change"
+  // kind, not "change" — see DemChangeConfig comment above for why.
+  | "change_slope" | "change_hillshade" | "change_aspect"
   // Sentinel-5P (Atmosphere) — ✅ حقيقية دلوقتي عن طريق /gis/sentinel5p/decode
   // (شوفي sentinelDecode.ts في الفرونت). "o3" alias جديد لنفس "ozone" القديمة
   // (الـ endpoint الجديد بيرجّع اسم المتغير "O3" مش "OZONE").
   | "no2" | "so2" | "co" | "ozone" | "o3" | "ch4" | "hcho" | "cloud"
   // Sentinel-3 SST — عن طريق نفس الـ decode endpoint (شوفي الكومنت فوق no2/so2/co/ozone تحت)
   | "sst"
+  // ⚠️ (2026-08-22) MODIS — migrated off direct TiTiler calls onto this same
+  // fast windowed-overview COG path Sentinel-2/Landsat already use. See
+  // ANALYSIS_CONFIG entries below for the "why" per type. Confirmed via
+  // live STAC fetch that modis-13A1-061/14A1-061/11A1-061 assets are all
+  // real COGs (profile=cloud-optimized) — this isn't a guess.
+  | "modis_ndvi" | "modis_evi" | "modis_fire" | "modis_lst"
+  // ⚠️ (2026-08-23) MODIS change classification — ChangeDetectionPanel.tsx's
+  // MODIS_NDVI/MODIS_EVI/MODIS_FIRE/MODIS_LST were preview/swipe-only until
+  // now (no change_<index> branch existed, see isClassifiable() there). Same
+  // "raw asset href per date" contract as change_vv/change_elevation — MODIS's
+  // COG assets are one-band-per-file (500m_16_days_NDVI/EVI, FireMask,
+  // LST_Day_1km), so no bidx/decode step needed, unlike ASTER/Sentinel-5P.
+  | "change_modis_ndvi" | "change_modis_evi" | "change_modis_fire" | "change_modis_lst"
   // ⚠️ (2026-08-04) تلاتة Sentinel-3 analyses جداد بقوا يعدّوا على نفس
   // مسار SST/الغازات (decode → COG → هنا) بدل TiTiler المباشر بتاع Planetary
   // Computer، اللي كان بيفشل مع NetCDF+variable= ويرجّع RGB overview بدل
@@ -307,6 +337,22 @@ type AnalysisType =
   | "change_no2" | "change_so2" | "change_co" | "change_ozone" | "change_o3"
   | "change_ch4" | "change_hcho" | "change_cloud"
   | "change_sst" | "change_lst" | "change_frp_mwir" | "change_chl_nn"
+  // ⚠️ (2026-08-23) ASTER change classification — ASTER_RGB/MINERALS/THERMAL
+  // (ChangeDetectionPanel.tsx) were preview/swipe-only until now because
+  // their bands live packed inside 3 multi-band composite files (VNIR/SWIR/
+  // TIR — see SatellitePipelines.ts's ASTER comment), not one asset per
+  // band like Sentinel-2/Landsat. readBand() below now accepts an optional
+  // `bidx` (1-based band index within a multi-sample file) so the SAME
+  // asset href can be read multiple times at different band indices —
+  // the frontend sends that href repeated once per band it needs, with a
+  // matching `&bidx=` list. bandCount doubles as usual for before+after:
+  //   change_aster_rgb → urls = VNIR,VNIR,VNIR,VNIR,VNIR,VNIR (before href ×3, after href ×3)
+  //                       bidx = 1,2,3,1,2,3  (Band1,Band2,Band3N — R,G,B)
+  //   change_minerals   → urls = SWIR ×3 (before), SWIR ×3 (after)
+  //                       bidx = 1,3,5,1,3,5  (matches MINERALS' SWIR_b1/b3/b5 ratio composite)
+  //   change_thermal    → urls = TIR (before), TIR (after)
+  //                       bidx = 1,1  (Band10 — raw DN, no bidx repetition needed)
+  | "change_aster_rgb" | "change_minerals" | "change_thermal"
   // Visible-only + Red-Edge add-ons (2026-08-11) — Sentinel-2 only
   | "vari" | "red_edge"
   // Triangular/visible vegetation add-ons (2026-08-11) — Sentinel-2 only
@@ -374,6 +420,32 @@ type ChangeConfig = {
   /** label shown for a negative (decrease) change — e.g. "Vegetation Loss" */
   lossLabel: string;
 };
+// ── Categorical change (2026-08-23) ─────────────────────────────────────────
+// For discrete/class-coded rasters (MODIS FireMask: 0-9 confidence classes,
+// NOT a continuous physical quantity) a plain before→after numeric delta +
+// threshold (ChangeConfig above) is meaningless — the gap between class 3 and
+// class 8 isn't "5 units of fire", it's a jump between unrelated categories.
+// renderCategoricalChange() below classifies by which named class-group each
+// pixel's before/after value falls into instead of subtracting them.
+type CategoricalChangeConfig = {
+  kind: "categorical_change";
+  bandCount: 2;
+  label: string;
+  /** Rounds the raw pixel value to its nearest class id before classifying (guards against resampling/interpolation blur at class edges). */
+  toClassId: (v: number) => number;
+  /** Class ids treated as "no data" — before OR after in this set ⇒ noData, no further checks. */
+  noDataClasses: number[];
+  /** Class ids that are ambiguous (e.g. cloud, unknown) — before OR after in this set (and not noData) ⇒ "other". */
+  uncertainClasses: number[];
+  /** Class ids meaning "the thing is present" (e.g. fire detected). */
+  positiveClasses: number[];
+  /** Class ids meaning "confirmed absent" (e.g. confirmed non-fire). Anything not in noData/uncertain/positive/negative also falls back to "other". */
+  negativeClasses: number[];
+  /** label for negative→positive transitions (or a rise within positiveClasses) — e.g. "New Fire Detected" */
+  gainLabel: string;
+  /** label for positive→negative transitions (or a fall within positiveClasses) — e.g. "Fire Cleared" */
+  lossLabel: string;
+};
 // ── DEM (Copernicus) derivative products ────────────────────────────────────
 // مختلفين معماريًا عن composite/index/change: دول محتاجين قيم البكسلات
 // المجاورة (3x3 neighborhood) مش بس قيمة البكسل نفسه، عشان يحسبوا التدرّج
@@ -385,6 +457,28 @@ type DemConfig = {
   label: string;
   product: "elevation" | "slope" | "hillshade" | "aspect";
   defaultColormap: string;
+};
+// ── DEM derivative change (2026-08-23) ──────────────────────────────────────
+// change_elevation reuses the generic ChangeConfig/renderChange path fine
+// (elevation is one raw value per pixel, formula: v=>v). Slope/hillshade/
+// aspect can't do the same — like DemConfig above, each one genuinely needs
+// the 3×3 neighborhood gradient (Horn's method), not just the two raw
+// elevation values at that one pixel, so there's no per-pixel `formula` to
+// give ChangeConfig. renderDemChange() below computes the derivative grid for
+// both dates via computeDemDerivative() — the same Horn's-method math
+// renderDemProduct's slope/aspect/hillshade branch already uses, copied into
+// its own function rather than shared, so that already-verified single-scene
+// rendering path isn't touched — and diffs those grids instead of the raw
+// elevation values.
+type DemChangeConfig = {
+  kind: "dem_change";
+  bandCount: 2; // [beforeElevation, afterElevation] — same single "data" asset change_elevation uses
+  label: string;
+  product: "slope" | "hillshade" | "aspect";
+  /** label shown for a positive (increase) change — e.g. "Slope Increase (Steeper)" */
+  gainLabel: string;
+  /** label shown for a negative (decrease) change — e.g. "Slope Decrease (Flatter)" */
+  lossLabel: string;
 };
 // ── Sentinel-5P (Atmosphere) — placeholder ──────────────────────────────────
 // ⚠️ مش شغالة فعليًا لسه: الـ collection الحقيقي (sentinel-5p-l2-netcdf) بيانه
@@ -401,7 +495,7 @@ type UnsupportedConfig = { kind: "unsupported"; label: string; reason: string };
 // percentile stretch مستقلة، بنفس فكرة renderComposite العادي.
 type SarCompositeConfig = { kind: "sar_composite"; bandCount: 2; label: string };
 
-const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | ChangeConfig | DemConfig | UnsupportedConfig | SarCompositeConfig> = {
+const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | ChangeConfig | CategoricalChangeConfig | DemConfig | DemChangeConfig | UnsupportedConfig | SarCompositeConfig> = {
   rgb:  { kind: "composite", bandCount: 3, label: "True color (e.g. B04,B03,B02 → R,G,B)" },
   swir: { kind: "composite", bandCount: 3, label: "SWIR false color (e.g. B12,B8A,B04 → R,G,B)" },
   ndvi: {
@@ -1432,6 +1526,103 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     formula: (v) => v,
     gainLabel: "Elevation Gain", lossLabel: "Elevation Loss",
   },
+  // ── DEM derivative change (2026-08-23) — see DemChangeConfig comment above
+  // for why these are "dem_change" kind instead of reusing change_elevation's
+  // plain "change" pipeline. `product` here is what computeDemDerivative()
+  // computes per date before renderDemChange() diffs them — see that function
+  // for the exact math (same Horn's-method gradient renderDemProduct's
+  // slope/aspect/hillshade branch already uses).
+  change_slope: {
+    kind: "dem_change", bandCount: 2, label: "Slope Change — DEM (beforeElevation,afterElevation)",
+    product: "slope",
+    gainLabel: "Slope Increase (Steeper)", lossLabel: "Slope Decrease (Flatter)",
+  },
+  change_hillshade: {
+    // "Gain" here reads as "more directly sunlit than before" (relative to
+    // the same fixed 315°/45° sun position renderDemProduct always uses) —
+    // useful as a proxy for new vertical structure (a wall, mound, excavation
+    // edge) catching or losing light between the two dates, not a literal
+    // light-source change (the sun position is fixed, not from real capture
+    // metadata).
+    kind: "dem_change", bandCount: 2, label: "Illumination Change — DEM (beforeElevation,afterElevation)",
+    product: "hillshade",
+    gainLabel: "Illumination Increase", lossLabel: "Illumination Decrease",
+  },
+  change_aspect: {
+    // Aspect (compass direction, 0-360°) is circular — renderDemChange()
+    // wraps the raw delta into (-180°,180°] before comparing to threshold, so
+    // a 350°→10° swing correctly reads as a small +20° (clockwise) change
+    // instead of a huge -340° one. "Gain"/"loss" here means the direction the
+    // slope faces rotated clockwise vs. counter-clockwise, not a magnitude —
+    // there's no natural "more/less aspect".
+    kind: "dem_change", bandCount: 2, label: "Aspect Rotation — DEM (beforeElevation,afterElevation)",
+    product: "aspect",
+    gainLabel: "Aspect Rotated Clockwise", lossLabel: "Aspect Rotated Counter-Clockwise",
+  },
+  // ── ASTER change classification (2026-08-23) ──────────────────────────────
+  // See the AnalysisType union comment above for the urls/bidx contract.
+  change_aster_rgb: {
+    // ASTER VNIR is 8-bit raw DN (matches RGB preview's rescale "0,255" in
+    // SatellitePipelines.ts TITILER_STYLES), not Sentinel-2's 0-10000 surface
+    // reflectance — so the luminance reduction divides by 255, not 10000, to
+    // land in the same ~0-1 range change_rgb/change_swir already use (keeps
+    // the flat 0.08 threshold/0.25 classThreshold defaults meaningful here
+    // too — see NARROW_RANGE_CHANGE_KEYS in ChangeDetectionPanel.tsx).
+    kind: "change", bandCount: 6,
+    label: "Change ASTER RGB (beforeVNIR_b1,beforeVNIR_b2,beforeVNIR_b3,afterVNIR_b1,afterVNIR_b2,afterVNIR_b3)",
+    formula: (b1, b2, b3) => (0.2126 * b1 + 0.7152 * b2 + 0.0722 * b3) / 255,
+    gainLabel: "Brightness Gain", lossLabel: "Brightness Loss",
+  },
+  change_minerals: {
+    // ⚠️ (2026-08-24) Ratios now computed from at-sensor radiance instead of
+    // raw DN — SWIR_b1/b3/b5 here are Band4/Band6/Band8, each with its own
+    // sensor gain (UCC), so a raw-DN ratio was skewed by that per-band gain
+    // difference rather than reflecting real spectral radiance contrast.
+    // Converting each band to radiance first (standard published ASTER SWIR
+    // "Normal gain" UCC coefficients, per the ASTER User Handbook) before
+    // ratioing corrects for that. These are widely-cited reference values,
+    // not measured for this specific scene's actual gain setting (High/
+    // Normal/Low1/Low2) — worth verifying if precision matters.
+    // MINERALS' preview composite is SWIR_b1/b3, SWIR_b5/b3, SWIR_b1/b5 (see
+    // SatellitePipelines.ts TITILER_STYLES.MINERALS) — same 3 ratios reduced
+    // to one scalar via the same Rec.709 weights as change_rgb, so "gain/
+    // loss" reads as an overall shift in the mineral-ratio signature rather
+    // than any single ratio alone. classThreshold gets scaled off
+    // PREVIEW_DEFS.MINERALS.rescale in ChangeDetectionPanel.tsx's
+    // getChangeThresholdParams, same mechanism as MSI/GCI/TVI/RED_EDGE.
+    kind: "change", bandCount: 6,
+    label: "Change ASTER Minerals, radiance-calibrated ratios (beforeSWIR_b1,beforeSWIR_b3,beforeSWIR_b5,afterSWIR_b1,afterSWIR_b3,afterSWIR_b5)",
+    formula: (b1, b3, b5) => {
+      const UCC_B4 = 0.2174, UCC_B6 = 0.0625, UCC_B8 = 0.0417; // Band4/Band6/Band8, Normal gain
+      const rad1 = (b1 - 1) * UCC_B4;
+      const rad3 = (b3 - 1) * UCC_B6;
+      const rad5 = (b5 - 1) * UCC_B8;
+      const r = rad1 / (rad3 || 1e-6);
+      const g = rad5 / (rad3 || 1e-6);
+      const bch = rad1 / (rad5 || 1e-6);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * bch;
+    },
+    gainLabel: "Mineral Signal Increase", lossLabel: "Mineral Signal Decrease",
+  },
+  change_thermal: {
+    // ⚠️ (2026-08-24) Calibrated to at-sensor brightness temperature (Kelvin)
+    // instead of raw DN — Band 10 radiance = (DN-1)×UCC, then Planck-inverted
+    // with K1/K2 (standard published ASTER TIR calibration, per the ASTER
+    // User Handbook / Abrams & Hook — "Normal gain" Band 10 coefficients).
+    // These are widely-cited reference values, not measured for this specific
+    // scene — worth cross-checking against the current ASTER radiometric
+    // calibration coefficients (revised periodically over the mission) if
+    // exact temperature accuracy matters for your analysis.
+    kind: "change", bandCount: 2,
+    label: "Change ASTER Thermal, at-sensor brightness temperature (beforeTIR_b1,afterTIR_b1 — Kelvin, Band10)",
+    formula: (v) => {
+      const UCC = 0.006882, K1 = 3040.136402, K2 = 1735.337945;
+      const radiance = (v - 1) * UCC;
+      if (radiance <= 0) return 0; // DN<=1 / nodata — avoid log of a non-positive number
+      return K2 / Math.log(K1 / radiance + 1);
+    },
+    gainLabel: "Temperature Increase", lossLabel: "Temperature Decrease",
+  },
   vv_vh_ratio: {
     // Same dB conversion as vv/vh above, applied to both bands, then subtracted
     // (dB subtraction = ratio of the underlying amplitudes: 20log10(VV/VH)).
@@ -1450,6 +1641,42 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     // water/roads read dark, vegetation greenish, urban/built-up brighter with
     // a distinct hue from the ratio channel. See renderSarComposite.
     kind: "sar_composite", bandCount: 2, label: "SAR RGB Composite (VV,VH → R=VV, G=VH, B=VV/VH ratio, dB)",
+  },
+  // ⚠️ change_ratio/change_sar_rgb (2026-08-23) — wiring the last two
+  // Sentinel-1 indices into ChangeDetectionPanel.tsx's satellite picker, same
+  // treatment VV/VH/ELEVATION got. Both take 4 bands (beforeVV,beforeVH,
+  // afterVV,afterVH) — SAR_SPECKLE_FILTER_TYPES below now includes these two
+  // so the Lee filter runs before the dB conversion, same as vv_vh_ratio/
+  // sar_rgb/vv/vh already get.
+  change_ratio: {
+    // Same dB-difference formula as vv_vh_ratio above, evaluated once per
+    // date and classified on the delta like any other change_<index>.
+    kind: "change", bandCount: 4, label: "Change VV/VH Ratio (beforeVV,beforeVH,afterVV,afterVH)",
+    formula: (vv, vh) => {
+      const vvDb = vv > 0 ? 20 * Math.log10(vv) : -40;
+      const vhDb = vh > 0 ? 20 * Math.log10(vh) : -40;
+      return vvDb - vhDb;
+    },
+    gainLabel: "Ratio Increase", lossLabel: "Ratio Decrease",
+  },
+  change_sar_rgb: {
+    // sar_rgb has no single scalar index (it's a 3-channel composite: R=VV dB,
+    // G=VH dB, B=VV/VH ratio dB) — same problem change_rgb/change_swir solve
+    // for optical true-color/SWIR composites, so the same fix applies: reduce
+    // the 3 channels to one Rec.709-weighted "brightness" value and classify
+    // that. dB values run roughly -25..0 (VV/VH) and -20..20 (ratio) rather
+    // than reflectance's 0-10000, so there's no ÷10000 normalization here —
+    // ChangeDetectionPanel.tsx's getChangeThresholdParams scales the slider
+    // threshold off PREVIEW_DEFS.SAR_RGB's own rescale instead of relying on
+    // the flat 0.08/0.25 optical defaults (see NARROW_RANGE_CHANGE_KEYS there).
+    kind: "change", bandCount: 4, label: "Change SAR RGB (beforeVV,beforeVH,afterVV,afterVH)",
+    formula: (vv, vh) => {
+      const vvDb = vv > 0 ? 20 * Math.log10(vv) : -40;
+      const vhDb = vh > 0 ? 20 * Math.log10(vh) : -40;
+      const ratioDb = vvDb - vhDb;
+      return 0.2126 * vvDb + 0.7152 * vhDb + 0.0722 * ratioDb;
+    },
+    gainLabel: "SAR Brightness Gain", lossLabel: "SAR Brightness Loss",
   },
 
   // ── Copernicus DEM ─────────────────────────────────────────────────────────
@@ -1562,6 +1789,101 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     kind: "index", bandCount: 1, label: "OLCI chlorophyll-a concentration, neural-net algorithm (mg/m³, single band from COG)",
     formula: (v) => v, defaultColormap: "greens",
     defaultMin: 0, defaultMax: 10,
+  },
+
+  // ── MODIS (Vegetation/Fire/Temperature) ──────────────────────────────────
+  // ⚠️ (2026-08-22) Migrated off SatellitePipelines.ts's TITILER_STYLES
+  // (direct calls to Microsoft's Planetary Computer TiTiler) onto this
+  // backend's own windowed-overview-picking COG reader — same speedup
+  // Sentinel-2/Landsat/Sentinel-1/Cop-DEM already get. This is safe because
+  // all three MODIS collections used here really are COGs (verified via
+  // GET /api/stac/v1/collections/<id> — item_assets all declare
+  // "profile=cloud-optimized"), unlike ASTER's TIR asset which does NOT
+  // declare that and is NOT migrated here for that reason.
+  //
+  // NDVI/EVI: raw int16 DN, already pre-scaled *10000 in the file (same
+  // convention TITILER_STYLES used) — identity formula reproduces the same
+  // rescale window ("-2000,10000") the old TiTiler style used.
+  modis_ndvi: {
+    kind: "index", bandCount: 1, label: "MODIS NDVI, 16-day 500m composite (500m_16_days_NDVI, raw *10000 DN)",
+    formula: (v) => v, defaultColormap: "rdylgn",
+    defaultMin: -2000, defaultMax: 10000,
+  },
+  modis_evi: {
+    kind: "index", bandCount: 1, label: "MODIS EVI, 16-day 500m composite (500m_16_days_EVI, raw *10000 DN)",
+    formula: (v) => v, defaultColormap: "magma",
+    defaultMin: -2000, defaultMax: 10000,
+  },
+  // FireMask: uint8 categorical (0-9, see modis-14A1-061 classification:classes),
+  // fill value 255 (NOT 0 — 0 is a real "not processed" category). The
+  // generic allZero()-based nodata mask below only catches value-0 pixels,
+  // so 255 fill pixels currently render as real data at the top of the
+  // colormap instead of transparent — same class of edge-pixel artifact
+  // TITILER_STYLES' `nodata: 255` used to fix explicitly. Usually a small
+  // minority of pixels and gets partly absorbed by the 2/98 percentile
+  // auto-stretch below, but if you see a stray hot-colored fringe around
+  // the AOI edge, that's why — flag if it needs a real per-config nodata
+  // value (IndexConfig doesn't have one yet).
+  // Old TiTiler style also had dynamicRescale:true here because a fixed
+  // "0,9" rescale often collapsed to one flat color on any AOI without an
+  // active fire. renderIndex()'s built-in computeIndexPercentiles (2/98,
+  // see below) already auto-widens/narrows effMin/effMax from the real
+  // pixel data per request, so this is handled without any extra frontend
+  // statistics round-trip.
+  modis_fire: {
+    kind: "index", bandCount: 1, label: "MODIS FireMask, 8-day composite, day-1 band (categorical confidence 0-9)",
+    formula: (v) => v, defaultColormap: "hot",
+    defaultMin: 0, defaultMax: 9,
+  },
+  // LST_Day_1km: uint16, scale 0.02, Kelvin. Fill value 0 — already covered
+  // by the generic allZero() nodata mask (no gap here, unlike FireMask).
+  // Same dynamicRescale reasoning as modis_fire above — renderIndex's
+  // built-in percentile auto-stretch covers it.
+  modis_lst: {
+    kind: "index", bandCount: 1, label: "MODIS LST_Day_1km, daily 1km (Kelvin = raw DN × 0.02)",
+    formula: (v) => v * 0.02, defaultColormap: "inferno",
+    defaultMin: 285, defaultMax: 325,
+  },
+
+  // ── MODIS change classification (2026-08-23) ────────────────────────────
+  // Same renderChange() pipeline as change_vv/change_elevation — the frontend
+  // resolves one raw COG href per date straight from the STAC item's assets
+  // (500m_16_days_NDVI/EVI, FireMask, LST_Day_1km all COGs, confirmed above),
+  // no decode step or bidx repetition needed. Formulas copied 1:1 from the
+  // single-scene modis_* entries above so before/after read the same values
+  // the preview colormap does.
+  change_modis_ndvi: {
+    kind: "change", bandCount: 2, label: "Change MODIS NDVI (beforeNDVI,afterNDVI — raw *10000 DN)",
+    formula: (v) => v,
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  change_modis_evi: {
+    kind: "change", bandCount: 2, label: "Change MODIS EVI (beforeEVI,afterEVI — raw *10000 DN)",
+    formula: (v) => v,
+    gainLabel: "Vegetation Gain", lossLabel: "Vegetation Loss",
+  },
+  // FireMask stays categorical (0-9, MCD14A1/MOD14A1 classes) — same
+  // fill-value 255 caveat as modis_fire above applies here too. Unlike
+  // NDVI/EVI/LST, this does NOT use the generic numeric-delta ChangeConfig
+  // (kind:"change") — see CategoricalChangeConfig above for why. Class
+  // groups per the modis-14A1-061 STAC collection's classification:classes:
+  //   0,1,2 = not processed (no data)     3,5 = confirmed non-fire (land/water)
+  //   4     = cloud (uncertain)            6  = unknown (uncertain)
+  //   7,8,9 = fire, low/nominal/high confidence
+  change_modis_fire: {
+    kind: "categorical_change", bandCount: 2,
+    label: "Change MODIS FireMask (beforeFireMask,afterFireMask — classified by fire-class transition, not raw delta)",
+    toClassId: (v) => Math.round(v),
+    noDataClasses: [0, 1, 2],
+    uncertainClasses: [4, 6],
+    negativeClasses: [3, 5],
+    positiveClasses: [7, 8, 9],
+    gainLabel: "New Fire Detected", lossLabel: "Fire Cleared",
+  },
+  change_modis_lst: {
+    kind: "change", bandCount: 2, label: "Change MODIS LST_Day_1km (beforeLST,afterLST — Kelvin = raw DN × 0.02)",
+    formula: (v) => v * 0.02,
+    gainLabel: "Temperature Increase", lossLabel: "Temperature Decrease",
   },
 
   // ── Sentinel-5P / Sentinel-3 change detection (2026-08-18) ─────────────
@@ -1727,7 +2049,15 @@ function sentinel1CropUrl(
 async function readBand(
   url: string,
   token: string | null | undefined,
-  queryBboxWGS84: [number, number, number, number] | null
+  queryBboxWGS84: [number, number, number, number] | null,
+  // ⚠️ (2026-08-23) 1-based band index to read WITHIN a multi-sample/multi-band
+  // file — needed for ASTER's packed VNIR (3 bands)/SWIR (6 bands)/TIR (5
+  // bands) composite assets, where the same href is passed multiple times
+  // (once per band the caller needs) with a different bidx each time. Every
+  // other source only ever has one band per href, so this stays undefined
+  // for them and readRasters() below falls back to its old behavior
+  // (all samples, first one used) exactly as before this change.
+  bidx?: number
 ): Promise<BandRaster & { timing: Record<string, number> }> {
   const t: Record<string, number> = { sign: 0, headerOpen: 0, overviewList: 0, pixelRead: 0, cacheHit: 0 };
   const tStart = performance.now();
@@ -1899,7 +2229,14 @@ async function readBand(
   const window: [number, number, number, number] = [x0, y0, x1, y1];
 
   const tRead = performance.now();
-  const rasters = await level.image.readRasters({ window, interleave: false });
+  // ⚠️ (2026-08-23) `samples: [bidx - 1]` picks one band out of a multi-band
+  // file (geotiff.js sample index is 0-based) — omitted entirely for the
+  // normal single-band-per-href case, same as before this param existed.
+  const rasters = await level.image.readRasters({
+    window,
+    interleave: false,
+    ...(bidx ? { samples: [bidx - 1] } : {}),
+  });
   t.pixelRead = performance.now() - tRead;
 
   const data = rasters[0] as Float32Array | Uint16Array | Uint8Array;
@@ -2038,6 +2375,10 @@ function applySpeckleFilter(band: BandRaster, windowSize = 3): BandRaster {
 // أصلًا فمبنطبقهوش عليها.
 const SAR_SPECKLE_FILTER_TYPES = new Set<string>([
   "vv", "vh", "vv_vh_ratio", "sar_rgb", "change_vv", "change_vh",
+  // ⚠️ (2026-08-23) change_ratio/change_sar_rgb added — both read raw VV/VH
+  // amplitude, same as vv_vh_ratio/sar_rgb, so they need the same Lee filter
+  // pass before their dB-conversion formulas run.
+  "change_ratio", "change_sar_rgb",
 ]);
 
 // Evaluates a per-pixel band-math formula against 2, 3, or 4 bands without
@@ -2385,10 +2726,95 @@ async function renderChange(
   return { pngBuffer, stats };
 }
 
-// ── DEM derivative path (elevation / slope / hillshade / aspect / contours) ──
-// المشترك بين الخمسة دول: بياخدوا بلد elevation واحد بس، وبيحسبوا لكل بكسل
-// بناءً على الـ 3×3 neighborhood بتاعته (مش قيمة البكسل لوحدها زي renderIndex).
-// عشان كده مش ممكن نستخدم evalFormula العادية هنا.
+// ── Categorical change (2026-08-23) ─────────────────────────────────────────
+// Companion to renderChange() above, for CategoricalChangeConfig types
+// (currently just change_modis_fire). Instead of a numeric delta+threshold,
+// classifies each pixel by which named class-group its before/after value
+// falls into — see CategoricalChangeConfig's field comments for what each
+// group means. `threshold`/`classThreshold` are intentionally NOT params
+// here: they're a numeric-delta concept that doesn't apply to discrete
+// classes, so the frontend's sensitivity slider has no effect on this path.
+async function renderCategoricalChange(
+  beforeBands: BandRaster[],
+  afterBands: BandRaster[],
+  config: CategoricalChangeConfig,
+) {
+  const { width, height } = beforeBands[0];
+  const n = width * height;
+  const rgbaData = Buffer.alloc(n * 4);
+
+  const noData = new Set(config.noDataClasses);
+  const uncertain = new Set(config.uncertainClasses);
+  const positive = new Set(config.positiveClasses);
+  const negative = new Set(config.negativeClasses);
+
+  const counts: Record<ChangeClass, number> = { noData: 0, noChange: 0, gain: 0, loss: 0, other: 0 };
+
+  for (let i = 0; i < n; i++) {
+    let cls: ChangeClass;
+    if (allZero(beforeBands, i) || allZero(afterBands, i)) {
+      cls = "noData";
+    } else {
+      const beforeClass = config.toClassId(beforeBands[0].data[i]);
+      const afterClass = config.toClassId(afterBands[0].data[i]);
+
+      if (noData.has(beforeClass) || noData.has(afterClass)) {
+        cls = "noData";
+      } else if (uncertain.has(beforeClass) || uncertain.has(afterClass)) {
+        // Cloud/unknown on either date — can't confidently say the ground
+        // condition changed, but it's real data (not nodata) either.
+        cls = "other";
+      } else if (negative.has(beforeClass) && positive.has(afterClass)) {
+        cls = "gain";
+      } else if (positive.has(beforeClass) && negative.has(afterClass)) {
+        cls = "loss";
+      } else if (positive.has(beforeClass) && positive.has(afterClass)) {
+        // Stayed in the positive group both dates — still meaningful if the
+        // confidence/severity level within that group moved (e.g. FireMask
+        // 7→9 is a real escalation), same "gain/loss" reading as a rise/fall.
+        if (afterClass > beforeClass) cls = "gain";
+        else if (afterClass < beforeClass) cls = "loss";
+        else cls = "noChange";
+      } else if (negative.has(beforeClass) && negative.has(afterClass)) {
+        cls = "noChange";
+      } else {
+        // Any class outside all four named groups — fall back to "other"
+        // rather than guessing.
+        cls = "other";
+      }
+    }
+
+    counts[cls]++;
+    const [r, g, b] = CHANGE_COLORS[cls];
+    const o = i * 4;
+    rgbaData[o] = r;
+    rgbaData[o + 1] = g;
+    rgbaData[o + 2] = b;
+    rgbaData[o + 3] = cls === "noData" ? 90 : 235;
+  }
+
+  const total = n || 1;
+  const stats = {
+    noDataPct: (counts.noData / total) * 100,
+    noChangePct: (counts.noChange / total) * 100,
+    gainPct: (counts.gain / total) * 100,
+    lossPct: (counts.loss / total) * 100,
+    otherPct: (counts.other / total) * 100,
+  };
+
+  const scale = Math.min(32, Math.max(1, TARGET_MAX_DIM / Math.max(width, height)));
+  const outW = Math.round(width * scale);
+  const outH = Math.round(height * scale);
+
+  const pngBuffer = await sharp(rgbaData, { raw: { width, height, channels: 4 } })
+    .resize(outW, outH, { kernel: sharp.kernel.lanczos3 })
+    .png({ compressionLevel: 6 })
+    .toBuffer();
+
+  return { pngBuffer, stats };
+}
+
+
 
 // متر/بكسل من الـ bbox الحقيقي بتاع النافذة (WGS84) — نفس الحسبة المستخدمة في
 // /api/raster-proxy (route.ts التاني) لحساب مساحة البكسل بالمتر المربع.
@@ -2630,6 +3056,143 @@ async function renderDemProduct(
   return { pngBuffer, stats };
 }
 
+// ── DEM derivative change (2026-08-23) ──────────────────────────────────────
+// Companion to renderChange() — for change_slope/change_hillshade/
+// change_aspect (DemChangeConfig types). Same Horn's-method gradient math as
+// renderDemProduct's slope/aspect/hillshade branch above, deliberately
+// duplicated into its own function (rather than refactoring renderDemProduct
+// to share it) so that already-verified single-scene rendering path isn't
+// touched by this change-detection addition. Returns raw derived values
+// (degrees for slope/aspect, 0-255 for hillshade) per pixel — no colormap/
+// alpha, since renderDemChange() below just needs the numbers to diff.
+function computeDemDerivative(band: BandRaster, product: "slope" | "hillshade" | "aspect"): Float32Array {
+  const { width, height, data, bbox } = band;
+  const { pw, ph } = pixelSizeMeters(bbox, width, height);
+  const out = new Float32Array(width * height);
+
+  // Same fixed sun position (315°/45°) as renderDemProduct's hillshade branch
+  // — see the azimuth-conversion comment there for why azimuthMathDeg isn't
+  // just azimuthDeg converted to radians directly.
+  const azimuthDeg = 315;
+  const altitudeDeg = 45;
+  const zenithRad = ((90 - altitudeDeg) * Math.PI) / 180;
+  const azimuthMathDeg = (360 - azimuthDeg + 90) % 360;
+  const azimuthRad = (azimuthMathDeg * Math.PI) / 180;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      const a = sampleClamped(data, width, height, x - 1, y - 1);
+      const b = sampleClamped(data, width, height, x,     y - 1);
+      const c = sampleClamped(data, width, height, x + 1, y - 1);
+      const d = sampleClamped(data, width, height, x - 1, y);
+      const f = sampleClamped(data, width, height, x + 1, y);
+      const g = sampleClamped(data, width, height, x - 1, y + 1);
+      const h = sampleClamped(data, width, height, x,     y + 1);
+      const k = sampleClamped(data, width, height, x + 1, y + 1);
+
+      const dzdx = ((c + 2 * f + k) - (a + 2 * d + g)) / (8 * pw);
+      const dzdy = ((g + 2 * h + k) - (a + 2 * b + c)) / (8 * ph);
+      const slopeRad = Math.atan(Math.sqrt(dzdx * dzdx + dzdy * dzdy));
+
+      if (product === "slope") {
+        out[i] = (slopeRad * 180) / Math.PI;
+      } else if (product === "aspect") {
+        let aspectDeg = (Math.atan2(dzdy, -dzdx) * 180) / Math.PI;
+        if (aspectDeg < 0) aspectDeg = 90 - aspectDeg;
+        else if (aspectDeg > 90) aspectDeg = 360 - aspectDeg + 90;
+        else aspectDeg = 90 - aspectDeg;
+        out[i] = aspectDeg;
+      } else {
+        const shade =
+          Math.cos(zenithRad) * Math.cos(slopeRad) +
+          Math.sin(zenithRad) * Math.sin(slopeRad) * Math.cos(azimuthRad - Math.atan2(dzdy, -dzdx));
+        out[i] = Math.max(0, Math.min(255, shade * 255));
+      }
+    }
+  }
+  return out;
+}
+
+// threshold/classThreshold are intentionally NOT the same "gain if delta>0 &&
+// afterVal>=classThreshold" gate renderChange() uses — that gate exists to
+// stop near-zero-crossing noise in -1..1-style indices from reading as a
+// "real" gain/loss. Slope (0-90°) and hillshade (0-255) are already
+// continuous physical quantities with no such crossing ambiguity, so a plain
+// magnitude threshold on the delta is enough. Aspect is additionally circular
+// (0°=360°), handled by wrapping the delta into (-180°,180°] before comparing
+// — see the inline comment below.
+async function renderDemChange(
+  beforeElevBand: BandRaster,
+  afterElevBand: BandRaster,
+  product: "slope" | "hillshade" | "aspect",
+  threshold: number,
+) {
+  const { width, height } = beforeElevBand;
+  const n = width * height;
+  const rgbaData = Buffer.alloc(n * 4);
+
+  const counts: Record<ChangeClass, number> = { noData: 0, noChange: 0, gain: 0, loss: 0, other: 0 };
+
+  const beforeVals = computeDemDerivative(beforeElevBand, product);
+  const afterVals = computeDemDerivative(afterElevBand, product);
+
+  for (let i = 0; i < n; i++) {
+    let cls: ChangeClass;
+    const beforeElev = beforeElevBand.data[i];
+    const afterElev = afterElevBand.data[i];
+    const isNoData =
+      beforeElev === 0 || !Number.isFinite(beforeElev) || afterElev === 0 || !Number.isFinite(afterElev);
+    if (isNoData) {
+      cls = "noData";
+    } else {
+      let delta = afterVals[i] - beforeVals[i];
+      // Aspect wraparound: a raw 350°→10° subtraction gives -340°, but the
+      // real physical rotation is +20° (clockwise, the short way around).
+      // Wrapping into (-180°,180°] fixes that.
+      if (product === "aspect") {
+        delta = ((delta + 180) % 360 + 360) % 360 - 180;
+      }
+
+      if (Math.abs(delta) < threshold) {
+        cls = "noChange";
+      } else if (delta > 0) {
+        cls = "gain";
+      } else {
+        cls = "loss";
+      }
+    }
+
+    counts[cls]++;
+    const [r, g, b] = CHANGE_COLORS[cls];
+    const o = i * 4;
+    rgbaData[o] = r;
+    rgbaData[o + 1] = g;
+    rgbaData[o + 2] = b;
+    rgbaData[o + 3] = cls === "noData" ? 90 : 235;
+  }
+
+  const total = n || 1;
+  const stats = {
+    noDataPct: (counts.noData / total) * 100,
+    noChangePct: (counts.noChange / total) * 100,
+    gainPct: (counts.gain / total) * 100,
+    lossPct: (counts.loss / total) * 100,
+    otherPct: (counts.other / total) * 100,
+  };
+
+  const scale = Math.min(32, Math.max(1, TARGET_MAX_DIM / Math.max(width, height)));
+  const outW = Math.round(width * scale);
+  const outH = Math.round(height * scale);
+
+  const pngBuffer = await sharp(rgbaData, { raw: { width, height, channels: 4 } })
+    .resize(outW, outH, { kernel: sharp.kernel.lanczos3 })
+    .png({ compressionLevel: 6 })
+    .toBuffer();
+
+  return { pngBuffer, stats };
+}
+
 export async function GET(req: NextRequest) {
   const tRequestStart = performance.now();
   const { searchParams } = req.nextUrl;
@@ -2665,6 +3228,23 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // ⚠️ (2026-08-23) Optional `bidx` — comma-separated, 1-based band index
+  // per url, same length as `urls`. Only needed when the same href appears
+  // more than once (ASTER's packed VNIR/SWIR/TIR composite files — see
+  // change_aster_rgb/change_minerals/change_thermal above). If the count
+  // doesn't line up with `urls`, we silently ignore it rather than 400 —
+  // every other analysis type never sends this param at all, so falling
+  // back to "no bidx" (old single-band-per-href behavior) is the safe
+  // default, not a hard failure.
+  const bidxParam = searchParams.get("bidx");
+  let bidxs: (number | undefined)[] = urls.map(() => undefined);
+  if (bidxParam) {
+    const parsed = bidxParam.split(",").map((b) => parseInt(b.trim(), 10));
+    if (parsed.length === urls.length && parsed.every((n) => Number.isFinite(n) && n >= 1)) {
+      bidxs = parsed;
+    }
+  }
+
   // bbox إلزامي دلوقتي — من غيره هنضطر نقرا الـ scene كاملة وده اللي كان بيعلّق الطلب
   let queryBbox: [number, number, number, number] | null = null;
   if (bboxParam) {
@@ -2684,7 +3264,7 @@ export async function GET(req: NextRequest) {
   let bands: BandRaster[];
   let bandTimings: Record<string, number>[];
   try {
-    const results = await Promise.all(urls.map((u) => readBand(u, token, queryBbox)));
+    const results = await Promise.all(urls.map((u, i) => readBand(u, token, queryBbox, bidxs[i])));
     bands = results;
     bandTimings = results.map((r) => r.timing);
   } catch (err) {
@@ -2706,7 +3286,7 @@ export async function GET(req: NextRequest) {
 
   // ── SAR speckle filtering (Lee filter) ────────────────────────────────────
   // شغّال بس على أنواع Sentinel-1 (vv/vh/vv_vh_ratio/sar_rgb/change_vv/
-  // change_vh)، وقبل أي dB conversion — الـ formula بتاعت كل نوع من دول
+  // change_vh/change_ratio/change_sar_rgb)، وقبل أي dB conversion — الـ formula بتاعت كل نوع من دول
   // بتتوقع amplitude خام. اتفعل افتراضيًا (?speckle=0 لإلغاءه، ?speckleWindow=
   // 5 مثلًا لنافذة أكبر/تنعيم أقوى — الافتراضي 3).
   const speckleEnabled = (searchParams.get("speckle") ?? "1") !== "0";
@@ -2770,6 +3350,40 @@ export async function GET(req: NextRequest) {
     );
     pngBuffer = result.pngBuffer;
     stats = result.stats;
+  } else if (config.kind === "dem_change") {
+    // change_slope/change_hillshade/change_aspect — see DemChangeConfig
+    // comment for why these get their own renderDemChange() path instead of
+    // reusing renderChange() like change_elevation does. No classThreshold
+    // read here (unlike the generic "change" branch below) — see the comment
+    // above renderDemChange for why a plain magnitude threshold is enough.
+    const threshold = parseFloat(searchParams.get("threshold") ?? (config.product === "hillshade" ? "10" : "2"));
+    const result = await renderDemChange(bands[0], bands[1], config.product, threshold);
+    pngBuffer = result.pngBuffer;
+    stats = result.stats;
+    changeLegend = [
+      { key: "gain",     label: config.gainLabel, color: "#00c853" },
+      { key: "noChange", label: "No Change",       color: "#228b22" },
+      { key: "loss",     label: config.lossLabel,  color: "#e53935" },
+      { key: "other",    label: "Other Change",    color: "#eab308" },
+      { key: "noData",   label: "No Data",         color: "#9ca3af" },
+    ];
+  } else if (config.kind === "categorical_change") {
+    // change_modis_fire (currently the only categorical_change type) —
+    // no threshold/classThreshold: renderCategoricalChange classifies by
+    // named class group, not numeric delta. See CategoricalChangeConfig.
+    const half = config.bandCount / 2;
+    const beforeBands = bands.slice(0, half);
+    const afterBands = bands.slice(half);
+    const result = await renderCategoricalChange(beforeBands, afterBands, config);
+    pngBuffer = result.pngBuffer;
+    stats = result.stats;
+    changeLegend = [
+      { key: "gain",     label: config.gainLabel, color: "#00c853" },
+      { key: "noChange", label: "No Change",       color: "#228b22" },
+      { key: "loss",     label: config.lossLabel,  color: "#e53935" },
+      { key: "other",    label: "Other Change",    color: "#eab308" },
+      { key: "noData",   label: "No Data",         color: "#9ca3af" },
+    ];
   } else {
     // change_rgb / change_swir / change_ndvi / change_ndwi / change_ndbi / change_ndmi / change_savi / change_evi / change_bsi
     const threshold = parseFloat(searchParams.get("threshold") ?? "0.08");

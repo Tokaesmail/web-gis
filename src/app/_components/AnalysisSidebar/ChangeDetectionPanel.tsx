@@ -1,12 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSession } from "next-auth/react";
 import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
 import { clipImageToPolygon, getPolygonRing } from "./geoClipUtils";
 import {
   SOURCE_META,
   SOURCE_INDICES,
   SOURCE_COLLECTIONS,
+  SOURCE_ANALYSIS_COLLECTIONS,
+  SENTINEL5P_PRODUCT_TYPE,
+  SENTINEL5P_PRODUCT_TYPE_PROPERTY,
+  buildTitilerBboxUrl,
+  fetchPairDynamicRescale,
   type SatSource,
+  type SatelliteAnalysisType,
 } from "./SatellitePipelines";
+import {
+  decodeAndBuildHeatmapUrl,
+  decodeSentinelDataset,
+  UI_BAND_TO_SENTINEL_VARIABLE,
+  SentinelDecodeError,
+  type SentinelDecodeSource,
+} from "./sentinelDecode";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // PreviewKey = every entry that shows up in the "Index to compare" list.
@@ -16,9 +30,12 @@ import {
 //                   (Gain/No Change/Loss/Other/No Data) via /api/raster-proxy/analyze.
 //  - "composite" -> a plain multi-band color composite (true color / false color).
 //                   These are great for the visual Before/After swipe & side-by-side
-//                   compare, but there's no single scalar index to classify a
-//                   pixel-level "change map" from, so Run Change Detection is
-//                   disabled for these and the UI explains why.
+//                   compare. Most have no single scalar to classify a pixel-level
+//                   "change map" from, so Run Change Detection stays disabled for
+//                   them and the UI explains why — except RGB/SWIR (2026-08-19),
+//                   which route.ts classifies via a Rec.709 luminance reduction
+//                   (see change_rgb/change_swir) — those two ARE classifiable
+//                   despite being "composite" kind; see ChangeIndexKey below.
 type PreviewKey =
   | "RGB" | "NDVI" | "NDWI" | "NDMI" | "NDBI" | "SAVI" | "EVI" | "BSI" | "SWIR"
   // ── Sentinel-2-only add-on indices (mirrors SOURCE_INDICES["sentinel-2"] /
@@ -53,11 +70,50 @@ type PreviewKey =
   // TITILER_STYLES), not the /api/raster-proxy/analyze bandCount/formula
   // pipeline this panel's diff (renderChange in route.ts) relies on — so they
   // need that backend work first, not just a frontend PREVIEW_DEFS entry.
-  | "VV" | "VH" | "ELEVATION";
+  | "VV" | "VH" | "ELEVATION"
+  // ── Batch 2 (2026-08-18) — the rest of every SOURCE_INDICES entry for the
+  // 6 non-optical sources, same "preview/swipe-only, no server classification
+  // yet" treatment as VV/VH/ELEVATION got when THEY were preview-only, before
+  // route.ts grew change_vv/change_vh/change_elevation. These reuse the exact
+  // same rendering endpoints SatelliteDataPanel.tsx already calls successfully
+  // for the single-scene view (buildTitilerTileUrl/buildTitilerBboxUrl for
+  // MODIS/ASTER, decodeAndBuildHeatmapUrl for Sentinel-5P/Sentinel-3, and the
+  // app's own /api/raster-proxy/analyze — same query-param contract as
+  // makeRasterProxyAnalyzeUrl in SatelliteDataPanel.tsx — for Sentinel-1
+  // RATIO/SAR_RGB and Copernicus DEM SLOPE/HILLSHADE/ASPECT), so NONE of this
+  // needed any change to route.ts itself. Classifying them (Run Change
+  // Detection's 5-class Gain/Loss map) is a separate step that DOES need new
+  // change_<index> branches added server-side — not done here, see
+  // isClassifiable()/CHANGE_API_TYPE below, which correctly leaves all of
+  // these out so they fall into the same "preview/swipe-only" messaging RGB/
+  // SWIR already use. ⚠️ MODIS_NDVI/MODIS_EVI/MODIS_FIRE/MODIS_LST were made
+  // classifiable on (2026-08-23), same as VV/VH/ELEVATION were, and — also
+  // as of (2026-08-23) — so were the Sentinel-5P gases NO2/SO2/CO/OZONE (see
+  // ChangeIndexKey union below): route.ts's change_no2/change_so2/change_co/
+  // change_ozone branches already existed, they just weren't wired into this
+  // file's ChangeIndexKey/CHANGE_API_TYPE yet. RATIO/SAR_RGB/SLOPE/HILLSHADE/
+  // ASPECT are still preview/swipe-only for now.
+  //
+  // Renamed off their SOURCE_INDICES name only where it collides with an
+  // existing Sentinel-2 key above (RGB, NDVI, EVI) — MODIS_NDVI/MODIS_EVI/
+  // ASTER_RGB — everything else keeps the SOURCE_INDICES name as-is.
+  | "RATIO" | "SAR_RGB"
+  | "SLOPE" | "HILLSHADE" | "ASPECT"
+  | "NO2" | "SO2" | "CO" | "OZONE"
+  | "MODIS_NDVI" | "MODIS_EVI" | "MODIS_FIRE" | "MODIS_LST"
+  | "ASTER_RGB" | "MINERALS" | "THERMAL"
+  | "SST" | "S3_LST" | "CHLOROPHYLL" | "FRP";
 // Subset that supports real server-side change classification.
 // ⚠️ (2026-08-16) Added the 9 indices that used to be preview/swipe-only —
 // route.ts now has matching change_<index> branches for all of these too.
 type ChangeIndexKey =
+  // ⚠️ (2026-08-19) RGB/SWIR added — route.ts's change_rgb/change_swir already
+  // reduce the composite to Rec.709 luminance and classify that scalar like any
+  // other index (see change_rgb/change_swir in ANALYSIS_CONFIG). They're kept
+  // "composite" kind in PREVIEW_DEFS below (still true for the preview/swipe
+  // UI) — isClassifiable() below is keyed off CHANGE_API_TYPE, not `kind`, so
+  // that's independent of this.
+  | "RGB" | "SWIR"
   | "NDVI" | "NDWI" | "NDMI" | "NDBI" | "SAVI" | "EVI" | "BSI"
   | "NBRI" | "GCI" | "VARI" | "RED_EDGE" | "MTVI" | "TVI" | "GRVI" | "MSI" | "NDSI"
   // (2026-08-16 batch 2) — the rest of the previously preview-only indices.
@@ -65,7 +121,48 @@ type ChangeIndexKey =
   | "PSRI" | "OSI" | "RENDVI" | "REIP" | "NMDI_SOIL" | "NMDI_VEG" | "ARI" | "ARI2"
   | "CMR" | "FMR" | "IOI" | "NDCI" | "FAI" | "MNDWI" | "GEMI" | "MCARI" | "CRI1" | "CRI2"
   | "CI" | "EVI2" | "MTCI" | "NDVI705" | "NDTI" | "TCARI"
-  | "VV" | "VH" | "ELEVATION";
+  | "VV" | "VH" | "ELEVATION"
+  // ⚠️ (2026-08-23) RATIO/SAR_RGB — the last two Sentinel-1 indices that were
+  // preview/swipe-only. route.ts now has matching change_ratio/change_sar_rgb
+  // branches (see runChangeDetection below and CHANGE_API_TYPE for the wiring;
+  // route.ts's SAR_SPECKLE_FILTER_TYPES also covers both now).
+  | "RATIO" | "SAR_RGB"
+  // ⚠️ (2026-08-23) SLOPE/HILLSHADE/ASPECT — the last 3 Copernicus DEM
+  // products, now classifiable via route.ts's new change_slope/
+  // change_hillshade/change_aspect (dem_change kind — needs the 3×3
+  // neighborhood gradient, not a per-pixel formula, see DemChangeConfig
+  // comment there). Aspect's delta is circular (wrapped into -180°..180°
+  // server-side) so its "gain"/"loss" means clockwise/counter-clockwise
+  // rotation, not magnitude.
+  | "SLOPE" | "HILLSHADE" | "ASPECT"
+  // ⚠️ (2026-08-22) SST/S3_LST/CHLOROPHYLL/FRP — route.ts already had matching
+  // change_sst/change_lst/change_frp_mwir/change_chl_nn branches (identity
+  // formula, bandCount:2 — see ANALYSIS_CONFIG there), the frontend just never
+  // wired them into ChangeIndexKey/CHANGE_API_TYPE. See runChangeDetection
+  // below for the decode-pipeline branch these need (resolves two COG urls via
+  // decodeSentinelDataset instead of reading raw STAC asset hrefs).
+  | "SST" | "S3_LST" | "CHLOROPHYLL" | "FRP"
+  // ⚠️ (2026-08-23) ASTER_RGB/MINERALS/THERMAL — route.ts now has matching
+  // change_aster_rgb/change_minerals/change_thermal branches (see ASTER_CHANGE_BIDX
+  // below for how their band hrefs+indices get resolved, since ASTER's bands
+  // live packed inside multi-band VNIR/SWIR/TIR composite files instead of
+  // one asset per band like Sentinel-2/Landsat).
+  | "ASTER_RGB" | "MINERALS" | "THERMAL"
+  // ⚠️ (2026-08-23) MODIS_NDVI/MODIS_EVI/MODIS_FIRE/MODIS_LST — route.ts now
+  // has matching change_modis_ndvi/change_modis_evi/change_modis_fire/
+  // change_modis_lst branches. Same "raw asset href per date" contract as
+  // VV/VH/ELEVATION (see PREVIEW_DEFS below — `assets` gets populated to
+  // match `proxyAssets` for the same reason), no bidx/decode step needed
+  // since MODIS's COG assets are one-band-per-file.
+  | "MODIS_NDVI" | "MODIS_EVI" | "MODIS_FIRE" | "MODIS_LST"
+  // ⚠️ (2026-08-23) NO2/SO2/CO/OZONE — route.ts already had matching
+  // change_no2/change_so2/change_co/change_ozone branches (identity formula,
+  // bandCount:2, same "decode pipeline" comment block as change_elevation —
+  // see ANALYSIS_CONFIG there); runChangeDetection's `isDecodePipeline`
+  // branch already handles these generically (same as SST/S3_LST/
+  // CHLOROPHYLL/FRP), so this is purely a frontend wiring gap, same as the
+  // SST/S3_LST/CHLOROPHYLL/FRP one above.
+  | "NO2" | "SO2" | "CO" | "OZONE";
 type ChangeDirection = "increase" | "decrease" | "both";
 
 export interface ChangeDetectionPreviewConfig {
@@ -127,6 +224,29 @@ interface PreviewDef {
   /** Builds the TiTiler band-math expression from `assets`, in order (index kind only).
    *  Defaults to the standard normalized difference (a-b)/(a+b) for 2-band indices. */
   expression?: (assets: string[]) => string;
+
+  // ── Non-optical / non-COG pipeline routing (2026-08-18) ────────────────
+  // Everything above (Sentinel-2/Landsat/VV/VH/ELEVATION) renders through the
+  // default path in makePreviewUrl: hit Planetary Computer's own /item/bbox
+  // endpoint directly with `assets`+`expression`+`rescale`+`colormap`. The 6
+  // new non-optical sources each need a genuinely different request shape, so
+  // `pipeline` picks which branch makePreviewUrl takes; `proxyType` carries
+  // the exact string that branch needs (matches SatelliteDataPanel.tsx's
+  // `type` param for "raster-proxy", or the SatelliteAnalysisType/decode
+  // variable name for "titiler"/"decode" — same value, reused as-is so this
+  // never drifts out of sync with the single-scene view).
+  pipeline?: "raster-proxy" | "titiler" | "decode";
+  /** Real backend/analysis key for the titiler/decode/raster-proxy pipelines above —
+   *  e.g. "NDVI" for MODIS_NDVI, "RGB" for ASTER_RGB, "vv_vh_ratio" for RATIO. */
+  proxyType?: string;
+  /** raster-proxy pipeline only: which scene.assets key(s) to read the source
+   *  band URL(s) from, e.g. ["vv","vh"] for RATIO/SAR_RGB, ["data"] for DEM. */
+  proxyAssets?: string[];
+  /** raster-proxy pipeline only: mirrors makeRasterProxyAnalyzeUrl's isComposite/isDem
+   *  branches in SatelliteDataPanel.tsx — controls which query params get sent. */
+  proxyKind?: "composite" | "dem" | "index";
+  /** decode pipeline only: which SentinelDecodeSource this belongs to. */
+  decodeSource?: SentinelDecodeSource;
 }
 
 const PREVIEW_DEFS: Record<PreviewKey, PreviewDef> = {
@@ -393,23 +513,240 @@ const PREVIEW_DEFS: Record<PreviewKey, PreviewDef> = {
   // (ANALYSIS_CONFIG.vv/vh in route.ts), same as the single-scene view.
   VV: {
     label: "VV backscatter", desc: "Radar return, co-polarized (dB)", kind: "index",
+    // ⚠️ `assets` stays populated (unlike RATIO/SAR_RGB below, which are never
+    // classifiable) — runChangeDetection() resolves change_vv's band hrefs
+    // straight from PREVIEW_DEFS[key].assets via getPreviewAssets(), a
+    // completely separate path from makePreviewUrl/pipeline below. Emptying
+    // this would silently break Run Change Detection for VV (0 hrefs, no
+    // error thrown, empty urls= sent to the backend).
     assets: ["vv"], color: "#4393c3", rescale: "-25,0", colormap: "spectral",
-    expression: ([vv]) => vv,
+    // ⚠️ (2026-08-19) pipeline MUST be set for the swipe/preview — the default
+    // TiTiler-bbox branch in makePreviewUrl (used when no `pipeline` is set)
+    // sends the raw asset straight to Planetary Computer's TiTiler as
+    // `expression: vv` with no dB conversion. Sentinel-1 GRD pixels are
+    // detected amplitude, not dB — without the 20·log10(v) conversion
+    // route.ts's own vv/vh types already do server-side (see route.ts's
+    // vv/vh ANALYSIS_CONFIG comment), nearly every pixel clips to one end of
+    // the "-25,0" rescale and the swipe renders as one solid color instead of
+    // an image. This missing `pipeline` field was the solid-purple swipe bug.
+    pipeline: "raster-proxy", proxyType: "vv", proxyAssets: ["vv"], proxyKind: "index",
   },
   VH: {
     label: "VH backscatter", desc: "Radar return, cross-polarized (dB)", kind: "index",
+    // Same reasoning as VV's `assets` comment above.
     assets: ["vh"], color: "#238b45", rescale: "-30,-5", colormap: "spectral",
-    expression: ([vh]) => vh,
+    // Same fix/reasoning as VV's `pipeline` comment above.
+    pipeline: "raster-proxy", proxyType: "vh", proxyAssets: ["vh"], proxyKind: "index",
   },
 
   // ── Copernicus DEM — mirrors SatellitePipelines.ts ELEVATION. Single elevation
   // band, raw metres. A before/after diff here reads as real terrain change
   // (excavation, land-fill, landslide, construction) rather than seasonal
   // reflectance change like the optical indices above.
+  // ⚠️ (2026-08-19) `pipeline` MUST be "raster-proxy" here — same bug class as
+  // the VV/VH "solid-purple swipe" fix above. Without it, this falls into the
+  // default TiTiler-bbox branch in makePreviewUrl, which sends the raw
+  // elevation asset straight to Planetary Computer's TiTiler with no
+  // stretch/colormap handling — nearly every pixel clips to one end of the
+  // "0,1500" rescale and the preview/swipe renders as one flat color instead
+  // of an elevation heatmap. route.ts already supports type="elevation"
+  // (kind: "dem") with the correct colormap handling — same contract SLOPE/
+  // HILLSHADE/ASPECT below already use.
   ELEVATION: {
     label: "Elevation", desc: "Terrain height (Copernicus DEM, metres)", kind: "index",
     assets: ["data"], color: "#a6d96a", rescale: "0,1500", colormap: "rdylgn",
     expression: ([data]) => data,
+    pipeline: "raster-proxy", proxyType: "elevation", proxyAssets: ["data"], proxyKind: "dem",
+  },
+
+  // ── Sentinel-1 (SAR) batch 2 — VV/VH ratio & RGB composite. Both need
+  // vv+vh together, computed server-side by /api/raster-proxy/analyze (same
+  // type="vv_vh_ratio"/"sar_rgb" contract SatelliteDataPanel.tsx already uses
+  // for the single-scene view — see makeRasterProxyAnalyzeUrl there).
+  RATIO: {
+    label: "VV/VH ratio", desc: "20·log10(VV) − 20·log10(VH), dB", kind: "index",
+    // ⚠️ (2026-08-23) `assets` now populated (was []) — same reasoning as
+    // VV/VH/ELEVATION's `assets` comment above: runChangeDetection() resolves
+    // change_ratio's band hrefs straight from PREVIEW_DEFS.RATIO.assets via
+    // getPreviewAssets(), a separate path from proxyAssets below (which stays
+    // as-is for the preview/swipe pipeline).
+    assets: ["vv", "vh"], color: "#f472b6",
+    pipeline: "raster-proxy", proxyType: "vv_vh_ratio", proxyAssets: ["vv", "vh"], proxyKind: "index",
+    rescale: "-20,20", colormap: "spectral",
+  },
+  SAR_RGB: {
+    label: "SAR RGB composite", desc: "R=VV, G=VH, B=VV/VH ratio (dB)", kind: "composite",
+    // Same reasoning as RATIO's `assets` comment above — change_sar_rgb needs
+    // both raw bands per date.
+    assets: ["vv", "vh"], color: "#fb7185",
+    pipeline: "raster-proxy", proxyType: "sar_rgb", proxyAssets: ["vv", "vh"], proxyKind: "composite",
+    // ⚠️ (2026-08-23) `rescale` added even though the composite preview
+    // pipeline ignores it (it does its own per-channel 2%-98% stretch) —
+    // this exists purely so getChangeThresholdParams below has a range to
+    // scale the 0.02-0.3 sensitivity slider against, same as RATIO. Derived
+    // from VV/VH's own dB rescales (-25,0 / -30,-5) run through
+    // change_sar_rgb's Rec.709 weights: roughly -28dB..-2dB.
+    rescale: "-28,-2",
+  },
+
+  // ── Copernicus DEM batch 2 — real terrain derivatives, computed server-side
+  // from the same elevation band ELEVATION uses (type="slope"/"hillshade"/
+  // "aspect" — same contract as SatelliteDataPanel.tsx).
+  SLOPE: {
+    label: "Slope", desc: "Terrain steepness, degrees", kind: "index",
+    // ⚠️ (2026-08-23) `assets` now populated (was []) — same reasoning as
+    // RATIO's `assets` comment above: runChangeDetection() resolves
+    // change_slope's band hrefs straight from PREVIEW_DEFS.SLOPE.assets via
+    // getPreviewAssets(), a separate path from proxyAssets below (preview
+    // pipeline, unchanged).
+    assets: ["data"], color: "#f97316",
+    pipeline: "raster-proxy", proxyType: "slope", proxyAssets: ["data"], proxyKind: "dem",
+    rescale: "0,45", colormap: "inferno",
+  },
+  HILLSHADE: {
+    label: "Hillshade", desc: "Shaded relief", kind: "index",
+    // Same reasoning as SLOPE's `assets` comment above.
+    assets: ["data"], color: "#cbd5e1",
+    pipeline: "raster-proxy", proxyType: "hillshade", proxyAssets: ["data"], proxyKind: "dem",
+    rescale: "0,255", colormap: "rdylbu_r",
+  },
+  ASPECT: {
+    label: "Aspect", desc: "Slope direction, compass degrees", kind: "index",
+    // Same reasoning as SLOPE's `assets` comment above.
+    assets: ["data"], color: "#fb923c",
+    pipeline: "raster-proxy", proxyType: "aspect", proxyAssets: ["data"], proxyKind: "dem",
+    rescale: "0,360", colormap: "rdylbu_r",
+  },
+
+  // ── Sentinel-5P (Atmosphere) — decode → GeoTIFF → /api/raster-proxy/analyze,
+  // same pipeline as SatelliteDataPanel.tsx (decodeAndBuildHeatmapUrl), real
+  // p2/p98 stretch per scene instead of one fixed rescale for every gas.
+  NO2: {
+    label: "NO₂", desc: "Tropospheric NO₂ column", kind: "index",
+    assets: [], color: "#a52c60",
+    pipeline: "decode", proxyType: "NO2", decodeSource: "sentinel-5p",
+    rescale: "0,0.0002", colormap: "inferno",
+  },
+  SO2: {
+    label: "SO₂", desc: "Total-column SO₂", kind: "index",
+    assets: [], color: "#f472b6",
+    pipeline: "decode", proxyType: "SO2", decodeSource: "sentinel-5p",
+    rescale: "0,0.0005", colormap: "rdylbu_r",
+  },
+  CO: {
+    label: "CO", desc: "Total-column carbon monoxide", kind: "index",
+    assets: [], color: "#84cc16",
+    pipeline: "decode", proxyType: "CO", decodeSource: "sentinel-5p",
+    rescale: "0,0.05", colormap: "greens",
+  },
+  OZONE: {
+    label: "Ozone", desc: "Total-column O₃", kind: "index",
+    assets: [], color: "#f7d13d",
+    pipeline: "decode", proxyType: "OZONE", decodeSource: "sentinel-5p",
+    rescale: "0,0.3", colormap: "rdbu",
+  },
+
+  // ── MODIS — migrated (2026-08-22) off direct TiTiler onto the same
+  // /api/raster-proxy/analyze pipeline VV/VH/ELEVATION above use — real COG
+  // overview-picking instead of a live round-trip to Microsoft's Planetary
+  // Computer TiTiler. proxyAssets are the real STAC asset names (confirmed
+  // via GET /api/stac/v1/collections/modis-13A1-061 etc.), proxyType matches
+  // route.ts's new ANALYSIS_CONFIG.modis_* keys. Still renamed off "NDVI"/
+  // "EVI" to avoid the Sentinel-2 key collision noted below.
+  MODIS_NDVI: {
+    label: "MODIS NDVI", desc: "Vegetation index, 16-day 500m composite", kind: "index",
+    // ⚠️ (2026-08-23) `assets` now populated (matches proxyAssets) — same
+    // reasoning as VV/VH/ELEVATION above: runChangeDetection() resolves
+    // change_modis_ndvi's band hrefs straight from PREVIEW_DEFS[key].assets
+    // via getPreviewAssets(), a completely separate path from makePreviewUrl/
+    // pipeline below, which still uses proxyAssets as before.
+    assets: ["500m_16_days_NDVI"], color: "#84cc16",
+    pipeline: "raster-proxy", proxyType: "modis_ndvi", proxyAssets: ["500m_16_days_NDVI"], proxyKind: "index",
+    rescale: "-2000,10000", colormap: "rdylgn",
+  },
+  MODIS_EVI: {
+    label: "MODIS EVI", desc: "Enhanced vegetation index, 16-day 500m composite", kind: "index",
+    // Same reasoning as MODIS_NDVI's `assets` comment above.
+    assets: ["500m_16_days_EVI"], color: "#65a30d",
+    pipeline: "raster-proxy", proxyType: "modis_evi", proxyAssets: ["500m_16_days_EVI"], proxyKind: "index",
+    rescale: "-2000,10000", colormap: "magma",
+  },
+  MODIS_FIRE: {
+    label: "MODIS Fire", desc: "Thermal anomalies / active fire confidence", kind: "index",
+    // Same reasoning as MODIS_NDVI's `assets` comment above.
+    assets: ["FireMask"], color: "#ea580c",
+    pipeline: "raster-proxy", proxyType: "modis_fire", proxyAssets: ["FireMask"], proxyKind: "index",
+    rescale: "0,9", colormap: "hot",
+  },
+  MODIS_LST: {
+    label: "MODIS LST", desc: "Land surface temperature, daily 1km", kind: "index",
+    // Same reasoning as MODIS_NDVI's `assets` comment above.
+    assets: ["LST_Day_1km"], color: "#dc2626",
+    pipeline: "raster-proxy", proxyType: "modis_lst", proxyAssets: ["LST_Day_1km"], proxyKind: "index",
+    rescale: "285,325", colormap: "inferno",
+  },
+
+  // ── ASTER — same direct TiTiler pipeline as MODIS. RGB renamed to
+  // ASTER_RGB (collides with the Sentinel-2/Landsat true-color composite key).
+  ASTER_RGB: {
+    label: "ASTER RGB", desc: "VNIR true color composite", kind: "composite",
+    assets: [], color: "#fb7185", pipeline: "titiler", proxyType: "RGB",
+  },
+  MINERALS: {
+    label: "ASTER Minerals", desc: "SWIR band-ratio mineral composite", kind: "composite",
+    assets: [], color: "#f472b6", pipeline: "titiler", proxyType: "MINERALS",
+    // ⚠️ (2026-08-23) Matches SatellitePipelines.ts TITILER_STYLES.MINERALS'
+    // rescale ("0,4") — used ONLY by getChangeThresholdParams below to scale
+    // the sensitivity slider into this index's real value range for Run
+    // Change Detection. Has no effect on the preview/swipe image, which
+    // still colors itself via dynamicRescale at render time.
+    rescale: "0,4",
+  },
+  THERMAL: {
+    label: "ASTER Thermal", desc: "TIR band, contrast-stretched", kind: "index",
+    assets: [], color: "#ef4444", pipeline: "titiler", proxyType: "THERMAL",
+    // ⚠️ (2026-08-23) TIR is raw uint16 DN (not calibrated brightness temp —
+    // same caveat as SatellitePipelines.ts TITILER_STYLES.THERMAL). "0,4095"
+    // is an approximate 12-bit-DN guess used only to scale the Run Change
+    // Detection sensitivity slider into a sane range — NOT a measured range,
+    // and it doesn't touch the preview's own dynamicRescale-based coloring.
+    rescale: "0,4095",
+  },
+
+  // ── Sentinel-3 — SST/S3_LST/CHLOROPHYLL/FRP all go through the same
+  // decode→GeoTIFF→raster-proxy pipeline as Sentinel-5P above (NOT direct
+  // TiTiler — Planetary Computer's default tiler doesn't render these NetCDF
+  // variables correctly, same reasoning documented in SatelliteDataPanel.tsx).
+  // ⚠️ CHLOROPHYLL and FRP currently 400 on the decode backend itself for
+  // reasons unrelated to this UI wiring (missing geo_coordinates asset for
+  // OLCI chlorophyll, narrow-swath FRP tracks rarely intersecting a given
+  // AOI) — see the comments above SENTINEL3_DECODE_VARIABLES in
+  // sentinelDecode.ts. They're wired here the same as SST/S3_LST so they'll
+  // work automatically once that backend fix lands, but expect them to error
+  // until then.
+  SST: {
+    label: "Sea Surface Temp.", desc: "SLSTR sea surface temperature", kind: "index",
+    assets: [], color: "#2dd4bf",
+    pipeline: "decode", proxyType: "SST", decodeSource: "sentinel-3",
+    rescale: "271,305", colormap: "turbo",
+  },
+  S3_LST: {
+    label: "Land Surface Temp.", desc: "SLSTR land surface temperature", kind: "index",
+    assets: [], color: "#f97316",
+    pipeline: "decode", proxyType: "S3_LST", decodeSource: "sentinel-3",
+    rescale: "250,330", colormap: "turbo",
+  },
+  CHLOROPHYLL: {
+    label: "Chlorophyll", desc: "OLCI chlorophyll-a (neural-net)", kind: "index",
+    assets: [], color: "#22c55e",
+    pipeline: "decode", proxyType: "CHLOROPHYLL", decodeSource: "sentinel-3",
+    rescale: "0,10", colormap: "turbo",
+  },
+  FRP: {
+    label: "Fire Radiative Power", desc: "SLSTR fire radiative power", kind: "index",
+    assets: [], color: "#dc2626",
+    pipeline: "decode", proxyType: "FRP", decodeSource: "sentinel-3",
+    rescale: "0,100", colormap: "hot",
   },
 };
 
@@ -460,6 +797,8 @@ function getPreviewAssets(indexKey: PreviewKey, source: SatSource): string[] {
 
 // Kept for any old prop plumbing that still expects the pure-index map.
 const CHANGE_INDEX_DEFS: Record<ChangeIndexKey, PreviewDef> = {
+  RGB: PREVIEW_DEFS.RGB,
+  SWIR: PREVIEW_DEFS.SWIR,
   NDVI: PREVIEW_DEFS.NDVI,
   NDWI: PREVIEW_DEFS.NDWI,
   NDMI: PREVIEW_DEFS.NDMI,
@@ -512,14 +851,37 @@ const CHANGE_INDEX_DEFS: Record<ChangeIndexKey, PreviewDef> = {
   VV: PREVIEW_DEFS.VV,
   VH: PREVIEW_DEFS.VH,
   ELEVATION: PREVIEW_DEFS.ELEVATION,
+  RATIO: PREVIEW_DEFS.RATIO,
+  SAR_RGB: PREVIEW_DEFS.SAR_RGB,
+  SLOPE: PREVIEW_DEFS.SLOPE,
+  HILLSHADE: PREVIEW_DEFS.HILLSHADE,
+  ASPECT: PREVIEW_DEFS.ASPECT,
+  SST: PREVIEW_DEFS.SST,
+  S3_LST: PREVIEW_DEFS.S3_LST,
+  CHLOROPHYLL: PREVIEW_DEFS.CHLOROPHYLL,
+  FRP: PREVIEW_DEFS.FRP,
+  ASTER_RGB: PREVIEW_DEFS.ASTER_RGB,
+  MINERALS: PREVIEW_DEFS.MINERALS,
+  THERMAL: PREVIEW_DEFS.THERMAL,
+  MODIS_NDVI: PREVIEW_DEFS.MODIS_NDVI,
+  MODIS_EVI: PREVIEW_DEFS.MODIS_EVI,
+  MODIS_FIRE: PREVIEW_DEFS.MODIS_FIRE,
+  MODIS_LST: PREVIEW_DEFS.MODIS_LST,
+  NO2: PREVIEW_DEFS.NO2,
+  SO2: PREVIEW_DEFS.SO2,
+  CO: PREVIEW_DEFS.CO,
+  OZONE: PREVIEW_DEFS.OZONE,
 };
 
 // Maps the panel's index selector to the server-side change-detection analysis
 // type exposed by /api/raster-proxy/analyze — the actual classification (5
 // clear classes, computed from real band math, not colorized-PNG guessing)
-// happens server-side in that route. Only real normalized-difference indices
-// support this — RGB/SWIR are composites, not a single scalar to classify.
+// happens server-side in that route. Normalized-difference indices support
+// this directly; RGB/SWIR are composites reduced to Rec.709 luminance
+// server-side (change_rgb/change_swir) and classified on that scalar instead.
 const CHANGE_API_TYPE: Record<ChangeIndexKey, string> = {
+  RGB: "change_rgb",
+  SWIR: "change_swir",
   NDVI: "change_ndvi",
   NDWI: "change_ndwi",
   NDMI: "change_ndmi",
@@ -574,14 +936,81 @@ const CHANGE_API_TYPE: Record<ChangeIndexKey, string> = {
   VV: "change_vv",
   VH: "change_vh",
   ELEVATION: "change_elevation",
+  // ⚠️ (2026-08-23) RATIO/SAR_RGB — the last two Sentinel-1 indices, now
+  // classifiable too. RATIO reuses vv_vh_ratio's dB-difference formula as-is;
+  // SAR_RGB (a 3-channel composite, R=VV/G=VH/B=ratio, all in dB) gets the
+  // same "reduce to one scalar" treatment change_rgb/change_swir use for
+  // optical composites, just with Rec.709 weights applied to the dB channels
+  // instead of ÷10000 reflectance — see change_ratio/change_sar_rgb in
+  // route.ts's ANALYSIS_CONFIG.
+  RATIO: "change_ratio",
+  SAR_RGB: "change_sar_rgb",
+  // ⚠️ (2026-08-23) SLOPE/HILLSHADE/ASPECT — route.ts's dem_change branches.
+  SLOPE: "change_slope",
+  HILLSHADE: "change_hillshade",
+  ASPECT: "change_aspect",
+  // ⚠️ (2026-08-22) Sentinel-3 decode-pipeline indices — note the type name
+  // here is NOT proxyType.toLowerCase() like most others (that would give
+  // "change_s3_lst"/"change_chlorophyll"/"change_frp", which don't exist).
+  // route.ts names these after the actual decode `variable` string instead
+  // (see UI_BAND_TO_SENTINEL_VARIABLE in sentinelDecode.ts: S3_LST→"LST",
+  // CHLOROPHYLL→"CHL_NN", FRP→"FRP_MWIR") — same mismatch already documented
+  // for the single-scene "lst"/"chl_nn"/"frp_mwir" type names in route.ts.
+  SST: "change_sst",
+  S3_LST: "change_lst",
+  CHLOROPHYLL: "change_chl_nn",
+  FRP: "change_frp_mwir",
+  // ⚠️ (2026-08-23) ASTER — see ASTER_CHANGE_BIDX below for how runChangeDetection
+  // resolves these three (repeated href + bidx list, not a plain asset-per-band).
+  ASTER_RGB: "change_aster_rgb",
+  MINERALS: "change_minerals",
+  THERMAL: "change_thermal",
+  // ⚠️ (2026-08-23) MODIS — route.ts's change_modis_* branches read the raw
+  // COG hrefs the same way change_vv/change_elevation do (see PREVIEW_DEFS
+  // MODIS_* `assets` comment above), no ASTER_CHANGE_BIDX-style entry needed.
+  MODIS_NDVI: "change_modis_ndvi",
+  MODIS_EVI: "change_modis_evi",
+  MODIS_FIRE: "change_modis_fire",
+  MODIS_LST: "change_modis_lst",
+  // ⚠️ (2026-08-23) Sentinel-5P gases — route.ts names these change_no2/
+  // change_so2/change_co/change_ozone (proxyType.toLowerCase() matches here,
+  // unlike the Sentinel-3 group above). "OZONE" intentionally maps to
+  // "change_ozone", not "change_o3" — route.ts has both as an alias pair
+  // (change_o3 === change_ozone exactly) but PREVIEW_DEFS.OZONE's own
+  // proxyType is "OZONE", so staying consistent with that here.
+  NO2: "change_no2",
+  SO2: "change_so2",
+  CO: "change_co",
+  OZONE: "change_ozone",
 };
 
-// ⚠️ NOT "PREVIEW_DEFS[key].kind === 'index'" in principle (composites like
-// RGB/SWIR genuinely can't classify), but as of 2026-08-16 every index-kind
-// entry in PREVIEW_DEFS now has a matching change_<index> branch in route.ts
-// — see CHANGE_API_TYPE below, which is kept as the actual source of truth
-// (so a newly-added preview-only index doesn't silently look classifiable
-// here before its change_ branch actually exists server-side).
+// ⚠️ (2026-08-23) ASTER doesn't have one STAC asset per band like Sentinel-2/
+// Landsat — its bands live packed inside 3 multi-band composite files (see
+// SatellitePipelines.ts's ASTER comment): VNIR (3 bands: Band1,Band2,Band3N),
+// SWIR (6 bands), TIR (5 bands). To classify these, runChangeDetection below
+// resolves ONE href per composite (via getSceneAssetUrl, same as any other
+// raw-href source) and repeats it once per band index listed here, paired
+// with a matching `&bidx=` (1-based) query param route.ts's readBand() uses
+// to pick that band out of the file — instead of getPreviewAssets(), which
+// only makes sense for "one asset key = one band" sources.
+const ASTER_CHANGE_BIDX: Partial<Record<ChangeIndexKey, { assetKey: string; bidx: number[] }>> = {
+  ASTER_RGB: { assetKey: "VNIR", bidx: [1, 2, 3] },
+  // Matches TITILER_STYLES.MINERALS' expression (SWIR_b1/b3, SWIR_b5/b3, SWIR_b1/b5).
+  MINERALS: { assetKey: "SWIR", bidx: [1, 3, 5] },
+  THERMAL: { assetKey: "TIR", bidx: [1] },
+};
+
+// ⚠️ NOT "PREVIEW_DEFS[key].kind === 'index'" — RGB/SWIR/SAR_RGB are all
+// "composite" kind yet ARE classifiable (route.ts reduces each to a single
+// scalar first: luminance for RGB/SWIR, Rec.709-weighted dB for SAR_RGB — see
+// change_rgb/change_swir/change_sar_rgb in ANALYSIS_CONFIG). Similarly,
+// SLOPE/HILLSHADE/ASPECT aren't classified via a per-pixel `formula` at all —
+// route.ts's dem_change kind recomputes their 3×3-neighborhood gradient for
+// both dates instead (see DemChangeConfig there). As of 2026-08-23 (with
+// SLOPE/HILLSHADE/ASPECT added) EVERY PreviewKey has a matching change_<index>
+// branch in route.ts — see CHANGE_API_TYPE below, which is kept as the actual
+// source of truth (so a newly-added preview-only entry doesn't silently look
+// classifiable here before its change_ branch actually exists server-side).
 function isClassifiable(key: PreviewKey): key is ChangeIndexKey {
   return Object.prototype.hasOwnProperty.call(CHANGE_API_TYPE, key);
 }
@@ -591,7 +1020,11 @@ function isClassifiable(key: PreviewKey): key is ChangeIndexKey {
 // threshold/classThreshold defaults already work fine — so we leave them
 // alone (unscaled `threshold`, no `classThreshold` override) to not change
 // behavior anyone's already relying on.
-const NARROW_RANGE_CHANGE_KEYS = new Set<ChangeIndexKey>(["NBRI", "VARI", "MTVI", "GRVI", "NDSI"]);
+// ⚠️ (2026-08-23) ASTER_RGB added — change_aster_rgb's luminance formula
+// divides by 255 (ASTER VNIR's 8-bit DN scale), landing in the same ~0-1
+// range as change_rgb/change_swir's /10000 reduction, so the flat 0.08/0.25
+// server defaults are meaningful here too, same reasoning as RGB/SWIR.
+const NARROW_RANGE_CHANGE_KEYS = new Set<ChangeIndexKey>(["NBRI", "VARI", "MTVI", "GRVI", "NDSI", "RGB", "SWIR", "ASTER_RGB"]);
 
 // The other 4 (MSI, GCI, TVI, RED_EDGE) are ratios/wavelengths with ranges
 // nothing like -1..1 (0.2-2, 0-4, 0-50, 700-740nm) — sending the raw 0.02-0.3
@@ -627,6 +1060,9 @@ interface ChangeStats {
 // X-Change-Legend header for some reason — mirrors route.ts exactly.
 function defaultChangeLegend(indexKey: ChangeIndexKey): ChangeLegendItem[] {
   const GAIN_LOSS_LABELS: Record<ChangeIndexKey, [string, string]> = {
+    // Matches route.ts change_rgb/change_swir gainLabel/lossLabel exactly.
+    RGB: ["Brightness Gain", "Brightness Loss"],
+    SWIR: ["SWIR Signal Gain", "SWIR Signal Loss"],
     NDVI: ["Vegetation Gain", "Vegetation Loss"],
     NDWI: ["Water Gain", "Water Loss"],
     NDMI: ["Moisture Gain", "Moisture Loss"],
@@ -683,6 +1119,38 @@ function defaultChangeLegend(indexKey: ChangeIndexKey): ChangeLegendItem[] {
     VV: ["Backscatter Gain", "Backscatter Loss"],
     VH: ["Backscatter Gain", "Backscatter Loss"],
     ELEVATION: ["Elevation Gain", "Elevation Loss"],
+    // ⚠️ (2026-08-23) Matches route.ts change_ratio/change_sar_rgb gainLabel/
+    // lossLabel exactly.
+    RATIO: ["Ratio Increase", "Ratio Decrease"],
+    SAR_RGB: ["SAR Brightness Gain", "SAR Brightness Loss"],
+    // ⚠️ (2026-08-23) Matches route.ts change_slope/change_hillshade/
+    // change_aspect gainLabel/lossLabel exactly.
+    SLOPE: ["Slope Increase (Steeper)", "Slope Decrease (Flatter)"],
+    HILLSHADE: ["Illumination Increase", "Illumination Decrease"],
+    ASPECT: ["Aspect Rotated Clockwise", "Aspect Rotated Counter-Clockwise"],
+    // ⚠️ (2026-08-22) matches route.ts change_sst/change_lst/change_frp_mwir/
+    // change_chl_nn gainLabel/lossLabel exactly.
+    SST: ["SST Warming", "SST Cooling"],
+    S3_LST: ["LST Warming", "LST Cooling"],
+    CHLOROPHYLL: ["Chlorophyll Increase", "Chlorophyll Decrease"],
+    FRP: ["Fire Radiative Power Increase", "Fire Radiative Power Decrease"],
+    // ⚠️ (2026-08-23) Matches route.ts change_aster_rgb/change_minerals/
+    // change_thermal gainLabel/lossLabel exactly.
+    ASTER_RGB: ["Brightness Gain", "Brightness Loss"],
+    MINERALS: ["Mineral Signal Increase", "Mineral Signal Decrease"],
+    THERMAL: ["Thermal Signal Increase", "Thermal Signal Decrease"],
+    // ⚠️ (2026-08-23) Matches route.ts change_modis_ndvi/change_modis_evi/
+    // change_modis_fire/change_modis_lst gainLabel/lossLabel exactly.
+    MODIS_NDVI: ["Vegetation Gain", "Vegetation Loss"],
+    MODIS_EVI: ["Vegetation Gain", "Vegetation Loss"],
+    MODIS_FIRE: ["Fire Activity Increase", "Fire Activity Decrease"],
+    MODIS_LST: ["Temperature Increase", "Temperature Decrease"],
+    // ⚠️ (2026-08-23) Matches route.ts change_no2/change_so2/change_co/
+    // change_ozone gainLabel/lossLabel exactly.
+    NO2: ["NO2 Increase", "NO2 Decrease"],
+    SO2: ["SO2 Increase", "SO2 Decrease"],
+    CO: ["CO Increase", "CO Decrease"],
+    OZONE: ["Ozone Increase", "Ozone Decrease"],
   };
   const [gainLabel, lossLabel] = GAIN_LOSS_LABELS[indexKey];
   return [
@@ -737,18 +1205,144 @@ function getSceneAssetUrl(scene: SatelliteScene, assetKey: string) {
   return getAssetLookupKeys(assetKey).map((key) => scene.assets[key]).find(Boolean);
 }
 
-function makePreviewUrl(
+// ── Sentinel-1 SAR-derivative / DEM-derivative pipeline ─────────────────────
+// Mirrors makeRasterProxyAnalyzeUrl in SatelliteDataPanel.tsx exactly (same
+// query params, same branch logic) so /api/raster-proxy/analyze — which
+// already serves this "type" for the single-scene view — renders identically
+// here. No backend change needed: this just calls the same endpoint the same
+// way SatelliteDataPanel.tsx already does successfully.
+function makeRasterProxyPreviewUrl(
+  scene: SatelliteScene,
+  def: PreviewDef,
+  bbox: [number, number, number, number],
+): string | undefined {
+  const [west, south, east, north] = bbox;
+  const assetKeys = def.proxyAssets ?? [];
+  const rawUrls = assetKeys.map((key) => getSceneAssetUrl(scene, key)).filter(Boolean) as string[];
+  if (!scene.id || !scene.collection || rawUrls.length !== assetKeys.length) return scene.thumbnail;
+
+  const params = new URLSearchParams();
+  params.set("type", def.proxyType!);
+  params.set("urls", rawUrls.join(","));
+  params.set("bbox", `${west},${south},${east},${north}`);
+
+  if (def.proxyKind === "composite") {
+    params.set("sharpen", "1");
+  } else if (def.proxyKind === "dem") {
+    const [minVal, maxVal] = (def.rescale ?? "0,1").split(",");
+    params.set("min", minVal);
+    params.set("max", maxVal);
+    if (def.colormap) params.set("colormap", def.colormap);
+    if (def.proxyType === "aspect") params.set("transparent", "0");
+  } else {
+    const [minVal, maxVal] = (def.rescale ?? "-1,1").split(",");
+    params.set("min", minVal);
+    params.set("max", maxVal);
+    if (def.colormap) params.set("colormap", def.colormap);
+    if (def.proxyType === "vv_vh_ratio") params.set("transparent", "0");
+  }
+  return `/api/raster-proxy/analyze?${params.toString()}`;
+}
+
+async function makePreviewUrl(
   scene: SatelliteScene,
   indexKey: PreviewKey,
   bbox: [number, number, number, number], // [west, south, east, north] — the AOI, not the scene tile
   source: SatSource,
-) {
+  sentinelDecodeToken?: string,
+  // ⚠️ (2026-08-22) titilerSharedRescale: لو indexKey من نوع "titiler" وعنده
+  // dynamicRescale (FIRE/LST/MINERALS/THERMAL)، ده الـ rescale المحسوب مرة
+  // واحدة من fetchPairDynamicRescale على السينتين (قبل/بعد) مع بعض — بيتبعت
+  // هنا عشان صورة الـ"قبل" وصورة الـ"بعد" يترسموا بنفس مقياس الألوان بالظبط
+  // (شوفي fetchPairDynamicRescale في SatellitePipelines.ts للتفاصيل).
+  titilerSharedRescale?: string | null,
+  // ⚠️ (2026-08-22) progressive rendering — بس لمسار "decode" (Sentinel-3/
+  // 5P): decodeAndBuildHeatmapUrl بقت بتقدر تنادّي onDecoded فورًا بمجرد ما
+  // فك الـ NetCDF يخلص (default rescale)، قبل ما تستنى statistics. بنمرّر
+  // الكولباك ده لحد هناك عشان الصورة تتعرض على الخريطة أسرع بدل الانتظار
+  // الكامل، وبعدين لما makePreviewUrl نفسها ترجع بالنتيجة النهائية (تلوين
+  // دقيق)، الـ caller يحدّث الصورة تاني. لباقي الـ pipelines (titiler/
+  // raster-proxy) مفيش فرق — بترجع فورًا زي ما هي، مفيش حاجة تتحسن هنا.
+  onProgress?: (previewUrl: string) => void,
+// ⚠️ (2026-08-22) رجعنا object فيه `error` مش string بس — عشان لما الـ
+// decode/titiler pipeline يفشل (Sentinel-3/Sentinel-5P)، بدل ما نرجع
+// scene.thumbnail بصمت (اللي غالبًا undefined أصلًا لـ NetCDF items، فمفيش
+// حاجة تتعرض على الخريطة خالص من غير أي تفسير)، نقدر نعرض سبب الفشل
+// الحقيقي في الواجهة (401 توكن، 400 من الباك، "no valid pixels"...).
+): Promise<{ url?: string; error?: string }> {
   const def = PREVIEW_DEFS[indexKey];
+  if (!scene.id || !scene.collection) return { url: scene.thumbnail };
+
+  // ── Non-optical pipelines (2026-08-18 batch 2) — dispatch before touching
+  // `assets`/getPreviewAssets, which only make sense for the default
+  // Sentinel-2/Landsat/VV/VH/ELEVATION path below.
+  if (def.pipeline === "raster-proxy") {
+    return { url: makeRasterProxyPreviewUrl(scene, def, bbox) };
+  }
+  if (def.pipeline === "titiler") {
+    const bboxUrl = await buildTitilerBboxUrl(
+      scene.collection, scene.id, def.proxyType as SatelliteAnalysisType, bbox,
+      titilerSharedRescale ?? undefined,
+    );
+    if (bboxUrl) return { url: bboxUrl };
+    return {
+      url: scene.thumbnail,
+      error: scene.thumbnail
+        ? undefined
+        : "TiTiler didn't return an image for this scene/AOI (no thumbnail fallback available either).",
+    };
+  }
+  if (def.pipeline === "decode") {
+    if (!sentinelDecodeToken) {
+      return {
+        url: scene.thumbnail,
+        error: "Missing auth token — you're not signed in (or the session has no accessToken), so /gis/sentinel5p/decode can't authenticate this request.",
+      };
+    }
+    const variable = UI_BAND_TO_SENTINEL_VARIABLE[def.proxyType!];
+    if (!variable) {
+      return { url: scene.thumbnail, error: `No UI_BAND_TO_SENTINEL_VARIABLE mapping for "${def.proxyType}".` };
+    }
+    try {
+      const { tileUrl } = await decodeAndBuildHeatmapUrl({
+        token: sentinelDecodeToken,
+        source: def.decodeSource!,
+        itemId: scene.id,
+        variable,
+        collection: scene.collection,
+        bbox,
+        onDecoded: onProgress ? ({ tileUrl: previewTileUrl }) => onProgress(previewTileUrl) : undefined,
+      });
+      return { url: tileUrl };
+    } catch (err) {
+      // SentinelDecodeError (no data / narrow-swath miss) or network error —
+      // fall back to the scene thumbnail rather than breaking the swipe, but
+      // now also surface *why* so it's not a silent blank map.
+      // ⚠️ (2026-08-22) كانت هنا بتطبع err.message الخام حتى لو
+      // isNoDataForArea=true (شوفي "Sentinel decode failed (400). {...}" —
+      // نفس رسالة الـ backend الكاملة كJSON). دلوقتي بنعمل نفس الفحص
+      // الموجود في SatelliteDataPanel.tsx (handlePreviewScene) عشان نعرض
+      // رسالة ودّية بدل الـ JSON الخام لما السبب يكون معروف (narrow-swath/
+      // no-data-for-area)، ونسيب باقي أنواع الأخطاء (شبكة/توكن/بg) زي ما هي.
+      const message =
+        err instanceof SentinelDecodeError && err.isNoDataForArea
+          ? `No valid data for "${def.proxyType}" in this area/scene — the satellite's narrow data track likely didn't pass directly over this AOI. Try a different scene or location.`
+          : err instanceof SentinelDecodeError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : String(err);
+      console.warn("[ChangeDetectionPanel] decode preview failed:", message);
+      return { url: scene.thumbnail, error: message };
+    }
+  }
+
   const assets = getPreviewAssets(indexKey, source);
-  if (!scene.id || !scene.collection) return scene.thumbnail;
 
   const hrefs = assets.map((asset) => getSceneAssetUrl(scene, asset));
-  if (hrefs.some((h) => !h)) return scene.thumbnail;
+  if (hrefs.some((h) => !h)) {
+    return { url: scene.thumbnail, error: scene.thumbnail ? undefined : "Missing one or more required bands/assets for this index on this scene." };
+  }
 
   const [west, south, east, north] = bbox;
   // Keep the rendered image's pixel aspect ratio matched to the AOI's geographic
@@ -792,7 +1386,7 @@ function makePreviewUrl(
     url.searchParams.set("rescale", def.rescale ?? "-0.3,0.5");
     url.searchParams.set("colormap_name", def.colormap ?? "rdylgn");
   }
-  return url.toString();
+  return { url: url.toString() };
 }
 
 function formatDateDMY(value: string) {
@@ -1156,9 +1750,26 @@ interface ChangeDetectionPanelProps {
   onPreview?: (config: ChangeDetectionPreviewConfig) => void;
   /** Real, georeferenced Before/After swipe on the actual map. Pass null to hide it. */
   onSwipeCompare?: (config: ChangeDetectionSwipeConfig | null) => void;
+  /** Same JWT SatelliteDataPanel.tsx passes as sentinelDecodeToken (session.user.accessToken) —
+   *  required for Sentinel-5P (NO2/SO2/CO/OZONE) and Sentinel-3 (SST/S3_LST/CHLOROPHYLL/FRP)
+   *  previews here, since both go through the same /gis/sentinel5p/decode JWT-protected
+   *  endpoint. Without it, those two sources' previews silently fall back to scene.thumbnail.
+   *  ⚠️ (2026-08-22) بقى اختياري تمامًا دلوقتي: لو مش متبعت (أو الأب مش
+   *  عارف يبعته صح)، الكومبوننت بيجيبه لوحده من useSession() تحت — بالظبط
+   *  زي SatelliteDataPanel.tsx. ده لإن الأب هنا كان مش بيبعته خالص، فالـ
+   *  decode pipeline (Sentinel-3/5P) كان بيفشل بـ "Missing auth token" في
+   *  كل الحالات — مش مشكلة نص/توكن منتهي، التوكن نفسه معمول مبعوتش. */
+  sentinelDecodeToken?: string;
 }
 
-export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompare }: ChangeDetectionPanelProps) {
+export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompare, sentinelDecodeToken: sentinelDecodeTokenProp }: ChangeDetectionPanelProps) {
+  // ⚠️ (2026-08-22) fallback مباشر لـ useSession() لو الأب مش بيبعت
+  // sentinelDecodeToken كـ prop — نفس الطريقة بالظبط اللي SatelliteDataPanel.tsx
+  // بيجيب بيها التوكن (session.user.accessToken). ده بيحل "Missing auth
+  // token" اللي كانت بتظهر في القمرين الاتنين خالص، لإن السبب مش كان توكن
+  // غلط، كان إن التوكن معمول مبعوتش كـ prop للكومبوننت ده من الأساس.
+  const { data: session } = useSession();
+  const sentinelDecodeToken = sentinelDecodeTokenProp ?? ((session?.user as any)?.accessToken as string | undefined);
   const coords = getMidCoords(selectedFeature);
   const bounds = getFeatureBounds(selectedFeature, coords ? { lat: coords[0], lng: coords[1] } : undefined);
   const [[south, west], [north, east]] = bounds;
@@ -1189,8 +1800,16 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   const [cloudCoverBefore, setCloudCoverBefore] = useState(25);
   const [cloudCoverAfter, setCloudCoverAfter] = useState(25);
 
+  // شوفي الـ useEffect اللي بيحسبها تحت — بتتشارك بين صورة الـ"قبل" والـ"بعد"
+  // عشان يترسموا بنفس مقياس الألوان (FIRE/LST/MINERALS/THERMAL بس).
+  const [titilerSharedRescale, setTitilerSharedRescale] = useState<string | null>(null);
   const [beforePreviewUrl, setBeforePreviewUrl] = useState<string | null>(null);
   const [afterPreviewUrl, setAfterPreviewUrl] = useState<string | null>(null);
+  // ⚠️ (2026-08-22) بتتحدّد لما الـ decode (Sentinel-3/5P) أو titiler
+  // pipeline يفشل، عشان يبان سبب حقيقي بدل ما الخريطة تفضل فاضية بصمت من
+  // غير أي تفسير — شوفي makePreviewUrl في نفس الملف.
+  const [beforePreviewError, setBeforePreviewError] = useState<string | null>(null);
+  const [afterPreviewError, setAfterPreviewError] = useState<string | null>(null);
   const [beforeClippedUrl, setBeforeClippedUrl] = useState<string | null>(null);
   const [afterClippedUrl, setAfterClippedUrl] = useState<string | null>(null);
   const [clipToShape, setClipToShape] = useState(true);
@@ -1205,7 +1824,29 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
 
   const previewDef = PREVIEW_DEFS[indexKey];
   const canClassify = isClassifiable(indexKey);
-  const collection = SOURCE_COLLECTIONS[source];
+  // ⚠️ (2026-08-19) لازم SOURCE_ANALYSIS_COLLECTIONS[source][...] هنا، مش
+  // SOURCE_COLLECTIONS[source] المباشر — لـ MODIS/ASTER/Sentinel-3 كل
+  // variable (FIRE/LST/SST/...) عبارة عن STAC collection مختلف تمامًا (شوفي
+  // التحذير فوق SOURCE_ANALYSIS_COLLECTIONS في SatellitePipelines.ts:
+  // "fetchScenes() في الفرونت لازم يستخدم الخريطة دي بدل SOURCE_COLLECTIONS
+  // المباشرة"). كنا بنستخدم الـ default الثابت بس، فمثلاً اختيار MODIS FIRE
+  // كان بيدوّر على scenes في collection الـ NDVI/EVI (modis-13A1-061) —
+  // الـ scene بترجع وتتختار عادي (بتبان زي ما هي شغالة)، لكن الـ item id
+  // بتاعها مش موجود في collection الـ FIRE الحقيقي (modis-14A1-061)، فبناء
+  // رابط الـ tile بيفشل بصمت ومفيش هيت ماب بيظهر. نفس الحكاية بالظبط وراء
+  // "50 scene بس كلهم غيوم" في Sentinel-3 — كان بيدوّر دايمًا في collection
+  // الـ SST (WST) مهما كان الـ variable المختار فعليًا.
+  //
+  // ⚠️ الـ lookup لازم يكون بـ `previewDef.proxyType`، مش `indexKey` نفسه —
+  // MODIS_FIRE/MODIS_LST/ASTER_RGB (PreviewKey هنا) أسماء مُعاد تسميتها
+  // عشان تتفادى تصادم مع مفاتيح تانية (شوفي كومنت PreviewKey فوق)، لكن
+  // SOURCE_ANALYSIS_COLLECTIONS متبني على الأسماء الأصلية (SatelliteAnalysisType:
+  // "FIRE"/"LST"/"RGB"...) اللي كل PreviewDef فعليًا حاططها في `proxyType`
+  // بتاعه بالظبط لنفس السبب ده. استخدام indexKey مباشرة كان هيرجع undefined
+  // لكل الـ MODIS/ASTER entries المُعاد تسميتها ويرجعنا لنفس الباگ تاني.
+  const collection =
+    SOURCE_ANALYSIS_COLLECTIONS[source]?.[(previewDef.proxyType ?? indexKey) as SatelliteAnalysisType] ??
+    SOURCE_COLLECTIONS[source];
 
   // Which PreviewKey options actually apply to the selected satellite — the
   // intersection of "what this panel knows how to preview/diff" (PREVIEW_DEFS)
@@ -1238,14 +1879,30 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   // they consistently fall into the "isn't wired up yet" banner below instead
   // of a broken Run button.
   const DIFFABLE_SOURCES = useMemo(() => new Set<SatSource>(["sentinel-2", "landsat", "sentinel-1", "cop-dem"]), []);
+  // ── Batch 2 (2026-08-18) — explicit per-source PreviewKey lists for the 6
+  // non-optical sources, instead of the generic SOURCE_INDICES-name
+  // intersection above (kept only for sentinel-2/landsat/sentinel-1/cop-dem,
+  // where the intersection was already correct). Explicit lists sidestep the
+  // exact MODIS NDVI/EVI name-collision bug documented above (2026-08-18) —
+  // MODIS_NDVI/MODIS_EVI/ASTER_RGB are PREVIEW_DEFS keys, not the raw
+  // SOURCE_INDICES names, so there's nothing to collide with.
+  const NEW_SOURCE_PREVIEW_KEYS: Partial<Record<SatSource, PreviewKey[]>> = useMemo(() => ({
+    "sentinel-1": ["VV", "VH", "RATIO", "SAR_RGB"],
+    "cop-dem": ["ELEVATION", "SLOPE", "HILLSHADE", "ASPECT"],
+    "sentinel-5p": ["NO2", "SO2", "CO", "OZONE"],
+    "modis": ["MODIS_NDVI", "MODIS_EVI", "MODIS_FIRE", "MODIS_LST"],
+    "aster": ["ASTER_RGB", "MINERALS", "THERMAL"],
+    "sentinel-3": ["SST", "S3_LST", "CHLOROPHYLL", "FRP"],
+  }), []);
   const availableIndexKeys = useMemo(() => {
+    if (NEW_SOURCE_PREVIEW_KEYS[source]) return NEW_SOURCE_PREVIEW_KEYS[source]!;
     if (!DIFFABLE_SOURCES.has(source)) return [];
     const sourceKeys = new Set(SOURCE_INDICES[source] as string[]);
     return (Object.keys(PREVIEW_DEFS) as PreviewKey[]).filter((key) => {
       if (key === "RGB" || key === "SWIR") return source === "sentinel-2" || source === "landsat";
       return sourceKeys.has(key);
     });
-  }, [source, DIFFABLE_SOURCES]);
+  }, [source, DIFFABLE_SOURCES, NEW_SOURCE_PREVIEW_KEYS]);
 
   // If the satellite changes and the currently-picked index no longer applies
   // (e.g. switching from Sentinel-2 to Sentinel-1), fall back to the first
@@ -1260,6 +1917,80 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableIndexKeys]);
+
+  // `collection` can change on indexKey alone now (MODIS/ASTER/Sentinel-3 —
+  // each variable is a different STAC collection, see the comment on
+  // `collection` above). Any already-picked scenes/results were resolved
+  // against the *previous* collection, so their item ids don't exist in the
+  // new one — clear them out instead of leaving a stale, silently-broken
+  // selection sitting in the UI (this was the actual cause behind "MODIS
+  // FIRE/LST show no heatmap even though a scene looks selected").
+  useEffect(() => {
+    setBeforeScenes([]);
+    setAfterScenes([]);
+    setBeforeScene(null);
+    setAfterScene(null);
+    setBeforeStatus("idle");
+    setAfterStatus("idle");
+    setBeforeError(null);
+    setAfterError(null);
+    setChangeResult(null);
+    setDiffDataUrl(null);
+    setComputeError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collection]);
+
+  // ⚠️ (2026-08-21) ASTER L1T (aster-l1t — الـ collection الحقيقي الوحيد
+  // بتاع ASTER الموجود على Planetary Computer) بتغطيته الزمنية 2000-2006
+  // بس (الأرشيف اتوقف بعدها) — شوفي كومنت "aster-l1t اتأكد إنه موجود
+  // فعليًا" فوق في SatellitePipelines.ts. الـ date pickers الافتراضية في
+  // البانل دي (before 2025-11/2025-12، after 2026-05/2026-06) صح لكل
+  // المصادر التانية لكن غلط 100% لـ ASTER — أي بحث بيها هيرجع صفر scenes
+  // دايمًا مهما كانت الـ AOI صح، وده بالظبط اللي بيبان كـ "مفيش ولا صورة
+  // موجودة للمكان ده". هنا بنحوّل الـ date range تلقائيًا لمدى جوه أرشيف
+  // ASTER الفعلي أول ما اليوزر يختار aster (لو التاريخ الحالي برّه المدى
+  // بالفعل)، وبنرجّعها لقيم افتراضية حديثة تاني لو رجعت من aster لمصدر
+  // تاني بيدعم تواريخ حديثة عادية.
+  const prevSourceRef = useRef<SatSource>(source);
+  useEffect(() => {
+    const prevSource = prevSourceRef.current;
+    if (source === "aster" && prevSource !== "aster") {
+      const outOfRange = (d: string) => {
+        const year = Number(d.slice(0, 4));
+        return !Number.isFinite(year) || year < 2000 || year > 2006;
+      };
+      // ⚠️ (2026-08-22) كانت الافتراضية القديمة 6 شهور بس لكل طرف (before:
+      // 2003-01→2003-06, after: 2005-01→2005-06) — جوه أرشيف aster-l1t
+      // الضعيف أصلًا (2000-2006 بس)، نافذة 6 شهور غالبًا ترجع صفر scenes أو
+      // كلهم غيوم زي ما بان في الشكوى. وسّعنا كل نافذة لتغطي نص المدى
+      // الفعلي (before = أول 3.5 سنة، after = آخر 3.5 سنة) عشان نزوّد فرصة
+      // لقاء scenes صح، مع فضل الفصل الزمني بينهم (before قبل after) عشان
+      // change detection يفضل له معنى.
+      if (outOfRange(beforeFrom) || outOfRange(beforeTo)) {
+        setBeforeFrom("2000-01-01");
+        setBeforeTo("2003-06-30");
+      }
+      if (outOfRange(afterFrom) || outOfRange(afterTo)) {
+        setAfterFrom("2003-07-01");
+        setAfterTo("2006-12-31");
+      }
+    } else if (prevSource === "aster" && source !== "aster") {
+      const inAsterRange = (d: string) => {
+        const year = Number(d.slice(0, 4));
+        return Number.isFinite(year) && year >= 2000 && year <= 2006;
+      };
+      if (inAsterRange(beforeFrom) || inAsterRange(beforeTo)) {
+        setBeforeFrom("2025-11-01");
+        setBeforeTo("2025-12-01");
+      }
+      if (inAsterRange(afterFrom) || inAsterRange(afterTo)) {
+        setAfterFrom("2026-05-01");
+        setAfterTo("2026-06-01");
+      }
+    }
+    prevSourceRef.current = source;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source]);
 
   const indexPickerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1289,19 +2020,42 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     setStatus("loading");
     setError(null);
     try {
+      // Copernicus DEM (cop-dem) مش سلسلة زمنية — SOURCE_META[source].cadence
+      // بيبقى "static". الـ items بتاعته في STAC مالهمش datetime حقيقي (ثابت/null)،
+      // فلو بعتنا فلتر datetime زي أي مصدر تاني هيرجع صفر نتائج دايمًا مهما غيّرنا
+      // التاريخ — ده بالظبط سبب "No matching scenes" اللي كانت بتظهر مع DEM.
+      // لمصادر static زي دي، منسيبش الـ datetime في الـ query خالص.
+      const isStaticSource = SOURCE_META[source]?.cadence === "static";
+      const searchBody: Record<string, unknown> = {
+        collections: [collection],
+        bbox: [west, south, east, north],
+        limit: 50,
+      };
+      if (!isStaticSource) {
+        searchBody.datetime = `${dateFrom}T00:00:00Z/${dateTo}T23:59:59Z`;
+      }
+      // ⚠️ (2026-08-21) Sentinel-5P: sentinel-5p-l2-netcdf collection واحد
+      // بيجمع كل الغازات — من غير الفلتر ده، اختيار SO2 مثلًا ممكن يرجّع
+      // scenes فعليًا NO2/O3/... (بتحقق بس bbox/date)، وبعدين decode بـ
+      // variable=SO2 على item من نوع تاني يفشل بصمت أو يرجع "لا توجد صور"
+      // — شوفي SENTINEL5P_PRODUCT_TYPE في SatellitePipelines.ts للتفاصيل.
+      if (source === "sentinel-5p") {
+        const productType = SENTINEL5P_PRODUCT_TYPE[(previewDef.proxyType ?? indexKey) as SatelliteAnalysisType];
+        if (productType) {
+          searchBody.query = { [SENTINEL5P_PRODUCT_TYPE_PROPERTY]: { eq: productType } };
+        }
+      }
+
       const response = await fetch("https://planetarycomputer.microsoft.com/api/stac/v1/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          collections: [collection],
-          bbox: [west, south, east, north],
-          datetime: `${dateFrom}T00:00:00Z/${dateTo}T23:59:59Z`,
-          limit: 12,
-        }),
+        body: JSON.stringify(searchBody),
       });
       if (!response.ok) throw new Error(`STAC API ${response.status}`);
       const payload = await response.json();
       const features: StacFeature[] = Array.isArray(payload?.features) ? payload.features : [];
+      const totalMatched: number =
+        typeof payload?.numberMatched === "number" ? payload.numberMatched : features.length;
 
       const nextScenes: SatelliteScene[] = features
         .map((feature) => {
@@ -1332,13 +2086,34 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
             bbox: feature.bbox,
           };
         })
-        .filter((scene) => scene.cloud <= cloud)
+        // ⚠️ (2026-08-21) Sentinel-3 SLSTR/OLCI items report eo:cloud_cover
+        // as the fraction over the ENTIRE wide swath (~1400-1675km), not the
+        // small AOI actually requested — a scene can be 60-90% cloudy on the
+        // far side of the swath and still be perfectly clear over the AOI.
+        // Gating on the 25% default here was rejecting nearly every real
+        // scene ("Found 50 scene(s)... but all exceed the cloud-cover
+        // limit"), which isn't a bug in the data, just a meaningless filter
+        // for this source. `cloud` stays on the scene object for display —
+        // it's just not used to reject scenes for sentinel-3.
+        .filter((scene) => source === "sentinel-3" || scene.cloud <= cloud)
         .sort((a, b) => (a.date < b.date ? 1 : -1))
         .slice(0, 8);
 
       setScenes(nextScenes);
       setStatus("success");
-      if (!nextScenes.length) setError("No matching scenes for this AOI/date/cloud filter.");
+      if (!nextScenes.length) {
+        // فرّق بين "مفيش scenes خالص في الـ AOI ده" (مشكلة تانية تمامًا، زي bbox
+        // غلط أو collection غلط) وبين "فيه scenes بس كلهم غيوم أكتر من اللي
+        // انت حددته" — عشان المستخدم يعرف يظبط إيه بالظبط. لمصادر static
+        // (زي cop-dem) بنشيل ذكر "date range" لأنه مش موجود في الطلب أصلاً.
+        setError(
+          features.length
+            ? `Found ${totalMatched || features.length} scene(s) for this AOI, but all exceed the ${cloud}% cloud-cover limit — try raising it.`
+            : isStaticSource
+              ? "No elevation coverage found for this AOI — check the AOI bounds, or try a different satellite source."
+              : "No matching scenes for this AOI/date filter — check the AOI bounds and date range, or try a different satellite source."
+        );
+      }
       return nextScenes;
     } catch (err) {
       setScenes([]);
@@ -1346,7 +2121,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
       setError(err instanceof Error ? err.message : "STAC search failed.");
       return [];
     }
-  }, [collection, west, south, east, north]);
+  }, [collection, west, south, east, north, source, previewDef, indexKey]);
 
   const pickSceneAfterSearch = useCallback((
     results: SatelliteScene[],
@@ -1387,14 +2162,76 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     pickSceneAfterSearch(results, afterScene, handleSelectAfter);
   }, [searchScenes, afterFrom, afterTo, cloudCoverAfter, afterScene, pickSceneAfterSearch, handleSelectAfter]);
 
+  // ⚠️ (2026-08-22) titilerSharedRescale: بيتحسب مرة واحدة من السينتين
+  // (قبل/بعد) مع بعض — قبل ما نبني أي preview URL — عشان FIRE/LST/MINERALS/
+  // THERMAL (اللي عندهم dynamicRescale) يترسموا بنفس مقياس الألوان في
+  // الصورتين. من غيره كل صورة كانت بتحسب rescale مستقل عن نفسها بس، فنفس
+  // القيمة الخام كانت بتترسم بلون مختلف كليًا بين قبل/بعد رغم إنه مفيش فرق
+  // حقيقي كبير في البيانات — شوفي fetchPairDynamicRescale في
+  // SatellitePipelines.ts للتفاصيل الكاملة.
+  useEffect(() => {
+    let cancelled = false;
+    const def = PREVIEW_DEFS[indexKey];
+    if (def.pipeline !== "titiler" || !beforeScene?.id || !afterScene?.id || !beforeScene.collection) {
+      setTitilerSharedRescale(null);
+      return;
+    }
+    fetchPairDynamicRescale(
+      beforeScene.collection, beforeScene.id, afterScene.id, def.proxyType as SatelliteAnalysisType
+    )
+      .then((r) => { if (!cancelled) setTitilerSharedRescale(r); })
+      .catch(() => { if (!cancelled) setTitilerSharedRescale(null); });
+    return () => { cancelled = true; };
+  }, [beforeScene, afterScene, indexKey]);
+
   // refresh preview URLs whenever scene, index, or AOI changes — cropped server-side
   // to the AOI bbox (see makePreviewUrl), not the whole scene tile.
+  // ⚠️ makePreviewUrl became async (2026-08-18) — the titiler/decode pipelines
+  // for MODIS/ASTER/Sentinel-5P/Sentinel-3 need to await a network call before
+  // a URL exists, same reason buildTitilerTileUrl/buildTitilerBboxUrl are
+  // async in SatellitePipelines.ts. `cancelled` guards against a slower older
+  // request overwriting a newer one if the user changes index/scene quickly.
   useEffect(() => {
-    setBeforePreviewUrl(beforeScene ? makePreviewUrl(beforeScene, indexKey, bboxTuple, source) ?? null : null);
-  }, [beforeScene, indexKey, bboxTuple, source]);
+    let cancelled = false;
+    if (!beforeScene) { setBeforePreviewUrl(null); setBeforePreviewError(null); return; }
+    makePreviewUrl(
+      beforeScene, indexKey, bboxTuple, source, sentinelDecodeToken, titilerSharedRescale,
+      // progressive: default-rescale image يظهر فورًا بعد الـ decode، قبل
+      // ما نستنى statistics — بيتستبدل بالنتيجة النهائية (تلوين دقيق) لما
+      // الـ .then تحت يخلص
+      (previewUrl) => { if (!cancelled) setBeforePreviewUrl(previewUrl); },
+    )
+      .then(({ url, error }) => {
+        if (cancelled) return;
+        setBeforePreviewUrl(url ?? null);
+        setBeforePreviewError(error ?? null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setBeforePreviewUrl(null);
+        setBeforePreviewError(err instanceof Error ? err.message : String(err));
+      });
+    return () => { cancelled = true; };
+  }, [beforeScene, indexKey, bboxTuple, source, sentinelDecodeToken, titilerSharedRescale]);
   useEffect(() => {
-    setAfterPreviewUrl(afterScene ? makePreviewUrl(afterScene, indexKey, bboxTuple, source) ?? null : null);
-  }, [afterScene, indexKey, bboxTuple, source]);
+    let cancelled = false;
+    if (!afterScene) { setAfterPreviewUrl(null); setAfterPreviewError(null); return; }
+    makePreviewUrl(
+      afterScene, indexKey, bboxTuple, source, sentinelDecodeToken, titilerSharedRescale,
+      (previewUrl) => { if (!cancelled) setAfterPreviewUrl(previewUrl); },
+    )
+      .then(({ url, error }) => {
+        if (cancelled) return;
+        setAfterPreviewUrl(url ?? null);
+        setAfterPreviewError(error ?? null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setAfterPreviewUrl(null);
+        setAfterPreviewError(err instanceof Error ? err.message : String(err));
+      });
+    return () => { cancelled = true; };
+  }, [afterScene, indexKey, bboxTuple, source, sentinelDecodeToken, titilerSharedRescale]);
 
   // Once the bbox-cropped previews are in, clip them down to the exact drawn shape
   // (polygon/rectangle/circle-as-polygon) instead of leaving them as a rectangle.
@@ -1476,7 +2313,12 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   const runChangeDetection = useCallback(async () => {
     if (!beforeScene || !afterScene) return;
     if (!isClassifiable(indexKey)) {
-      setComputeError(`${previewDef.label} isn't wired up for server-side change classification — it's available as a Before/After visual preview and swipe compare only. Only RGB and SWIR (plain color composites, no single scalar value) can't run classification — pick any other index.`);
+      // ⚠️ (2026-08-23) As of SLOPE/HILLSHADE/ASPECT, every single PreviewKey
+      // now has a matching change_<index> branch in route.ts (isClassifiable
+      // should never actually return false here anymore) — this message is
+      // kept only as a defensive fallback in case a future preview-only entry
+      // gets added to PREVIEW_DEFS before its route.ts change_ branch exists.
+      setComputeError(`${previewDef.label} isn't wired up for server-side change classification yet — it's available as a Before/After visual preview and swipe compare only. Pick a different index, or check back once route.ts adds a matching change_<index> branch for this one.`);
       return;
     }
     setComputing(true);
@@ -1485,21 +2327,70 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     setDiffDataUrl(null);
 
     try {
-      const sourceAssets = getPreviewAssets(indexKey, source);
-      const beforeHrefs = sourceAssets.map((key) => getSceneAssetUrl(beforeScene, key));
-      const afterHrefs = sourceAssets.map((key) => getSceneAssetUrl(afterScene, key));
+      const classifiableKey: ChangeIndexKey = indexKey as ChangeIndexKey;
+      const isDecodePipeline = PREVIEW_DEFS[indexKey].pipeline === "decode";
+      const asterBidxConfig = ASTER_CHANGE_BIDX[classifiableKey];
 
-      if (beforeHrefs.some((h) => !h) || afterHrefs.some((h) => !h)) {
-        throw new Error("Could not resolve the required band URLs for the selected scenes.");
+      let combinedUrls: string[];
+      let combinedBidx: number[] | null = null;
+      if (asterBidxConfig) {
+        // ⚠️ (2026-08-23) ASTER_RGB/MINERALS/THERMAL — resolve ONE raw href
+        // per date (the packed VNIR/SWIR/TIR composite file, via the same
+        // getSceneAssetUrl any other raw-href source uses), then repeat it
+        // once per band index this index needs. route.ts's readBand() picks
+        // the right band out of the shared file using the matching &bidx=.
+        const { assetKey, bidx } = asterBidxConfig;
+        const beforeHref = getSceneAssetUrl(beforeScene, assetKey);
+        const afterHref = getSceneAssetUrl(afterScene, assetKey);
+        if (!beforeHref || !afterHref) {
+          throw new Error(`Could not resolve the "${assetKey}" asset URL for the selected ASTER scenes.`);
+        }
+        combinedUrls = [...bidx.map(() => beforeHref), ...bidx.map(() => afterHref)];
+        combinedBidx = [...bidx, ...bidx];
+      } else if (isDecodePipeline) {
+        // ⚠️ (2026-08-22) SST/S3_LST/CHLOROPHYLL/FRP: مفيش raw COG asset في
+        // الـ STAC item (الملفات دي NetCDF، مش GeoTIFF) — لازم نفك كل سينة
+        // (before + after) على حدة عن طريق /gis/sentinel5p/decode الأول
+        // (نفس اللي makePreviewUrl بتستخدمه للـ preview)، وبعدين نبعت رابطي
+        // الـ GeoTIFF الناتجين لـ route.ts (مش asset hrefs خام زي باقي
+        // المصادر تحت). بننادي الاتنين مع بعض (Promise.all) عشان منستناش
+        // كل واحد لوحده (2×2-3 دقايق لو تباعًا).
+        if (!sentinelDecodeToken) {
+          throw new Error("You need to be signed in to decode Sentinel data (missing JWT).");
+        }
+        const variable = UI_BAND_TO_SENTINEL_VARIABLE[indexKey];
+        if (!variable) {
+          throw new Error(`No Sentinel decode mapping configured for "${indexKey}" yet.`);
+        }
+        const decodeSource = PREVIEW_DEFS[indexKey].decodeSource as SentinelDecodeSource;
+        const [beforeDecoded, afterDecoded] = await Promise.all([
+          decodeSentinelDataset({
+            token: sentinelDecodeToken, source: decodeSource, itemId: beforeScene.id,
+            collection: beforeScene.collection, variable, bbox: [west, south, east, north],
+          }),
+          decodeSentinelDataset({
+            token: sentinelDecodeToken, source: decodeSource, itemId: afterScene.id,
+            collection: afterScene.collection, variable, bbox: [west, south, east, north],
+          }),
+        ]);
+        combinedUrls = [beforeDecoded.url, afterDecoded.url];
+      } else {
+        const sourceAssets = getPreviewAssets(indexKey, source);
+        const beforeHrefs = sourceAssets.map((key) => getSceneAssetUrl(beforeScene, key));
+        const afterHrefs = sourceAssets.map((key) => getSceneAssetUrl(afterScene, key));
+
+        if (beforeHrefs.some((h) => !h) || afterHrefs.some((h) => !h)) {
+          throw new Error("Could not resolve the required band URLs for the selected scenes.");
+        }
+        combinedUrls = [...(beforeHrefs as string[]), ...(afterHrefs as string[])];
       }
 
-      const classifiableKey: ChangeIndexKey = indexKey as ChangeIndexKey;
       const { threshold: scaledThreshold, classThreshold } = getChangeThresholdParams(classifiableKey, threshold);
       const params = new URLSearchParams({
         type: CHANGE_API_TYPE[classifiableKey],
         // Order matters: backend splits this list in half — first half = Before
         // bands (in the same order as `previewDef.assets`), second half = After.
-        urls: [...beforeHrefs, ...afterHrefs].join(","),
+        urls: combinedUrls.join(","),
         bbox: `${west},${south},${east},${north}`,
         threshold: String(scaledThreshold),
       });
@@ -1507,6 +2398,9 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
       // original 7 (+ NBRI/VARI/MTVI/GRVI/NDSI) rely on the server's own
       // 0.25 default, unchanged from before.
       if (classThreshold !== undefined) params.set("classThreshold", String(classThreshold));
+      // ⚠️ (2026-08-23) Only ASTER_RGB/MINERALS/THERMAL ever send this —
+      // route.ts ignores it entirely for every other type.
+      if (combinedBidx) params.set("bidx", combinedBidx.join(","));
 
       const res = await fetch(`/api/raster-proxy/analyze?${params.toString()}`);
       if (!res.ok) {
@@ -1542,11 +2436,20 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
       // wide) instead of your actual selected AOI, which is why it used to
       // cover a much bigger area than what you drew/selected.
     } catch (err) {
-      setComputeError(err instanceof Error ? err.message : "Change detection computation failed.");
+      // ⚠️ (2026-08-22) نفس فحص isNoDataForArea الموجود في makePreviewUrl —
+      // لو الـ decode step (before أو after) رجّع "no valid pixels"/"no
+      // active fires"/إلخ، نعرض رسالة ودّية بدل الـ JSON الخام بتاع الباك.
+      const message =
+        err instanceof SentinelDecodeError && err.isNoDataForArea
+          ? `No valid "${indexKey}" data for one of the selected scenes in this area — the satellite's narrow data track likely didn't pass directly over this AOI. Try a different Before/After scene.`
+          : err instanceof Error
+            ? err.message
+            : "Change detection computation failed.";
+      setComputeError(message);
     } finally {
       setComputing(false);
     }
-  }, [beforeScene, afterScene, indexKey, previewDef, threshold, west, south, east, north, source]);
+  }, [beforeScene, afterScene, indexKey, previewDef, threshold, west, south, east, north, source, sentinelDecodeToken]);
 
   const downloadDiff = useCallback(() => {
     if (!diffDataUrl) return;
@@ -1603,6 +2506,19 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
           <p className="text-[0.58rem] leading-relaxed text-amber-300/80">
             {SOURCE_META[source].title} isn&apos;t wired up for Change Detection yet — its scenes render fine in
             Satellite Data, but the two-date diff needs backend work first (see SatellitePipelines.ts TITILER_STYLES).
+          </p>
+        )}
+        {source === "aster" && (
+          <p className="text-[0.58rem] leading-relaxed text-amber-200">
+            ASTER L1T archive on Planetary Computer only covers 2000–2006 — the date range below was switched
+            automatically to fall inside that window. Search will always return no scenes outside 2000–2006.
+          </p>
+        )}
+        {source === "cop-dem" && (
+          <p className="text-[0.58rem] leading-relaxed text-amber-200">
+            Copernicus DEM is a static elevation model (no capture-date time series) — Before and After will
+            always return the same tile regardless of the dates picked below. Use Change Detection with DEM only
+            to compare two different AOIs, not two dates.
           </p>
         )}
       </div>
@@ -1672,14 +2588,9 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
                     <span className="block text-[0.66rem] font-bold" style={{ color: def.color }}>{def.label}</span>
                     <span className="block text-[0.52rem] text-slate-500 leading-tight">{def.desc}</span>
                   </span>
-                  {def.kind === "composite" && (
+                  {!isClassifiable(key) && (
                     <span className="shrink-0 text-[0.5rem] uppercase tracking-wider text-slate-500 border border-white/[0.08] rounded-full px-1.5 py-0.5">
-                      visual only
-                    </span>
-                  )}
-                  {def.kind === "index" && !isClassifiable(key) && (
-                    <span className="shrink-0 text-[0.5rem] uppercase tracking-wider text-slate-500 border border-white/[0.08] rounded-full px-1.5 py-0.5">
-                      preview only
+                      {def.kind === "composite" ? "visual only" : "preview only"}
                     </span>
                   )}
                   {active && (
@@ -1737,6 +2648,18 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
         onSearch={handleSearchAfter}
       />
 
+      {(beforePreviewError || afterPreviewError) && (
+        <div className="rounded-lg border border-amber-400/20 bg-amber-400/[0.06] p-3 space-y-1">
+          <span className="text-[0.62rem] uppercase tracking-wider text-amber-300/80">Preview issue</span>
+          {beforePreviewError && (
+            <p className="text-[0.65rem] text-amber-100/80">Before: {beforePreviewError}</p>
+          )}
+          {afterPreviewError && (
+            <p className="text-[0.65rem] text-amber-100/80">After: {afterPreviewError}</p>
+          )}
+        </div>
+      )}
+
       {/* Clip-to-drawn-shape control only — the auto Before/After swipe preview
           card that used to sit here was removed; the clipping still matters for
           the "Compare" view in the Results section and for the on-map overlay,
@@ -1786,11 +2709,11 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
           <p className="text-[0.58rem] text-slate-400 leading-relaxed">
             <span className="font-semibold" style={{ color: previewDef.color }}>{previewDef.label}</span>{" "}
             {previewDef.kind === "composite"
-              ? "is a color composite, not a single index"
+              ? "has no server-side luminance/index reduction wired up yet"
               : "doesn't have server-side change classification wired up yet"}
             {" "}— it's great for the Before/After swipe and side-by-side compare above,
-            but there's no scalar pixel value to classify into Gain/Loss. Pick any index other than
-            RGB or SWIR (plain color composites) to run the change classification.
+            but there's no scalar pixel value to classify into Gain/Loss. Pick a classifiable
+            option (e.g. RGB, SWIR, or any Sentinel-2/Landsat index) to run the change classification.
           </p>
         </div>
       )}

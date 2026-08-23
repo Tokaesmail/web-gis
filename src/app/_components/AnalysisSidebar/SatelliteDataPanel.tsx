@@ -849,13 +849,35 @@ const scenes = useMemo(
     const isAster = collection.includes("aster");
     const isSentinel3 = collection.includes("sentinel-3");
 
-    // ── MODIS / ASTER / Sentinel-3 ───────────────────────────────────────
-    // المصادر دي بتتعرض عن طريق TiTiler مباشرة (buildTitilerTileUrl) مش عن
-    // طريق /api/raster-proxy/analyze، فـ TITILER_STYLES هو مصدر الحقيقة
+    // ── MODIS ──────────────────────────────────────────────────────────
+    // ⚠️ (2026-08-22) هجرة من TiTiler المباشر لـ /api/raster-proxy/analyze
+    // (نفس مسار Sentinel-2/Landsat) — أسماء الـ assets دي حقيقية اتأكدت من
+    // STAC مباشرة (GET /api/stac/v1/collections/modis-13A1-061 وmodis-14A1-061
+    // وmodis-11A1-061)، مش نفس proxyAssets القديمة في TITILER_STYLES (اللي
+    // كانت مبنية بس عشان TiTiler يفهمها بصيغته هو). type= هنا لازم يطابق
+    // مفتاح ANALYSIS_CONFIG الجديد في route.ts بالظبط (modis_ndvi/modis_evi/
+    // modis_fire/modis_lst).
+    if (isModis) {
+      switch (analysis) {
+        case "EVI":
+          return { assets: ["500m_16_days_EVI"], expression: null, type: "modis_evi" };
+        case "FIRE":
+          return { assets: ["FireMask"], expression: null, type: "modis_fire" };
+        case "LST":
+          return { assets: ["LST_Day_1km"], expression: null, type: "modis_lst" };
+        case "NDVI":
+        default:
+          return { assets: ["500m_16_days_NDVI"], expression: null, type: "modis_ndvi" };
+      }
+    }
+
+    // ── ASTER / Sentinel-3 ────────────────────────────────────────────────
+    // المصادر دي لسه بتتعرض عن طريق TiTiler مباشرة (buildTitilerTileUrl) مش
+    // عن طريق /api/raster-proxy/analyze، فـ TITILER_STYLES هو مصدر الحقيقة
     // الوحيد للـ assets/expression بتوعها (بدل ما نكررهم هنا تاني). "type"
     // هنا بس عشان الكود القديم اللي بيعرض visualization.assets/expression في
     // الواجهة يفضل شغال زي ما هو.
-    if (isModis || isAster || isSentinel3) {
+    if (isAster || isSentinel3) {
       const style = TITILER_STYLES[analysis];
       if (style) {
         return { assets: style.assets, expression: style.expression ?? null, type: analysis.toLowerCase() };
@@ -1595,6 +1617,25 @@ useEffect(() => {
   };
 
   const getIndexPreviewStyle = (analysis: AnalysisType) => {
+    // ⚠️ (2026-08-22) لازم يتفحص الأول قبل الـ switch العام تحت — MODIS
+    // بيستخدم نفس الأسماء الحرفية "NDVI"/"EVI"/"FIRE"/"LST" اللي الـ switch
+    // العام مبني عليها لـ Sentinel-2 (مدى -0.2..0.9 مش منطقي لـ MODIS raw DN
+    // *10000، ولا لـ FireMask/LST_Day_1km خالص). نفس القيم المستخدمة في
+    // route.ts's ANALYSIS_CONFIG.modis_* (defaultMin/Max) عشان الواجهة
+    // والباك يتفقوا.
+    if (source === "modis") {
+      switch (analysis) {
+        case "EVI":
+          return { rescale: "-2000,10000", colormap: "magma", alphaLow: "", alphaHigh: "" };
+        case "FIRE":
+          return { rescale: "0,9", colormap: "hot", alphaLow: "", alphaHigh: "" };
+        case "LST":
+          return { rescale: "285,325", colormap: "inferno", alphaLow: "", alphaHigh: "" };
+        case "NDVI":
+        default:
+          return { rescale: "-2000,10000", colormap: "rdylgn", alphaLow: "", alphaHigh: "" };
+      }
+    }
     // alphaLow/alphaHigh بيتحكموا في "منطقة الشفافية" حوالين الصفر (قيمة
     // محايدة = تربة عارية عادية/مفيش مبنى واضح... إلخ). الافتراضي في الـ route
     // (0.12 / 0.45) كان بيعمل منطقة شفافة واسعة حوالين نقطة الصفر — لو الـ AOI
@@ -2256,7 +2297,11 @@ useEffect(() => {
         analysis === "OCEAN_COLOR" ||
         analysis === "CHLOROPHYLL" ||
         analysis === "FRP"));
-  if (source === "modis" || source === "aster" || (source === "sentinel-3" && !usesDecodeHeatmapPath)) {
+  // ⚠️ (2026-08-22) "modis" اتشالت من هنا — دلوقتي بتاخد نفس مسار
+  // Sentinel-2/Landsat (makeRasterProxyAnalyzeUrl تحت) بدل TiTiler المباشر.
+  // شوفي getVisualization فرع isModis الجديد + ANALYSIS_CONFIG.modis_* في
+  // route.ts. ASTER لسه هنا لحد ما نتأكد من حالة الـ COG بتاعت TIR asset.
+  if (source === "aster" || (source === "sentinel-3" && !usesDecodeHeatmapPath)) {
     // ⚠️ الاتنين بقوا async دلوقتي (شوفي SatellitePipelines.ts) — styles
     // زي ASTER THERMAL/MINERALS معلّمين dynamicRescale: true، فبيستنوا رد
     // /item/statistics الأول قبل ما يرجعوا الرابط، عشان الـ rescale يتبني
@@ -2403,6 +2448,12 @@ useEffect(() => {
         sceneCollection: scene.collection,
         variable: UI_BAND_TO_SENTINEL_VARIABLE[analysis],
       });
+      // ⚠️ (2026-08-22) progressive rendering: بمجرد ما الـ decode (فك
+      // الـ NetCDF جوّه الباك — أغلب وقت الانتظار) يخلص، بنعرض الصورة على
+      // طول بـ default rescale بدل ما نسيب المستخدم يستني statistics كمان
+      // فوق كده. الـ setScenePreviewUrls هنا مؤقتة، وهتتستبدل بالنتيجة
+      // النهائية (تلوين دقيق بـ p2/p98) لما decodeAndBuildHeatmapUrl ترجع
+      // تحت وتحدّث previewUrl عادي.
       const { tileUrl: builtUrl } = await decodeAndBuildHeatmapUrl({
         token: sentinelDecodeToken,
         source: decodeSource,
@@ -2410,6 +2461,9 @@ useEffect(() => {
         collection: scene.collection,
         variable,
         bbox: [west, south, east, north],
+        onDecoded: ({ tileUrl: progressiveUrl }) => {
+          setScenePreviewUrls((prev) => ({ ...prev, [scene.id]: progressiveUrl }));
+        },
       });
       previewUrl = builtUrl;
     } catch (err) {
