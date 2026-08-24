@@ -106,6 +106,17 @@ const VALUE_FIELDS: { key: string; label: string }[] = [
 // preset مربوط بـ condition جاهزة تتحط في الـ Formula/condition box لوحدها
 // أول ما اليوزر يدوس عليها (بدل ما يكتبها يدوي من الصفر). اليوزر لسه يقدر
 // يعدّل النص بعد كده عادي — الـ textarea مش readonly ────────────────────────
+// ⚠️ (2026-08-25) اتوسّعت لكل الـ Sentinel-2 indices الموجودة فعليًا في
+// SatelliteDataPanel.tsx / SatellitePipelines.ts (SOURCE_INDICES["sentinel-2"])
+// — مش بس السبعة الأصليين. المعادلات منقولة حرفيًا من ANALYSIS_CONFIG في
+// route.ts (raster-proxy)، بس معبّر عنها كـ نص عادي بالباندات (B02..B12)
+// بدل JS function، زي الشكل اللي الـ 7 القدامى كانوا مكتوبين بيه. أي index
+// كان محتاج تطبيع reflectance (÷10000) في route.ts (زي CVI/GEMI/MCARI/TCARI/
+// ARI/CRI1/CRI2) اتحط الـ ÷10000 صريح في النص هنا بنفس المنطق. الألوان (dot)
+// مبنية على نفس defaultColormap بتاع كل index في route.ts (نفس المجموعة
+// gradients لو كذا index شايل نفس اللون). RGB مش موجود هنا لإنه مش index
+// (composite مش formula). CHANGE-only entries (زي VV/VH/SAR/DEM/atmospheric/
+// MODIS/ASTER/Sentinel-3) مش Sentinel-2 أصلًا فمش هنا (شوفي SOURCE_INDICES).
 const INDEX_PRESETS: { key: string; label: string; desc: string; dot: string; formula: string }[] = [
   { key: "ndvi", label: "NDVI", desc: "Vegetation vigor",          dot: "linear-gradient(135deg,#f46d43,#1a9850)", formula: "(B08-B04)/(B08+B04)" },
   { key: "ndwi", label: "NDWI", desc: "Water content",             dot: "linear-gradient(135deg,#2166ac,#66c2a5)", formula: "(B03-B08)/(B03+B08)" },
@@ -114,6 +125,78 @@ const INDEX_PRESETS: { key: string; label: string; desc: string; dot: string; fo
   { key: "savi", label: "SAVI", desc: "Soil-adjusted vegetation",  dot: "linear-gradient(135deg,#fdae61,#1a9850)", formula: "((B08-B04)/(B08+B04+0.5))*1.5" },
   { key: "evi",  label: "EVI",  desc: "Enhanced vegetation",       dot: "linear-gradient(135deg,#a52c60,#238b45)", formula: "2.5*(B08-B04)/(B08+6*B04-7.5*B02+1)" },
   { key: "bsi",  label: "BSI",  desc: "Bare soil index",           dot: "linear-gradient(135deg,#2166ac,#d73027)", formula: "((B11+B04)-(B08+B02))/((B11+B04)+(B08+B02))" },
+
+  // ── Agriculture add-ons ──────────────────────────────────────────────────
+  { key: "ndre",   label: "NDRE",   desc: "Red-edge chlorophyll",             dot: "linear-gradient(135deg,#5e4fa2,#f46d43)", formula: "(B08-B05)/(B08+B05)" },
+  { key: "gndvi",  label: "GNDVI",  desc: "Green-based vegetation",           dot: "linear-gradient(135deg,#f97316,#15803d)", formula: "(B08-B03)/(B08+B03)" },
+  { key: "msavi2", label: "MSAVI2", desc: "Soil-adjusted vegetation (self-tuning)", dot: "linear-gradient(135deg,#f46d43,#1a9850)", formula: "(2*B08+1-sqrt((2*B08+1)*(2*B08+1)-8*(B08-B04)))/2" },
+  { key: "ccci",   label: "CCCI",   desc: "Canopy chlorophyll / nitrogen",    dot: "linear-gradient(135deg,#2166ac,#66c2a5)", formula: "((B08-B05)/(B08+B05))/((B08-B04)/(B08+B04))" },
+  { key: "nddi",   label: "NDDI",   desc: "Drought signal (NDVI vs NDWI)",    dot: "linear-gradient(135deg,#a1d99b,#006d2c)", formula: "(((B08-B04)/(B08+B04))-((B03-B08)/(B03+B08)))/(((B08-B04)/(B08+B04))+((B03-B08)/(B03+B08)))" },
+  { key: "si",     label: "SI",     desc: "Salinity index",                  dot: "linear-gradient(135deg,#0f766e,#facc15)", formula: "(B04-B08)/(B04+B08)" },
+  { key: "cvi",    label: "CVI",    desc: "Chlorophyll vegetation index",     dot: "linear-gradient(135deg,#0c4a6e,#059669)", formula: "(B08/10000)*((B04/10000)/((B03/10000)*(B03/10000)))" },
+
+  // ── Visible-only + red-edge add-ons ──────────────────────────────────────
+  { key: "vari",     label: "VARI",     desc: "Visible-only vegetation",         dot: "linear-gradient(135deg,#f46d43,#1a9850)", formula: "(B03-B04)/(B03+B04-B02)" },
+  { key: "red_edge", label: "RED EDGE", desc: "Red-edge inflection point (S2REP, nm)", dot: "linear-gradient(135deg,#5e4fa2,#f46d43)", formula: "705+35*(((B07+B04)/2-B05)/(B06-B05))" },
+
+  // ── Triangular/visible vegetation add-ons ────────────────────────────────
+  { key: "mtvi", label: "MTVI2", desc: "Triangular vegetation (soil-corrected)", dot: "linear-gradient(135deg,#f46d43,#1a9850)", formula: "(1.5*(1.2*(B08/10000-B03/10000)-2.5*(B04/10000-B03/10000)))/sqrt((2*(B08/10000)+1)*(2*(B08/10000)+1)-(6*(B08/10000)-5*sqrt(B04/10000))-0.5)" },
+  { key: "tvi",  label: "TVI",   desc: "Triangular vegetation area",            dot: "linear-gradient(135deg,#3288bd,#d53e4f)", formula: "0.5*(120*(B08/100-B03/100)-200*(B04/100-B03/100))" },
+  { key: "grvi", label: "GRVI",  desc: "Green-red vegetation",                  dot: "linear-gradient(135deg,#f46d43,#1a9850)", formula: "(B03-B04)/(B03+B04)" },
+
+  // ── Pigment/chlorophyll add-ons ──────────────────────────────────────────
+  { key: "reci", label: "RECI", desc: "Red-edge chlorophyll ratio", dot: "linear-gradient(135deg,#5e4fa2,#f46d43)", formula: "(B08/B05)-1" },
+  { key: "sipi", label: "SIPI", desc: "Pigment / canopy stress",    dot: "linear-gradient(135deg,#b2182b,#2166ac)", formula: "(B08-B02)/(B08-B04)" },
+  { key: "gci",  label: "GCI",  desc: "Green chlorophyll ratio",    dot: "linear-gradient(135deg,#a1d99b,#006d2c)", formula: "(B08/B03)-1" },
+  { key: "psri", label: "PSRI", desc: "Senescence / plant stress",  dot: "linear-gradient(135deg,#b2182b,#2166ac)", formula: "(B04-B02)/B06" },
+
+  // ── Burn severity add-on ─────────────────────────────────────────────────
+  { key: "nbri", label: "NBRI", desc: "Burn severity", dot: "linear-gradient(135deg,#f46d43,#1a9850)", formula: "(B08-B12)/(B08+B12)" },
+
+  // ── Moisture/snow/oil add-ons ────────────────────────────────────────────
+  { key: "msi",  label: "MSI",  desc: "Moisture stress ratio",     dot: "linear-gradient(135deg,#b2182b,#2166ac)", formula: "B11/B08" },
+  { key: "ndsi", label: "NDSI", desc: "Snow / ice index",          dot: "linear-gradient(135deg,#2166ac,#66c2a5)", formula: "(B03-B11)/(B03+B11)" },
+  { key: "osi",  label: "OSI",  desc: "Oil spill (visible heuristic)", dot: "linear-gradient(135deg,#b2182b,#2166ac)", formula: "((B04+B02)-B03)/((B04+B02)+B03)" },
+
+  // ── Red-edge NDVI + red-edge inflection point add-ons ────────────────────
+  { key: "rendvi", label: "RENDVI", desc: "Red-edge NDVI",                     dot: "linear-gradient(135deg,#5e4fa2,#f46d43)", formula: "(B06-B05)/(B06+B05)" },
+  { key: "reip",   label: "REIP",   desc: "Red-edge inflection, classic (nm)", dot: "linear-gradient(135deg,#5e4fa2,#f46d43)", formula: "700+40*(((B04+B07)/2-B05)/(B06-B05))" },
+
+  // ── Drought/pigment add-ons ───────────────────────────────────────────────
+  { key: "nmdi_soil", label: "NMDI (Soil)", desc: "Soil moisture (drought)",     dot: "linear-gradient(135deg,#b2182b,#2166ac)", formula: "(B08-(B11-B12))/(B08+(B11-B12))" },
+  { key: "nmdi_veg",  label: "NMDI (Veg)",  desc: "Vegetation water content",    dot: "linear-gradient(135deg,#2166ac,#66c2a5)", formula: "(B08-(B11-B12))/(B08+(B11-B12))" },
+  { key: "ari",       label: "ARI",         desc: "Anthocyanin index",           dot: "linear-gradient(135deg,#b2182b,#2166ac)", formula: "(10000/B03)-(10000/B05)" },
+  { key: "ari2",      label: "ARI2 (mARI)", desc: "Anthocyanin, leaf-corrected", dot: "linear-gradient(135deg,#b2182b,#2166ac)", formula: "(B07/B03)-(B07/B05)" },
+
+  // ── Geology / mineral-mapping add-ons ────────────────────────────────────
+  { key: "cmr", label: "CMR", desc: "Clay minerals ratio",   dot: "linear-gradient(135deg,#4a0c6b,#fcffa4)", formula: "B11/B12" },
+  { key: "fmr", label: "FMR", desc: "Ferrous minerals ratio", dot: "linear-gradient(135deg,#7f0000,#fdcc8a)", formula: "B11/B08" },
+
+  // ── Iron oxide + water-quality add-ons ───────────────────────────────────
+  { key: "ioi",  label: "IOI",  desc: "Iron oxide ratio",             dot: "linear-gradient(135deg,#721f81,#fb8861)", formula: "B04/B02" },
+  { key: "ndci", label: "NDCI", desc: "Chlorophyll-a, turbid water",  dot: "linear-gradient(135deg,#30123b,#a2fc3c)", formula: "(B05-B04)/(B05+B04)" },
+  { key: "fai",  label: "FAI",  desc: "Floating algae index",         dot: "linear-gradient(135deg,#a1d99b,#006d2c)", formula: "B08-(B04+(B11-B04)*0.1772)" },
+
+  // ── Water/vegetation add-ons ──────────────────────────────────────────────
+  { key: "mndwi", label: "MNDWI", desc: "Modified water index",          dot: "linear-gradient(135deg,#2166ac,#66c2a5)", formula: "(B03-B11)/(B03+B11)" },
+  { key: "gemi",  label: "GEMI",  desc: "Atmosphere-stable vegetation",  dot: "linear-gradient(135deg,#f46d43,#1a9850)", formula: "((2*((B08/10000)*(B08/10000)-(B04/10000)*(B04/10000))+1.5*(B08/10000)+0.5*(B04/10000))/((B08/10000)+(B04/10000)+0.5))*(1-0.25*((2*((B08/10000)*(B08/10000)-(B04/10000)*(B04/10000))+1.5*(B08/10000)+0.5*(B04/10000))/((B08/10000)+(B04/10000)+0.5)))-((B04/10000-0.125)/(1-B04/10000))" },
+
+  // ── Pigment/index add-ons ────────────────────────────────────────────────
+  { key: "mcari", label: "MCARI", desc: "Chlorophyll absorption ratio", dot: "linear-gradient(135deg,#f46d43,#1a9850)", formula: "((B05/10000-B04/10000)-0.2*(B05/10000-B03/10000))*((B05/10000)/(B04/10000))" },
+  { key: "cri1",  label: "CRI1",  desc: "Carotenoid reflectance",       dot: "linear-gradient(135deg,#b2182b,#2166ac)", formula: "(10000/B02)-(10000/B03)" },
+  { key: "cri2",  label: "CRI2",  desc: "Carotenoid, canopy-corrected", dot: "linear-gradient(135deg,#b2182b,#2166ac)", formula: "(10000/B02)-(10000/B05)" },
+
+  // ── Harmful algal bloom add-on ───────────────────────────────────────────
+  { key: "ci", label: "CI", desc: "Cyanobacteria (bloom) index, approximated", dot: "linear-gradient(135deg,#30123b,#a2fc3c)", formula: "(B04+(B06-B04)*0.5333)-B05" },
+
+  // ── Vegetation/chlorophyll add-ons ───────────────────────────────────────
+  { key: "evi2", label: "EVI2", desc: "Enhanced vegetation (2-band)",  dot: "linear-gradient(135deg,#721f81,#fb8861)", formula: "2.5*(B08-B04)/(B08+2.4*B04+1)" },
+  { key: "mtci", label: "MTCI", desc: "MERIS-heritage chlorophyll",    dot: "linear-gradient(135deg,#5e4fa2,#f46d43)", formula: "(B06-B05)/(B05-B04)" },
+
+  // ── 2026-08-15 batch (part 2) ────────────────────────────────────────────
+  { key: "ndvi705", label: "NDVI705", desc: "Red-edge NDVI (705nm)",              dot: "linear-gradient(135deg,#5e4fa2,#f46d43)", formula: "(B06-B05)/(B06+B05)" },
+  { key: "ndti",    label: "NDTI",    desc: "Water turbidity",                    dot: "linear-gradient(135deg,#0f766e,#facc15)", formula: "(B04-B03)/(B04+B03)" },
+  { key: "tcari",   label: "TCARI",   desc: "Chlorophyll absorption (transformed)", dot: "linear-gradient(135deg,#f46d43,#1a9850)", formula: "3*((B05/10000-B04/10000)-0.2*(B05/10000-B03/10000)*((B05/10000)/(B04/10000)))" },
 ];
 
 // نفس شكل RasterPreviewConfig المستخدم في PlanetaryRasterPanel.tsx —
@@ -949,7 +1032,11 @@ export default function PalmTreesPanel({
             </button>
 
             {presetMenuOpen && (
-              <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-lg border border-white/10 bg-[#0d1b2e] shadow-xl">
+              // ⚠️ (2026-08-25) الليستة كانت "overflow-hidden" وبتاخد ارتفاع القايمة
+              // كلها — كان شغال لما كان فيه 7 presets بس، لكن بعد ما اتوسّعت
+              // لـ 49 index هتطلع بره الشاشة. نفس فكرة max-h + overflow-y-auto
+              // اللي مستخدمة في scenes list جوه SatelliteDataPanel.tsx.
+              <div className="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto custom-scroll rounded-lg border border-white/10 bg-[#0d1b2e] shadow-xl">
                 {INDEX_PRESETS.map((p) => (
                   <button
                     key={p.key}
