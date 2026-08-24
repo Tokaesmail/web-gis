@@ -2055,28 +2055,49 @@ useEffect(() => {
         return;
       }
 
-      const requestBody = {
+      // ⚠️ (2026-08-25) limit:12 من غير sortby صريح ومن غير متابعة الـ "next"
+      // page كان بيخلي بحث على مدى شهور/سنة يرجع بس آخر ~12 صورة (الأحدث)،
+      // مش عينة موزعة على الـ range كله — ده اللي كان وراء "5 صور بس" لبحث
+      // سنة كاملة. هنا بنزوّد limit ونتبع pagination زي ما عملنا في
+      // ChangeDetectionPanel.searchScenes.
+      const baseRequestBody = {
         collections: [collection],
         bbox: [west, south, east, north],
         ...(isStaticCollection ? {} : { datetime: `${dateFrom}T00:00:00Z/${dateTo}T23:59:59Z` }),
-        limit: 12,
+        limit: 100,
       };
-      // 👇 (1) اطبعي هنا الطلب اللي رايح فعليًا للـ STAC API — لو الـ bbox أو
-      // الـ datetime غلط، هتشوفيه هنا قبل ما حتى تستنى الـ response.
-      console.log("[STAC] request →", { source, activeAnalysis, collection, ...requestBody });
+      console.log("[STAC] request →", { source, activeAnalysis, collection, ...baseRequestBody });
 
-      const response = await fetch("https://planetarycomputer.microsoft.com/api/stac/v1/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestBody),
-      });
-      console.log("AFTER FETCH");
-      console.log(response);
-
-      if (!response.ok) throw new Error(`STAC API ${response.status}`);
-      const payload = await response.json();
-      console.log(payload,"AFTER PARSE");
-      const features = Array.isArray(payload?.features) ? payload.features : [];
+      let features: StacFeature[] = [];
+      let nextReq: { url: string; body: Record<string, unknown> } | null = {
+        url: "https://planetarycomputer.microsoft.com/api/stac/v1/search",
+        body: baseRequestBody,
+      };
+      const MAX_PAGES = 10;
+      const MAX_FEATURES = 500;
+      let page = 0;
+      while (nextReq && page < MAX_PAGES && features.length < MAX_FEATURES) {
+        const response: Response = await fetch(nextReq.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nextReq.body),
+        });
+        console.log("AFTER FETCH", response);
+        if (!response.ok) throw new Error(`STAC API ${response.status}`);
+        const payload: any = await response.json();
+        console.log(payload, "AFTER PARSE");
+        const pageFeatures: StacFeature[] = Array.isArray(payload?.features) ? payload.features : [];
+        features = features.concat(pageFeatures);
+        const nextLink: { href?: string; body?: unknown } | null | undefined = Array.isArray(payload?.links)
+          ? payload.links.find((l: { rel?: string }) => l?.rel === "next")
+          : null;
+        nextReq =
+          nextLink?.href && nextLink?.body
+            ? { url: nextLink.href, body: nextLink.body as Record<string, unknown> }
+            : null;
+        page += 1;
+        if (!pageFeatures.length) break;
+      }
       // 👇 (2) دي أهم واحدة لتشخيص "no matching scenes": بتقولك بالظبط كام
       // feature رجع، وبتطبع أول item كامل (بما فيه item.assets — أسماء
       // الملفات الحقيقية اللي الـ item ده جاي بيها) عشان تتأكدي إن أسماء
@@ -2190,8 +2211,10 @@ useEffect(() => {
         .filter((scene: SatelliteScene) =>
           source !== "sentinel-5p" || sceneHasVisualizationAssets(scene, activeAnalysis)
         )
-        .sort((a: SatelliteScene, b: SatelliteScene) => b.score - a.score)
-        .slice(0, 6);
+        // ⚠️ اتشالت الـ .slice(0, 6) القديمة بناءً على طلب المستخدم — دلوقتي
+        // بيتعرض كل scene رجع فعلاً من كل الصفحات وعدّى فلتر الغيوم، مش أول
+        // 6 بس (لحد سقف الأمان MAX_FEATURES فوق).
+        .sort((a: SatelliteScene, b: SatelliteScene) => b.score - a.score);
 
       setApiScenes(nextScenes);
       setSceneStatus("success");
@@ -3010,7 +3033,12 @@ function openImageUrlSafely(url: string) {
     </div>
 
     {/* Scenes Results List */}
-    <div className="space-y-2">
+    {/* ⚠️ (2026-08-25) دي القايمة كانت بترندر كل الـscenes مباشرة في الصفحة
+        من غير أي حد أقصى للارتفاع — لما شلنا الـ.slice(0,6) القديم عشان
+        نعرض كل النتايج، القايمة دي كانت هتتمدد لطول ضخم جدًا (كل scene معاها
+        thumbnail + أزرار download/preview). هنا بنحطها جوه container بيعمل
+        scroll بعد ارتفاع معقول، بدل ما تاكل طول الصفحة كله. */}
+    <div className="max-h-[32rem] overflow-y-auto custom-scroll pr-1 space-y-2">
       {scenes.length ? (
         scenes.map((scene) => (
           <div key={scene.id} className="rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">

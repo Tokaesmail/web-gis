@@ -1711,10 +1711,19 @@ function SceneSlot({
 
       {scenes.length > 0 && (
         <div className="space-y-1.5">
-          {!selectedScene && (
-            <p className="text-[0.55rem] text-amber-300/90 px-0.5">← Click a scene below to select it</p>
-          )}
-          <div className="max-h-40 overflow-y-auto custom-scroll pr-0.5 space-y-1.5">
+          <div className="flex items-center justify-between px-0.5">
+            {!selectedScene ? (
+              <p className="text-[0.55rem] text-amber-300/90">← Click a scene below to select it</p>
+            ) : <span />}
+            {/* ⚠️ (2026-08-25) بعد ما شلنا الـ.slice(0,8)، القايمة ممكن تبقى
+                فيها عشرات الصور — هنا بنوريها العدد الفعلي عشان يبان إن
+                البحث فعلاً رجع أكتر من شوية صور، مش بس تحس إن حاجة "قصّت". */}
+            <span className="text-[0.55rem] text-slate-500">{scenes.length} scene{scenes.length === 1 ? "" : "s"}</span>
+          </div>
+          {/* ⚠️ (2026-08-25) الارتفاع زاد من max-h-40 لـ max-h-72 — بعد ما
+              القايمة بقت ممكن تحمل عشرات الصور بدل 8 بس، 40 (10rem) كانت
+              هتخلي أي تصفح فيها متعب جدًا (سطرين-تلاتة بس ظاهرين). */}
+          <div className="max-h-72 overflow-y-auto custom-scroll pr-0.5 space-y-1.5">
           {scenes.map((scene) => (
             <button
               key={scene.id}
@@ -1728,7 +1737,7 @@ function SceneSlot({
             >
               {scene.thumbnail ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={scene.thumbnail} alt="" className="w-6 h-6 rounded border border-white/[0.08] object-cover bg-slate-900 shrink-0" />
+                <img src={scene.thumbnail} alt="" loading="lazy" className="w-6 h-6 rounded border border-white/[0.08] object-cover bg-slate-900 shrink-0" />
               ) : (
                 <div className="w-6 h-6 rounded border border-white/[0.08] bg-gradient-to-br from-slate-700 via-emerald-800 to-cyan-700 shrink-0" />
               )}
@@ -2046,16 +2055,45 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
         }
       }
 
-      const response = await fetch("https://planetarycomputer.microsoft.com/api/stac/v1/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(searchBody),
-      });
-      if (!response.ok) throw new Error(`STAC API ${response.status}`);
-      const payload = await response.json();
-      const features: StacFeature[] = Array.isArray(payload?.features) ? payload.features : [];
-      const totalMatched: number =
-        typeof payload?.numberMatched === "number" ? payload.numberMatched : features.length;
+      // ⚠️ (2026-08-25) الـ STAC API بيرجع النتايج مقسّمة صفحات — كنا بنجيب
+      // أول صفحة بس (limit:50) حتى لو الـ date range شهور/سنة كاملة. كل رد
+      // بيرجع مع رابط "rel": "next" (فيه POST body/token) بيقول إن فيه صور
+      // زيادة، والكود مكانش بيتبعه. من غير sortby صريح، الـ API بيرجّع
+      // الأحدث الأول — فبحث سنة كاملة كان بيتصرف فعليًا كإنه بحث آخر
+      // 2-3 أسابيع بس. هنا بنلف على الصفحات لحد ما تخلص أو نوصل لسقف أمان.
+      let features: StacFeature[] = [];
+      let totalMatched = 0;
+      let nextReq: { url: string; body: Record<string, unknown> } | null = {
+        url: "https://planetarycomputer.microsoft.com/api/stac/v1/search",
+        body: searchBody,
+      };
+      const MAX_PAGES = 10;
+      const MAX_FEATURES = 500;
+      let page = 0;
+      while (nextReq && page < MAX_PAGES && features.length < MAX_FEATURES) {
+        const response: Response = await fetch(nextReq.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nextReq.body),
+        });
+        if (!response.ok) throw new Error(`STAC API ${response.status}`);
+        const payload: any = await response.json();
+        const pageFeatures: StacFeature[] = Array.isArray(payload?.features) ? payload.features : [];
+        features = features.concat(pageFeatures);
+        if (page === 0) {
+          totalMatched =
+            typeof payload?.numberMatched === "number" ? payload.numberMatched : pageFeatures.length;
+        }
+        const nextLink: { href?: string; body?: unknown } | null | undefined = Array.isArray(payload?.links)
+          ? payload.links.find((l: { rel?: string }) => l?.rel === "next")
+          : null;
+        nextReq =
+          nextLink?.href && nextLink?.body
+            ? { url: nextLink.href, body: nextLink.body as Record<string, unknown> }
+            : null;
+        page += 1;
+        if (!pageFeatures.length) break;
+      }
 
       const nextScenes: SatelliteScene[] = features
         .map((feature) => {
@@ -2096,8 +2134,24 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
         // for this source. `cloud` stays on the scene object for display —
         // it's just not used to reject scenes for sentinel-3.
         .filter((scene) => source === "sentinel-3" || scene.cloud <= cloud)
-        .sort((a, b) => (a.date < b.date ? 1 : -1))
-        .slice(0, 8);
+        // ⚠️ (2026-08-25) لو الـ AOI صغيرة وواقعة على حد بين tile-ين UTM
+        // (زي 36RTV/35RQQ)، كل مرور فعلي للقمر بيرجّع scene منفصل لكل tile
+        // بنفس التاريخ بالظبط — يعني نفس اليوم بيتعد مرتين في القايمة. هنا
+        // بنسيب أحسن نسخة بس (أقل غيوم) لكل تاريخ، عشان القايمة تعكس عدد
+        // المرورات الحقيقية مش عدد الـ tiles.
+        .reduce<SatelliteScene[]>((deduped, scene) => {
+          const existing = deduped.find((s) => s.date === scene.date);
+          if (!existing) {
+            deduped.push(scene);
+          } else if (scene.cloud < existing.cloud) {
+            Object.assign(existing, scene);
+          }
+          return deduped;
+        }, [])
+        .sort((a, b) => (a.date < b.date ? 1 : -1));
+        // ⚠️ اتشالت الـ .slice(0, 8) القديمة — كانت بتقطع أي صور بعد أول 8
+        // حتى لو الـ STAC رجع أكتر بكتير وعدّوا فلتر الغيوم. دلوقتي بيتعرض
+        // كل اللي رجع فعلاً (لحد سقف الأمان MAX_FEATURES فوق).
 
       setScenes(nextScenes);
       setStatus("success");
