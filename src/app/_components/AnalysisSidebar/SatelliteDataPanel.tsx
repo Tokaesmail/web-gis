@@ -628,7 +628,6 @@ export function SatelliteDataPanel({
   const [viewerMode, setViewerMode] = useState<SatelliteViewerMode>("multispectral");
   const [falseColorEnabled, setFalseColorEnabled] = useState(false);
   const [bandMenuOpen, setBandMenuOpen] = useState(false);
-
   // ⚠️ لازم يتحسب هنا فوق (قبل أي useEffect بيستخدمه في الـ dependency array)،
   // مش تحت بعد الـ effects. الترتيب القديم كان بيسبب
   // "Cannot access 'activeAnalysis' before initialization" لأن الـ effect
@@ -731,6 +730,9 @@ const displayVertices = useMemo(() => {
     { key: "NDVI705", label: "NDVI705", desc: "Red-edge NDVI (same ratio as RENDVI)", color: "#4575b4" },
     { key: "NDTI", label: "NDTI", desc: "Water turbidity", color: "#f59e0b" },
     { key: "TCARI", label: "TCARI", desc: "Transformed chlorophyll absorption (companion to MCARI)", color: "#a3d977" },
+    { key: "LAI", label: "LAI", desc: "Leaf Area Index (crop bio-parameter)", color: "#238b45" },
+    { key: "CCC", label: "CCC", desc: "Canopy chlorophyll content, red-edge (crop bio-parameter)", color: "#4575b4" },
+    { key: "WQI", label: "WQI", desc: "Water quality index (composite of NDCI/NDTI/CI, heuristic)", color: "#0891b2" },
     // Sentinel-1 (Radar)
     { key: "VV", label: "VV", desc: "Co-polarized backscatter", color: "#818cf8" },
     { key: "VH", label: "VH", desc: "Cross-polarized backscatter", color: "#c084fc" },
@@ -1441,6 +1443,27 @@ const scenes = useMemo(
           type: "cri2",
         };
 
+      case "LAI":
+        // Boegh et al. (2002): LAI = 3.618×EVI - 0.118, EVI written out same
+        // as the EVI case above (B08/B04/B02). No clamp-to-0 here — the
+        // preview colormap floor (see getIndexPreviewStyle) handles the rare
+        // slightly-negative bare-soil/water pixels visually instead.
+        return {
+          assets: ["B08", "B04", "B02"],
+          expression: "3.618*(2.5*(B08-B04)/(B08+6*B04-7.5*B02+1))-0.118",
+          type: "lai",
+        };
+
+      case "CCC":
+        // Gitelson et al. (2003) / Clevers & Gitelson (2013) red-edge
+        // chlorophyll index: (NIR/RedEdge1) - 1. Simple ratio, scale-
+        // invariant like RECI/GCI — no ÷10000 needed.
+        return {
+          assets: ["B08", "B05"],
+          expression: "(B08/B05)-1",
+          type: "ccc",
+        };
+
       case "CI":
         // Cyanobacteria Index (Wynne et al. 2008), Sentinel-2 approximation —
         // baseline between Red(665)/RedEdge2(740), measured dip at
@@ -1502,6 +1525,21 @@ const scenes = useMemo(
           expression:
             "3*(((B05/10000)-(B04/10000))-0.2*((B05/10000)-(B03/10000))*((B05/10000)/(B04/10000)))",
           type: "tcari",
+        };
+
+      case "WQI":
+        // Water Quality Index — heuristic composite (NOT a single published
+        // formula, same caveat as OSI): 0.40*NDCI + 0.35*NDTI + 0.25*(CI*8).
+        // CI is scaled ×8 first — its raw magnitude (~0.02-0.05) is far
+        // smaller than NDCI/NDTI's (~0.1-0.4), so unscaled it wouldn't move
+        // the composite at all. Same NDCI/NDTI/CI sub-formulas as those
+        // cases above — see ANALYSIS_CONFIG.wqi (route.ts) for the full
+        // rationale/comment.
+        return {
+          assets: ["B03", "B04", "B05", "B06"],
+          expression:
+            "(0.40*((B05-B04)/(B05+B04)))+(0.35*((B04-B03)/(B04+B03)))+(0.25*(((B04+(B06-B04)*0.5333)-B05)*8))",
+          type: "wqi",
         };
 
       default:
@@ -1838,6 +1876,14 @@ useEffect(() => {
         // الصفر زي FAI (baseline-subtraction shape). "turbo" زي NDCI/
         // CHLOROPHYLL عمدًا عشان يتقرا بنفس منطق تركيز الصبغة/bloom.
         return { rescale: "-0.02,0.05", colormap: "turbo", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "LAI":
+        // ⚠️ (2026-08-26) Boegh et al. 2002 — مدى نموذجي للمحاصيل 0-6.
+        // "greens" زي GCI/NDMI عمدًا (فاتح=تربة عارية، غامق=غطاء كثيف).
+        return { rescale: "0,6", colormap: "greens", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "CCC":
+        // ⚠️ (2026-08-26) Gitelson/Clevers red-edge CI — نسبة بسيطة، مدى
+        // نموذجي 0-8. "spectral_r" زي MTCI/NDRE عمدًا (عيلة كلوروفيل red-edge).
+        return { rescale: "0,8", colormap: "spectral_r", alphaLow: "0.03", alphaHigh: "0.22" };
       case "EVI2":
         // ⚠️ (2026-08-15) Jiang et al. 2008 — نفس معاملات/مدى EVI تقريبًا
         // (بدون Blue). "magma" زي EVI نفسها عمدًا.
@@ -1862,6 +1908,12 @@ useEffect(() => {
         // مختلفة شوية، مدى نموذجي 0-2 بعد تطبيع الـ reflectance. "rdylgn"
         // زي MCARI/NDVI عمدًا.
         return { rescale: "0,2", colormap: "rdylgn", alphaLow: "0.03", alphaHigh: "0.22" };
+      case "WQI":
+        // ⚠️ (2026-08-29) Composite/heuristic (0.40*NDCI+0.35*NDTI+0.25*(CI*8))
+        // — مدى مشابه لـ NDCI/NDTI اللي هي مبنية عليهم. "salinity_clear" زي
+        // NDTI عمدًا (تيل صافي -> ذهبي -> أحمر عكارة/bloom عالية) عشان يتقرا
+        // بنفس منطق "جودة مياه" مش بس عكارة.
+        return { rescale: "-0.2,0.4", colormap: "salinity_clear", alphaLow: "0.03", alphaHigh: "0.22" };
 
       // ⚠️ القيم تحت (rescale) placeholder مبني على مدى نظري للبيانات —
       // لازم تتظبط لما نشوف قيم حقيقية راجعة من الباك بعد ما تبعتي الـ route.

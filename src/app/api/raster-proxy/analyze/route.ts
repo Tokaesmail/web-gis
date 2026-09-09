@@ -276,6 +276,9 @@ type AnalysisType =
   | "change_mndwi" | "change_gemi" | "change_mcari" | "change_cri1" | "change_cri2"
   | "change_ci" | "change_evi2" | "change_mtci" | "change_ndvi705"
   | "change_ndti" | "change_tcari"
+  // Water Quality Index add-on (2026-08-29) — see SatellitePipelines.ts
+  // SOURCE_INDICES note and the ANALYSIS_CONFIG.wqi comment below.
+  | "change_wqi"
   // Sentinel-1 (Radar / SAR)
   | "vv" | "vh"  | "change_vv" | "change_vh"
   | "vv_vh_ratio" | "sar_rgb"
@@ -387,7 +390,17 @@ type AnalysisType =
   | "evi2" | "mtci"
   // 2026-08-15 batch (part 2) — Sentinel-2 only, see SatellitePipelines.ts
   // SOURCE_INDICES note. ndvi705 shares its formula with rendvi.
-  | "ndvi705" | "ndti" | "tcari";
+  | "ndvi705" | "ndti" | "tcari"
+  // Crop bio-parameters add-on (2026-08-26) — Sentinel-2 only, see
+  // SatellitePipelines.ts SOURCE_INDICES note. lai/ccc requested as part of
+  // the "Crop Bio-parameters" insight — brown-pigment/senescence is already
+  // covered by psri above, so only LAI + canopy chlorophyll content are new.
+  | "lai" | "ccc"
+  // Water Quality Index add-on (2026-08-29) — Sentinel-2 only, see
+  // SatellitePipelines.ts SOURCE_INDICES note. Heuristic composite of ndci
+  // (chlorophyll-a) + ndti (turbidity) + ci (cyanobacteria), already defined
+  // above — see the wqi formula comment for the exact weighting.
+  | "wqi";
 type CompositeConfig = { kind: "composite"; bandCount: 3; label: string };
 type IndexConfig = {
   kind: "index";
@@ -1058,6 +1071,40 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     defaultMin: 0,
     defaultMax: 10,
   },
+  lai: {
+    // Leaf Area Index approximation (Boegh et al. 2002): LAI = 3.618×EVI -
+    // 0.118, originally fit on MODIS EVI but widely reused with any
+    // sensor's EVI as a cheap LAI proxy in absence of a real biophysical
+    // (neural-net) processor. ⚠️ Needs true reflectance (÷10000) same as
+    // the evi/gemi formulas above, since EVI's own "+1" constant is
+    // calibrated to the 0-1 scale. Clamped at 0 — the linear fit can dip
+    // slightly negative on bare soil/water, which isn't a valid LAI value.
+    kind: "index", bandCount: 3, label: "LAI Leaf Area Index, Boegh et al. 2002 (NIR,Red,Blue — e.g. B08,B04,B02)",
+    formula: (nirRaw, redRaw, blueRaw) => {
+      const nir = nirRaw / 10000;
+      const red = redRaw / 10000;
+      const blue = blueRaw / 10000;
+      const evi = (2.5 * (nir - red)) / (nir + 6 * red - 7.5 * blue + 1 || 1e-6);
+      return Math.max(0, 3.618 * evi - 0.118);
+    },
+    defaultColormap: "greens",
+    defaultMin: 0,
+    defaultMax: 6,
+  },
+  ccc: {
+    // Canopy Chlorophyll Content proxy — Gitelson et al. (2003) / Clevers &
+    // Gitelson (2013) red-edge chlorophyll index: CIrededge = (NIR/RedEdge1)
+    // - 1, B08/B05. ⚠️ This is the index itself, not a calibrated µg/cm²
+    // figure — there's no single universal regression constant across
+    // crops/growth stages in the literature, so (unlike lai above) we don't
+    // convert it further. Simple ratio-minus-one, scale-invariant like
+    // reci/gci — no ÷10000 needed.
+    kind: "index", bandCount: 2, label: "CCC Canopy Chlorophyll Content, red-edge (NIR,RedEdge1 — e.g. B08,B05)",
+    formula: (nir, redEdge1) => (nir / (redEdge1 || 1e-6)) - 1,
+    defaultColormap: "spectral_r",
+    defaultMin: 0,
+    defaultMax: 8,
+  },
   ci: {
     // Cyanobacteria Index (Wynne et al. 2008) — baseline-subtraction
     // ("spectral shape") around the ~681nm phycocyanin/chlorophyll
@@ -1124,6 +1171,31 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     // لـ SI)، بيدّي نفس الإحساس (تيل صافي -> أصفر/ذهبي -> أحمر عكارة عالية).
     kind: "index", bandCount: 2, label: "NDTI Water Turbidity (Red,Green — e.g. B04,B03)",
     formula: (red, green) => (red - green) / (red + green || 1e-6),
+    defaultColormap: "salinity_clear",
+    defaultMin: -0.2,
+    defaultMax: 0.4,
+  },
+  wqi: {
+    // Water Quality Index — heuristic composite, NOT a single published/
+    // validated WQI algorithm (same caveat as osi above: there isn't one
+    // universal formula in the literature). Combines the three water-quality
+    // indices already in this file:
+    //   ndci (chlorophyll-a, Mishra & Mishra 2012, B05/B04)
+    //   ndti (turbidity, Lacaux et al. 2007, B04/B03)
+    //   ci   (cyanobacteria, Wynne et al. 2008 approximation, B04/B05/B06)
+    // Weights (0.40/0.35/0.25) favor ndci/ndti over the coarser ci
+    // approximation. ci is scaled ×8 before weighting because its raw
+    // magnitude (~0.02–0.05) is far smaller than ndci/ndti's (~0.1–0.4) —
+    // without that scaling it wouldn't move the composite at all.
+    // ⚠️ Only meaningful over water — mask out land first (e.g. with
+    // ndwi/mndwi) same as ndti above.
+    kind: "index", bandCount: 4, label: "WQI Water Quality Index, composite/heuristic (Green,Red,RedEdge1,RedEdge2 — e.g. B03,B04,B05,B06)",
+    formula: (green, red, redEdge1, redEdge2) => {
+      const ndci = (redEdge1 - red) / (redEdge1 + red || 1e-6);
+      const ndti = (red - green) / (red + green || 1e-6);
+      const ci = (red + (redEdge2 - red) * ((705 - 665) / (740 - 665))) - redEdge1;
+      return 0.40 * ndci + 0.35 * ndti + 0.25 * (ci * 8);
+    },
     defaultColormap: "salinity_clear",
     defaultMin: -0.2,
     defaultMax: 0.4,
@@ -1469,6 +1541,18 @@ const ANALYSIS_CONFIG: Record<AnalysisType, CompositeConfig | IndexConfig | Chan
     kind: "change", bandCount: 4, label: "Change NDTI (beforeRed,beforeGreen,afterRed,afterGreen — e.g. B04,B03,B04,B03)",
     formula: (red, green) => (red - green) / (red + green || 1e-6),
     gainLabel: "Turbidity Increase", lossLabel: "Turbidity Decrease",
+  },
+  change_wqi: {
+    // Same heuristic composite as wqi above, evaluated once per date —
+    // see that comment for the weighting/scaling rationale.
+    kind: "change", bandCount: 8, label: "Change WQI (beforeGreen,beforeRed,beforeRedEdge1,beforeRedEdge2,afterGreen,afterRed,afterRedEdge1,afterRedEdge2 — e.g. B03,B04,B05,B06,B03,B04,B05,B06)",
+    formula: (green, red, redEdge1, redEdge2) => {
+      const ndci = (redEdge1 - red) / (redEdge1 + red || 1e-6);
+      const ndti = (red - green) / (red + green || 1e-6);
+      const ci = (red + (redEdge2 - red) * ((705 - 665) / (740 - 665))) - redEdge1;
+      return 0.40 * ndci + 0.35 * ndti + 0.25 * (ci * 8);
+    },
+    gainLabel: "Water Quality Impairment Increase", lossLabel: "Water Quality Impairment Decrease",
   },
   change_tcari: {
     kind: "change", bandCount: 6, label: "Change TCARI (beforeRedEdge1,beforeRed,beforeGreen,afterRedEdge1,afterRed,afterGreen — e.g. B05,B04,B03,B05,B04,B03)",

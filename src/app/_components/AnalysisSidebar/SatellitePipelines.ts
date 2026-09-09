@@ -83,6 +83,20 @@ export type SatelliteAnalysisType =
   | "NDVI705"
   | "NDTI"
   | "TCARI"
+  // Crop bio-parameters add-on (2026-08-26) — Sentinel-2 only, see
+  // SOURCE_INDICES note below. Brown-pigment/senescence is already covered
+  // by PSRI above, so only LAI + canopy chlorophyll content are new here.
+  | "LAI"
+  | "CCC"
+  // Water Quality Index add-on (2026-08-29) — Sentinel-2 only, see
+  // SOURCE_INDICES note below. WQI is a heuristic composite screening score
+  // built from the three water-quality indices already in this pipeline
+  // (NDCI chlorophyll-a, NDTI turbidity, CI cyanobacteria) — see the formula
+  // comment in ANALYSIS_CONFIG.wqi (route.ts) for the exact weighting.
+  // ⚠️ Not a single published/validated WQI algorithm (there isn't one
+  // universal formula in the literature, same caveat as OSI above) — treat
+  // it as a relative screening layer, not a certified water-quality metric.
+  | "WQI"
   // Sentinel-1 (Radar / SAR)
   | "VV"
   | "VH"
@@ -225,7 +239,7 @@ export const SOURCE_INDICES: Record<SatSource, SatelliteAnalysisType[]> = {
   // TCARI (2026-08-15) — Haboudane et al. (2002)، B05/B04/B03 — رفيقة MCARI
   // فوق بس معادلة مختلفة شوية (الضرب في النسبة جوه القوس التاني بس مش
   // القوسين مع بعض) — شوفي ANALYSIS_CONFIG.tcari (route.ts) للفرق بالظبط.
-  "sentinel-2": ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "NDRE", "GNDVI", "MSAVI2", "CCCI", "NDDI", "SI", "CVI", "VARI", "RED_EDGE", "MTVI", "TVI", "GRVI", "RECI", "SIPI", "GCI", "PSRI", "NBRI", "MSI", "NDSI", "OSI", "RENDVI", "REIP", "NMDI_SOIL", "NMDI_VEG", "ARI", "ARI2", "CMR", "FMR", "IOI", "NDCI", "FAI", "MNDWI", "GEMI", "MCARI", "CRI1", "CRI2", "CI", "EVI2", "MTCI", "NDVI705", "NDTI", "TCARI"],
+  "sentinel-2": ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "NDRE", "GNDVI", "MSAVI2", "CCCI", "NDDI", "SI", "CVI", "VARI", "RED_EDGE", "MTVI", "TVI", "GRVI", "RECI", "SIPI", "GCI", "PSRI", "NBRI", "MSI", "NDSI", "OSI", "RENDVI", "REIP", "NMDI_SOIL", "NMDI_VEG", "ARI", "ARI2", "CMR", "FMR", "IOI", "NDCI", "FAI", "MNDWI", "GEMI", "MCARI", "CRI1", "CRI2", "CI", "EVI2", "MTCI", "NDVI705", "NDTI", "TCARI", "LAI", "CCC", "WQI"],
   "landsat":    ["RGB", "NDVI", "NDWI", "NDMI", "NDBI", "SAVI", "EVI", "BSI", "GNDVI", "MSAVI2", "NDDI", "SI", "CVI", "NBRI"],
   "sentinel-1": ["VV", "VH", "RATIO", "SAR_RGB", "FLOOD", "CHANGE"],
   "cop-dem":    ["ELEVATION", "SLOPE", "HILLSHADE", "ASPECT", "CONTOURS"],
@@ -1236,6 +1250,17 @@ export const SATELLITE_LEGENDS: Record<SatelliteAnalysisType, {
     max: "high turbidity / suspended sediment",
     meaning: ["Lacaux et al. (2007): (Red−Green)/(Red+Green), B04/B03 — suspended sediment scatters more strongly in red than green, so this ratio rises with turbidity. Same normalized-difference shape as NDVI/NDWI, scale-invariant, no ÷10000 needed.", "⚠️ Different index from the SWIR-based 'Normalized Difference Tillage Index' that shares the same acronym in some agriculture literature — this one targets water turbidity specifically, not crop residue/tillage. Mask out land first (e.g. with NDWI/MNDWI) since NDTI on vegetation or bare soil isn't a meaningful turbidity reading."],
   },
+  WQI: {
+    label: "WQI water quality (composite, heuristic)",
+    // "salinity_clear" زي NDTI/SI عمدًا — نفس التدرّج (تيل صافي -> ذهبي ->
+    // أحمر) بيتقرا هنا بمنطق "جودة مياه" عام بدل عكارة بس، لإن WQI أصلاً
+    // مبني حوالين NDTI. نفس colormap فعليًا في getIndexPreviewStyle.
+    gradient: "linear-gradient(90deg,#0891b2,#67e8f9,#fde68a,#f59e0b,#dc2626)",
+    min: "low impairment / clear water",
+    mid: "moderate",
+    max: "high impairment (turbid / bloom-prone)",
+    meaning: ["Weighted composite of three water-quality indices already in this pipeline: 0.40×NDCI (chlorophyll-a, B05/B04) + 0.35×NDTI (turbidity, B04/B03) + 0.25×(CI×8) (cyanobacteria, B04/B05/B06) — needs B03/B04/B05/B06. Weights favor the two more literature-established components over the coarser Sentinel-2 CI approximation; CI is scaled ×8 first since its raw magnitude (~0.02–0.05) is far smaller than NDCI/NDTI's (~0.1–0.4), so it wouldn't otherwise move the composite.", "⚠️ This is a heuristic screening composite, not a single validated/published WQI formula — same caveat as OSI above. Mask out land first (e.g. with NDWI/MNDWI) since it's only meaningful over water; cross-check any high reading against NDCI/NDTI/CI individually before reporting a water-quality concern."],
+  },
   TCARI: {
     label: "TCARI chlorophyll absorption (transformed)",
     gradient: "linear-gradient(90deg,#d94801,#fd8d3c,#fed976,#78c679,#238443)",
@@ -1243,6 +1268,25 @@ export const SATELLITE_LEGENDS: Record<SatelliteAnalysisType, {
     mid: "moderate",
     max: "high chlorophyll absorption, dense canopy",
     meaning: ["Haboudane et al. (2002): 3×[(R700−R670) − 0.2×(R700−R550)×(R700/R670)], B05/B04/B03 — a companion to MCARI above with the same three bands, but the soil-correction term (0.2×(R700−R550)) is scaled by the ratio only, not the whole bracket, giving it different soil/PAR sensitivity than MCARI.", "Needs true reflectance (÷10000), same reasoning as MCARI/CVI/TVI — the difference-times-ratio shape is not scale-invariant. In the literature TCARI is most often paired as a TCARI/OSAVI ratio to further cancel soil background; used standalone here, same treatment as MCARI."],
+  },
+
+  LAI: {
+    label: "LAI Leaf Area Index (Boegh et al. 2002 EVI proxy)",
+    // "greens" زي GCI/NDMI عمدًا — نفس منطق كثافة الغطاء النباتي.
+    gradient: "linear-gradient(90deg,#f7fcf5,#c7e9c0,#74c476,#238b45,#00441b)",
+    min: "bare soil / no canopy",
+    mid: "moderate leaf area",
+    max: "dense, multi-layer canopy",
+    meaning: ["Boegh et al. (2002): LAI ≈ 3.618×EVI − 0.118, originally fit on MODIS EVI but commonly reused as a cheap LAI proxy on any sensor's EVI in absence of a real biophysical (neural-net) processor. Needs true reflectance (÷10000), same as EVI/GEMI above.", "⚠️ Empirical linear fit, not a physically-retrieved LAI (like ESA's Sentinel-2 Biophysical Processor) — treat as a relative canopy-density indicator, not an absolute leaf-area figure. Clamped at 0 since the fit can dip slightly negative on bare soil/water."],
+  },
+  CCC: {
+    label: "CCC canopy chlorophyll content (red-edge)",
+    // "spectral_r" زي MTCI/NDRE/RECI/RENDVI عمدًا — نفس عيلة كلوروفيل red-edge.
+    gradient: "linear-gradient(90deg,#d73027,#fdae61,#ffffbf,#a6d96a,#4575b4,#313695)",
+    min: "low chlorophyll content",
+    mid: "moderate",
+    max: "high chlorophyll content",
+    meaning: ["Gitelson et al. (2003) / Clevers & Gitelson (2013): CIrededge = (NIR/RedEdge1) − 1, B08/B05. Correlates strongly with canopy chlorophyll content (LAI × leaf chlorophyll) further into dense canopy than NDVI/NDRE, which saturate earlier.", "⚠️ Reported as the index itself, not a calibrated µg/cm² figure — there's no single universal regression constant across crops/growth stages in the literature. Simple ratio, scale-invariant like RECI/GCI, no reflectance normalization needed."],
   },
 
   // ── Sentinel-1 (Radar) ──────────────────────────────────────────────────

@@ -1,9 +1,22 @@
 import type { Metadata } from "next";
+import { DM_Sans, Noto_Sans_Arabic } from "next/font/google";
 import { LangProvider } from "./_components/translations";
 import "./globals.css";
-import { SessionProvider } from "next-auth/react"
 import Providers from "./providers";
-import { SpeedInsights } from "@vercel/speed-insights/next"
+
+const dmSans = DM_Sans({
+  subsets: ["latin"],
+  weight: ["300", "400", "500", "600", "700"],
+  variable: "--font-dm-sans",
+  display: "swap",
+});
+
+const notoSansArabic = Noto_Sans_Arabic({
+  subsets: ["arabic"],
+  weight: ["300", "400", "500", "600", "700"],
+  variable: "--font-noto-arabic",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "GeoSense AI",
@@ -16,13 +29,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html suppressHydrationWarning>
+    <html suppressHydrationWarning className={`${dmSans.variable} ${notoSansArabic.variable}`}>
       <body>
         <LangProvider>
-          <Providers>
-            {children}
-            <SpeedInsights />
-          </Providers>
+          <Providers>{children}</Providers>
         </LangProvider>
       </body>
     </html>
