@@ -222,3 +222,42 @@
     grid-template-columns: 1fr !important;
   }
 }
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    box-sizing: border-box;
+  }
+
+  html {
+    width: 100%;
+    overflow-x: hidden;
+    text-size-adjust: 100%;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+    font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
+  }
+
+  .font-arabic {
+    font-family: var(--font-noto-arabic), 'Noto Sans Arabic', sans-serif !important;
+  }
+
+  img,
+  svg,
+  canvas,
+  video {
+    max-width: 100%;
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    min-width: 0;
+  }
+}

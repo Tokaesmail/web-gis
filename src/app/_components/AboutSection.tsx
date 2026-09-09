@@ -200,8 +200,7 @@ export default function AboutSection() {
         fontFamily: isRTL ? "'Noto Sans Arabic', sans-serif" : "'DM Sans', sans-serif",
       }}
     >
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Noto+Sans+Arabic:wght@300;400;500;600&display=swap');
+            <style>{`
         .about-tab-btn { background: none; border: none; cursor: pointer; transition: all .2s; }
         .about-tab-btn:hover { color: #e2e8f0 !important; }
         .about-point { display: flex; align-items: flex-start; gap: 10px; }

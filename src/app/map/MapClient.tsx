@@ -4,21 +4,21 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { useLang } from "../_components/translations";
-import AnalysisSidebar from "../_components/AnalysisSidebar/AnalysisSidebar";
-import AIAssistant from "../_components/AIAssistant/AIAssistant";
+
 
 import { DrawTool, SatKey, CaptureResult, CaptureTarget } from "./mapTypes_proxy";
 import MapNavbar from "./MapNavbar";
 import MapToolbar from "./MapToolbar";
 import MapSearch from "./MapSearch";
 import MapLayerBar from "./MapLayerBar";
-import LeafletMap from "./LeafletMap";
-import { FloatingElevationPanel } from "../_components/AnalysisSidebar/ElevationContourPanel";
-import CoordsPopup from "./CoordsPopup";
-import AITriggerButton from "./AITriggerButton";
-import Mapbox3DView from "./Mapbox3DView";
+import dynamic from "next/dynamic";
+
+const LeafletMap = dynamic(() => import("./LeafletMap"), { ssr: false });
+const Mapbox3DView = dynamic(() => import("./Mapbox3DView"), { ssr: false });
+const AnalysisSidebar = dynamic(() => import("../_components/AnalysisSidebar/AnalysisSidebar"), { ssr: false });
+const AIAssistant = dynamic(() => import("../_components/AIAssistant/AIAssistant"), { ssr: false });
+const ProjectStartDialog = dynamic(() => import("./projects/ProjectStartDialog"), { ssr: false });
 import LayerPanel, { MapLayer } from "./LayerPanel";
-import ProjectStartDialog from "./projects/ProjectStartDialog";
 import { updateProject } from "./projects/projectStorage";
 import type { ProjectSnapshot, UserProject } from "./projects/projectTypes";
 import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from "../_components/AnalysisSidebar/ChangeDetectionPanel";
@@ -26,6 +26,9 @@ import type { SuperResolutionPreviewConfig } from "../_components/AnalysisSideba
 import type { SatellitePreviewConfig } from "../_components/AnalysisSidebar/SatelliteDataPanel";
 import type { PalmHeatmapPreviewConfig, PalmPointsPreviewConfig } from "../_components/AnalysisSidebar/PalmTreesPanel";
 import { SOURCE_META } from "../_components/AnalysisSidebar/SatellitePipelines";
+import AITriggerButton from "./AITriggerButton";
+import { FloatingElevationPanel } from "../_components/AnalysisSidebar/ElevationContourPanel";
+import CoordsPopup from "./CoordsPopup";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
 const EXTRUSION_CFG_STORAGE_KEY    = "uploaded_geojson_extrusion_cfg_v1";

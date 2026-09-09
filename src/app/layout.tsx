@@ -32,7 +32,9 @@ export default function RootLayout({
     <html suppressHydrationWarning className={`${dmSans.variable} ${notoSansArabic.variable}`}>
       <body>
         <LangProvider>
-          <Providers>{children}</Providers>
+          <Providers>
+            {children}
+          </Providers>
         </LangProvider>
       </body>
     </html>

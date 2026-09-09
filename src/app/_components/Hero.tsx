@@ -63,10 +63,6 @@ export default function Hero() {
       />
 
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Noto+Sans+Arabic:wght@300;400;500;600&display=swap');
-        body { font-family: 'DM Sans', sans-serif; }
-        .font-arabic { font-family: 'Noto Sans Arabic', sans-serif !important; }
-
         @keyframes slowRotate  { to { transform: rotate(360deg); } }
         @keyframes revRotate   { to { transform: rotate(-360deg); } }
         @keyframes blink       { 0%,100%{opacity:1} 50%{opacity:.2} }
