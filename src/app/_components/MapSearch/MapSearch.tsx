@@ -54,7 +54,7 @@ export default function MapSearch({ onSelect }: MapSearchProps) {
     <div className="absolute top-4 left-1/2 -translate-x-1/2 z-1000 w-[340px] sm:w-[420px]">      {/* Input */}
       <div
         className={`
-          flex items-center gap-2.5 bg-[#0a1628]/95 backdrop-blur-md
+          flex items-center gap-2.5 bg-[#0a1628]/95 
           border rounded-xl px-3.5 py-2.5
           shadow-[0_8px_32px_rgba(0,0,0,0.5)]
           transition-all duration-200
@@ -96,7 +96,7 @@ export default function MapSearch({ onSelect }: MapSearchProps) {
 
       {/* Results dropdown */}
       {open && (
-        <div className="mt-1.5 bg-[#0a1628]/98 backdrop-blur-md border border-white/10 rounded-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)] overflow-hidden">
+        <div className="mt-1.5 bg-[#0a1628]/98  border border-white/10 rounded-xl shadow-[0_16px_48px_rgba(0,0,0,0.6)] overflow-hidden">
           {results.map((r, i) => (
             <button
               key={r.id}

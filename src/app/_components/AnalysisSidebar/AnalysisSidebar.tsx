@@ -202,7 +202,7 @@ export default function AnalysisSidebar(
             opacity: activePanel ? 1 : 0,
           }}
         >
-          <div className="h-full bg-[#070f1e]/97 backdrop-blur-xl border-l border-white/[0.08] flex flex-col overflow-hidden shadow-[-8px_0_32px_rgba(0,0,0,0.4)]" style={{ width: `min(${sidebarWidth}px, calc(100vw - 52px))` }}>
+          <div className="h-full bg-[#070f1e]/97  border-l border-white/[0.08] flex flex-col overflow-hidden shadow-[-8px_0_32px_rgba(0,0,0,0.4)]" style={{ width: `min(${sidebarWidth}px, calc(100vw - 52px))` }}>
             {/* Drag handle */}
             <div
               onMouseDown={startResize}

@@ -1344,11 +1344,6 @@ useEffect(() => {
 
   return (
     <div className={`flex flex-col w-full h-[100dvh] min-h-[100dvh] bg-[#040d1a] overflow-hidden ${isRTL ? "font-arabic" : ""}`}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600&family=Noto+Sans+Arabic:wght@400;600&display=swap');
-        body { font-family: 'DM Sans', sans-serif; margin: 0; }
-        .font-arabic { font-family: 'Noto Sans Arabic', sans-serif !important; }
-      `}</style>
 
       {!isFullscreen && (
         <MapNavbar
@@ -1530,7 +1525,7 @@ useEffect(() => {
               const unitIdx = UNITS.findIndex(u => u.key === areaUnit);
               const nextUnit = UNITS[(unitIdx + 1) % UNITS.length];
               return (
-                <div className="absolute bottom-20 sm:bottom-24 left-1/2 -translate-x-1/2 z-[1000] w-[min(22rem,calc(100vw-96px))] px-3 sm:px-4 py-2.5 bg-[#0a1628]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl animate-fadeUp pointer-events-auto">
+                <div className="absolute bottom-20 sm:bottom-24 left-1/2 -translate-x-1/2 z-[1000] w-[min(22rem,calc(100vw-96px))] px-3 sm:px-4 py-2.5 bg-[#0a1628]/90  border border-white/10 rounded-2xl shadow-2xl animate-fadeUp pointer-events-auto">
                   {/* header row */}
                   <div className="flex items-center gap-3">
                     <div className="w-9 h-9 rounded-xl bg-cyan-400/10 border border-cyan-400/20 flex items-center justify-center text-cyan-400 shrink-0">
@@ -1587,7 +1582,7 @@ useEffect(() => {
             {captures.length > 0 && (
               <div className={`absolute top-[4.5rem] sm:top-20 z-[1000] w-[min(12rem,calc(100vw-5rem))] space-y-3 animate-fadeUp max-h-[46vh] sm:max-h-[70vh] overflow-y-auto custom-scroll pr-2 pointer-events-auto
                 ${isRTL ? "left-14 sm:left-16" : "right-14 sm:right-16"}`}>
-                <div className="flex items-center justify-between bg-[#0a1628]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-2 sticky top-0 z-10">
+                <div className="flex items-center justify-between bg-[#0a1628]/80  border border-white/10 rounded-lg px-3 py-2 sticky top-0 z-10">
                   <span className="text-[0.65rem] font-bold text-cyan-400 uppercase tracking-wider">Captures ({captures.length})</span>
                   <button onClick={() => {
                     setCaptures((prev) => {
@@ -1600,7 +1595,7 @@ useEffect(() => {
                   }} className="text-[0.6rem] text-slate-500 hover:text-red-400 cursor-pointer">Clear</button>
                 </div>
                 {captures.map((cap) => (
-                  <div key={cap.id} className="group relative bg-[#0a1628]/95 backdrop-blur-md border border-white/10 rounded-xl overflow-hidden shadow-xl">
+                  <div key={cap.id} className="group relative bg-[#0a1628]/95  border border-white/10 rounded-xl overflow-hidden shadow-xl">
                     <div className="aspect-video bg-black/40">
                       {cap?.url && (
                         <button

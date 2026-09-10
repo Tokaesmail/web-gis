@@ -225,7 +225,7 @@ export default function Mapbox3DView({
       `}</style>
 
       {/* ── Top bar ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 py-2.5 bg-[#0a1628]/95 backdrop-blur-md border-b border-white/10 z-10 flex-shrink-0">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 py-2.5 bg-[#0a1628]/95  border-b border-white/10 z-10 flex-shrink-0">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <button
             onClick={onClose}
@@ -290,7 +290,7 @@ export default function Mapbox3DView({
         {/* View Controls — pointer-events-auto على الـ panel بس مش على الـ map */}
         {!loading && !error && (
           <div
-            className="absolute bottom-3 left-3 right-3 sm:right-auto sm:bottom-6 sm:left-4 z-20 flex flex-col gap-3 bg-[#0a1628]/95 backdrop-blur-md border border-white/10 rounded-xl p-3 sm:p-4 sm:w-52 shadow-lg"
+            className="absolute bottom-3 left-3 right-3 sm:right-auto sm:bottom-6 sm:left-4 z-20 flex flex-col gap-3 bg-[#0a1628]/95 border border-white/10 rounded-xl p-3 sm:p-4 sm:w-52 shadow-lg"
             style={{ pointerEvents: "all" }}
           >
             <p className="text-[0.65rem] text-slate-500 uppercase tracking-widest font-medium">View Controls</p>

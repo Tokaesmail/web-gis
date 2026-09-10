@@ -636,7 +636,7 @@ export function FloatingElevationPanel({
       className="flex flex-col rounded-2xl overflow-hidden
         shadow-[0_8px_40px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.06)]
         border border-white/[0.08]
-        bg-[#040d1a]/90 backdrop-blur-xl"
+        bg-[#040d1a]/90 "
     >
       {/* ── header / drag handle ── */}
       <div

@@ -9,6 +9,7 @@
 // ⑤ AOI Editor: تعديل الرؤوس (move vertices) + Validation (self-intersection + max size)
 
 import { useEffect, useRef, useState } from "react";
+import "leaflet/dist/leaflet.css";
 import { toast } from "sonner";
 import { useMapCanvas }      from "./useMapCanvas";
 import { useLang }           from "../_components/translations";
@@ -1534,11 +1535,10 @@ if (!restoredRef.current) {
       baseTileRef.current = L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
         attribution: "Tiles © Esri",
-        maxZoom: 22,
+        maxZoom: 18,
         maxNativeZoom: 18,
         pane: "satellitePane", crossOrigin: "anonymous",
       }).addTo(map);
-      attachTileErrorGuard(baseTileRef.current);
 
       labelsLayerRef.current = L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
@@ -2152,7 +2152,7 @@ console.log("Area m²:", turf.area(polygon));
 
   return (
     <>
-      <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+      {/* <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" /> */}
       <style>{`
 .leaflet-control-scale-line{background:rgba(4,13,26,.85)!important;border:1px solid rgba(0,200,255,.4)!important;border-top:2px solid rgba(0,200,255,.8)!important;color:#e2e8f0!important;font-size:10px!important;font-weight:600!important;letter-spacing:.05em!important;padding:2px 6px!important;border-radius:0 0 4px 4px!important;backdrop-filter:blur(4px)!important;box-shadow:0 2px 8px rgba(0,0,0,.5)!important;white-space:nowrap!important}
 .leaflet-control-scale{margin-bottom:8px!important;margin-left:12px!important}

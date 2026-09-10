@@ -95,9 +95,9 @@ export default function AIAssistant({ open, onClose }: AIAssistantProps) {
 
       {/* Panel */}
       <div
-        className={`
+                className={`
           fixed bottom-2 left-2 right-2 sm:left-auto sm:bottom-4 sm:right-[60px] z-1000 w-auto sm:w-[380px]
-          bg-[#070f1e]/98 backdrop-blur-xl
+          bg-[#070f1e]
           border border-white/10 rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.7)]
           flex flex-col overflow-hidden
           transition-all duration-300 ease-out

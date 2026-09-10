@@ -309,7 +309,7 @@ export default function JSONUploadModal({
         }
       }}
     >
-      <div className="absolute inset-0 bg-black/55 backdrop-blur-sm" />
+      <div className="absolute inset-0 bg-black/55 " />
 
       <div className="relative z-10 w-full max-w-[480px] max-h-[88dvh] flex flex-col bg-[#060d1b] border border-white/[0.1] rounded-2xl shadow-[0_32px_96px_rgba(0,0,0,0.8)] overflow-hidden">
 

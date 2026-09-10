@@ -25,8 +25,7 @@ export default function MapLayerBar({
   return (
     <div className="absolute bottom-2 left-2 right-2 sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-max sm:-translate-x-1/2 z-1000 flex items-center gap-2 pointer-events-auto overflow-x-auto sm:overflow-visible app-scroll pb-1 sm:pb-0">
       {/* Satellite selector */}
-      <div className="flex shrink-0 items-center bg-[#0a1628] border border-white/10 rounded-full px-1 py-1 shadow-lg gap-0.5">
-        {(Object.keys(SAT_LAYERS) as SatKey[]).map((s) => (
+      <div className="flex shrink-0 items-center bg-[#0a1628] border border-white/10 rounded-full px-1 py-1 shadow-lg gap-0.5">        {(Object.keys(SAT_LAYERS) as SatKey[]).map((s) => (
           <button
             key={s}
             onClick={() => handleSat(s)}

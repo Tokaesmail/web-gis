@@ -50,7 +50,7 @@ export default function AnalysisDashboard({
     >
       {/* Drag handle bar */}
       <div
-        className="flex justify-center py-2 cursor-pointer bg-[#070f1e]/95 backdrop-blur-xl border-t border-white/[0.08] rounded-t-2xl"
+        className="flex justify-center py-2 cursor-pointer bg-[#070f1e]/95  border-t border-white/[0.08] rounded-t-2xl"
         onClick={() => setCollapsed((c) => !c)}
       >
         <div className="w-8 h-1 rounded-full bg-white/20" />
@@ -58,7 +58,7 @@ export default function AnalysisDashboard({
 
       <div
         className={`
-          bg-[#070f1e]/98 backdrop-blur-xl border-t border-white/[0.06]
+          bg-[#070f1e]/98 border-t border-white/[0.06]
           overflow-hidden transition-all duration-300
           ${collapsed ? "max-h-0" : "max-h-[340px]"}
         `}

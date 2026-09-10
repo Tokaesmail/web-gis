@@ -1563,7 +1563,7 @@ function ChangeCompareModal({
       style={{ pointerEvents: "all" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" />
+      <div className="absolute inset-0 bg-black/80 " />
 
       <div className="relative z-10 flex w-full max-w-6xl max-h-[95dvh] flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-[#060d1b] shadow-[0_32px_96px_rgba(0,0,0,0.85)]">
         {/* Header */}

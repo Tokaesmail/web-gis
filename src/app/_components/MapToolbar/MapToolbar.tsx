@@ -79,7 +79,7 @@ export default function MapToolbar({ onToolChange, onUndo, onClear }: MapToolbar
 
   return (
     <div className="absolute left-4 top-1/2 -translate-y-1/2 z-10000 flex flex-col gap-1.5">      {/* Tool buttons */}
-      <div className="flex flex-col gap-1 bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.4)]">
+      <div className="flex flex-col gap-1 bg-[#0a1628]/90 border border-white/10 rounded-xl p-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.4)]">
         {tools.map((tool) => (
           <div key={tool.id} className="relative group">
             <button
@@ -147,7 +147,7 @@ export default function MapToolbar({ onToolChange, onUndo, onClear }: MapToolbar
       </div>
 
       {/* Zoom controls */}
-      <div className="flex flex-col gap-0.5 bg-[#0a1628]/90 backdrop-blur-md border border-white/10 rounded-xl p-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.4)]">
+      <div className="flex flex-col gap-0.5 bg-[#0a1628]/90 border border-white/10 rounded-xl p-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.4)]">
         <button className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-white/8 transition-all cursor-pointer text-lg font-light">
           +
         </button>

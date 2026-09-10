@@ -75,7 +75,7 @@ export default function ProjectStartDialog({
   };
 
   return (
-    <div className="absolute inset-0 z-[1400] flex items-center justify-center bg-[#020617]/72 px-4 backdrop-blur-md">
+    <div className="absolute inset-0 z-[1400] flex items-center justify-center bg-[#020617]/72 px-4">
       <div className="w-full max-w-4xl overflow-hidden rounded-2xl border border-white/[0.1] bg-[#071120] shadow-2xl">
         <div className="grid min-h-[420px] md:grid-cols-[1.05fr_0.95fr]">
           <section className="border-b border-white/[0.08] p-5 md:border-b-0 md:border-r">
