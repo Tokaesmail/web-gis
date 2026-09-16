@@ -82,7 +82,7 @@ export default function MapPage() {
   const [captures,         setCaptures]          = useState<any[]>([]);
   const [selectedFeature,  setSelectedFeature]   = useState<any>(null);
   const [view3D,           setView3D]            = useState<{ lat: number; lng: number; name?: string; geojson?: GeoJSON.FeatureCollection } | null>(null);
-  const [activePanel,      setActivePanel]       = useState<string | null>("overview");
+  const [activePanel,      setActivePanel]       = useState<string | null>(null);
   const [projectStartOpen, setProjectStartOpen]  = useState(true);
   const [activeProject,    setActiveProject]     = useState<UserProject | null>(null);
   const [projectSaving,    setProjectSaving]     = useState(false);
@@ -91,9 +91,6 @@ export default function MapPage() {
   const [initialFeaturesToRestore, setInitialFeaturesToRestore] = useState<GeoJSON.Feature[] | null>(null);
   const [savedAnalyses, setSavedAnalyses] = useState<import("./projects/projectTypes").SavedAnalysisConfig[]>([]);
 
-  const [geoJsonData,     setGeoJsonData]     = useState<any>(null);
-  const [geoJsonLoading,  setGeoJsonLoading]  = useState(false);
-  const [geoJsonError,    setGeoJsonError]    = useState<string | null>(null);
   const [uniData,         setUniData]         = useState<any>(null);
   const [uniLoading,      setUniLoading]      = useState(false);
   const [uniError,        setUniError]        = useState<string | null>(null);
@@ -123,7 +120,6 @@ export default function MapPage() {
 
   // ── Layer panel state ────────────────────────────────────────────────────
   const [layers, setLayers] = useState<MapLayer[]>([
-    { id: "contours",   name: "Contours",           nameAr: "خطوط الكنتور",     type: "vector", visible: true,  opacity: 1,    color: "#00d4ff", source: "Backend API · /gis/contours" },
     { id: "osm",        name: "OpenStreetMap Base",  nameAr: "خريطة OSM الأساسية", type: "tile",   visible: true,  opacity: 1 },
     { id: "satellite",  name: "Satellite Imagery",   nameAr: "صور الأقمار الصناعية", type: "raster", visible: false, opacity: 0.9,  source: "Esri World Imagery" },
     { id: "legacy-viewer", name: "Legacy Viewer",    nameAr: "عارض البلاطات القديمة", type: "raster", visible: false, opacity: 1, source: "Legacy PNG tiles" },
@@ -193,28 +189,6 @@ export default function MapPage() {
       isRestored.current = true;
     } catch (e) { console.error("Storage error", e); }
   }, []);
-
-  // ── 2. Contours ───────────────────────────────────────────────────────────
-  useEffect(() => {
-    let isMounted = true;
-    const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://gis-back-chi.vercel.app";
-    const token = (session?.user as any)?.accessToken as string | undefined;
-
-    setGeoJsonLoading(true);
-    fetch(`${BASE_URL}/gis/contours`, {
-      headers: { "Accept-Encoding": "gzip, deflate, br", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    })
-      .then((r) => { if (!r.ok) throw new Error(`Contours API ${r.status}`); return r.json(); })
-      .then((data) => {
-        if (!isMounted) return;
-        if (!data || !data.type || !Array.isArray(data.features)) throw new Error("Invalid GeoJSON from contours API");
-        setGeoJsonData(data); setGeoJsonError(null);
-      })
-      .catch((err) => { if (isMounted) setGeoJsonError(err.message); })
-      .finally(() => { if (isMounted) setGeoJsonLoading(false); });
-
-    return () => { isMounted = false; };
-  }, [session?.user]);
 
   useEffect(() => {
     if (sessionStatus === "loading") return;
@@ -373,16 +347,6 @@ export default function MapPage() {
     return { type: "FeatureCollection", features } as any;
   }, [uploadedGeoJsonMap]);
 
-  const contourLayer = useMemo(() => layers.find((l) => l.id === "contours"), [layers]);
-  const contourGeoJsonStyle = useMemo(() => {
-    const opacity = contourLayer?.opacity ?? 1;
-    return {
-      color: contourLayer?.color ?? "#00d4ff",
-      opacity: 0.85 * opacity,
-      fillOpacity: 0.08 * opacity,
-    };
-  }, [contourLayer?.color, contourLayer?.opacity]);
-
   // ── Stable callbacks ──────────────────────────────────────────────────────
   const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json", isUpdate: boolean = false) => {
     setUploadedGeoJsonMap((prev) => {
@@ -436,7 +400,6 @@ export default function MapPage() {
     const layer = layers.find((item) => item.id === layerOrFileName);
     const geojson =
       layerOrFileName === "universities" ? uniData :
-      layerOrFileName === "contours" ? geoJsonData :
       fileName ? uploadedGeoJsonMap[fileName] :
       null;
 
@@ -492,7 +455,7 @@ export default function MapPage() {
         geojson,
       });
     }
-  }, [geoJsonData, layers, uniData, uploadedGeoJsonMap]);
+  }, [layers, uniData, uploadedGeoJsonMap]);
 
   // Sync uploadedGeoJsonMap to localStorage
  // ضيفي ref جديد جنب الـ refs التانية
@@ -721,7 +684,6 @@ useEffect(() => {
 
   const handleLayerRemove  = useCallback((id: string) => {
     setLayers((prev) => prev.filter((l) => l.id !== id));
-    if (id === "contours") setGeoJsonData(null);
     if (id.startsWith("uploaded_")) {
         const fileName = id.replace("uploaded_", "");
         handleDeleteGeoJSON(fileName);
@@ -731,7 +693,6 @@ useEffect(() => {
   const handleLayerZoom    = useCallback((id: string) => {
     // Fly to appropriate location for the layer
     if (id === "universities") flyToRef.current?.(30.05, 31.23);
-    if (id === "contours") flyToRef.current?.(30.05, 31.23);
     if (id.startsWith("uploaded_")) {
         const fileName = id.replace("uploaded_", "");
         const gj = uploadedGeoJsonMap[fileName];
@@ -1079,10 +1040,9 @@ useEffect(() => {
     selectedArea: selectedArea.ha > 0 ? selectedArea : undefined,
     layers: layers.map(({ id: _id, ...rest }) => rest),
     geoJsonFeatures: [
-      ...(geoJsonData?.features ?? []),
       ...(combinedGeoJson?.features ?? []),
     ].slice(0, 200),
-  }), [coords, selectedArea, layers, geoJsonData, combinedGeoJson]);
+  }), [coords, selectedArea, layers, combinedGeoJson]);
 
   const currentProjectSnapshot = useMemo<ProjectSnapshot>(() => {
     const today = new Date();
@@ -1170,7 +1130,7 @@ useEffect(() => {
   const handleCreateStartupProject = useCallback((project: UserProject) => {
     setActiveProject(project);
     setProjectStartOpen(false);
-    setActivePanel("overview");
+    setActivePanel(null);
     lastActivePanelRef.current = "overview";
   }, []);
 
@@ -1394,10 +1354,8 @@ useEffect(() => {
             onSwipeOverlayRegister={(h) => { swipeCompareRef.current = h as any; }}
             onSuperResOverlayRegister={(h) => { superResOverlayRef.current = h as any; }}
             onPointsOverlayRegister={(h) => { pointsOverlayRef.current = h as any; }}
-            geoJsonData={contourLayer?.visible ? geoJsonData : null}
             extraGeoJsonData={combinedGeoJson}
             latestGeoJson={latestGeoJson}
-            geoJsonStyle={contourGeoJsonStyle}
             geoJsonFitBounds={false}
             extrusionConfig={extrusionCfg || { enabled: false }}
             onFeatureClick={handleFeatureClick}
@@ -1491,7 +1449,6 @@ useEffect(() => {
                 coords: coords ?? undefined,
                 layers: layers.map(({ id: _id, ...rest }) => rest),
                 geoJsonFeatures: [
-                  ...(geoJsonData?.features ?? []),
                   ...(combinedGeoJson?.features ?? []),
                 ].slice(0, 100),
                 timestamp: new Date().toISOString()

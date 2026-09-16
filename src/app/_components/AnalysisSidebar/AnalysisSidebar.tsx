@@ -10,8 +10,6 @@ import { panels, type PanelId } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
 import { type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
-import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
-import VolumeCalculationPanel from "./VolumeCalculationPanel";
 import { OPEN_RASTER_CALCULATOR_EVENT } from "./sharedSceneSelection";
 import { RasterCalcSidebarItem, PALM_ICON, type RasterTabKey, type PalmHeatmapPreviewConfig, type PalmPointsPreviewConfig } from "./PalmTreesPanel";
 
@@ -103,7 +101,7 @@ export default function AnalysisSidebar(
   onSuperResolutionPreview?: (config: SuperResolutionPreviewConfig | null) => void;
   onOpenElevationFloat?: () => void;
 }) {
-  const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>("overview");
+  const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>(null);
   // Which Raster Calc sub-tab is active — "default" (the original Raster
   // Calculator) or "palms" (PalmTreesPanel.tsx, a fully separate file).
   // Lives here (not inside PanelContent) so it survives re-renders of the

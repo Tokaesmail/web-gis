@@ -1,25 +1,43 @@
-﻿import React, { useRef, useState } from "react";
+﻿import React, { useRef, useState, useEffect } from "react";
+import dynamic from "next/dynamic";
 import { useLang } from "../translations";
-import TemplateMatchPanel, { type MapCapture } from "./TemplateMatchPanel";
-import LayerPanel, { MapLayer } from "../../map/LayerPanel";
-import ExportButton from "../../map/ExportButton";
-import { CapturesPanel } from "./CapturesPanel";
-import { NDVILivePanel, OverviewLivePanel, WeatherLivePanel } from "./LivePanels";
-import PlanetaryRasterPanel from "./PlanetaryRasterPanel";
-import PalmTreesPanel, { type RasterTabKey, type PalmHeatmapPreviewConfig, type PalmPointsPreviewConfig } from "./PalmTreesPanel";
-import { SuperResolutionPanel, type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
-import { SatelliteDataPanel, type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
-import { ChangeDetectionPanel, type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
 import { getMidCoords } from "./geoFeatureUtils";
-import { PanelId } from "./panels";
-import { CropsPanel } from "./CropsPanel";
-import VolumeCalculationPanel from "./VolumeCalculationPanel";
-import ElevationContourPanel from "./ElevationContourPanel";
-import { AnalysesManagerPanel } from "./AnalysesManagerPanel";
+import { PanelId, LiveDashboardTab, InsightTab } from "./panels";
+
+// ── type-only imports (بلا وزن في الـ bundle) ──────────────────────────────
+import type { MapCapture } from "./TemplateMatchPanel";
+import type { MapLayer } from "../../map/LayerPanel";
+import type { RasterTabKey, PalmHeatmapPreviewConfig, PalmPointsPreviewConfig } from "./PalmTreesPanel";
+import type { SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
+import type { RasterPreviewConfig, SatellitePreviewConfig } from "./SatelliteDataPanel";
+import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
+import type { GapFillPreviewConfig } from "./GapFillNDVIPanel";
+
+// ── lazy-loaded components (كل واحد chunk لوحده) ───────────────────────────
+const TemplateMatchPanel     = dynamic(() => import("./TemplateMatchPanel"), { ssr: false });
+const LayerPanel              = dynamic(() => import("../../map/LayerPanel"), { ssr: false });
+const ExportButton            = dynamic(() => import("../../map/ExportButton"), { ssr: false });
+const CapturesPanel           = dynamic(() => import("./CapturesPanel").then(m => m.CapturesPanel), { ssr: false });
+const NDVILivePanel           = dynamic(() => import("./LivePanels").then(m => m.NDVILivePanel), { ssr: false });
+const OverviewLivePanel       = dynamic(() => import("./LivePanels").then(m => m.OverviewLivePanel), { ssr: false });
+const WeatherLivePanel        = dynamic(() => import("./LivePanels").then(m => m.WeatherLivePanel), { ssr: false });
+const PlanetaryRasterPanel    = dynamic(() => import("./PlanetaryRasterPanel"), { ssr: false });
+const PalmTreesPanel          = dynamic(() => import("./PalmTreesPanel"), { ssr: false });
+const SuperResolutionPanel    = dynamic(() => import("./SuperResolutionPanel").then(m => m.SuperResolutionPanel), { ssr: false });
+const SatelliteDataPanel      = dynamic(() => import("./SatelliteDataPanel").then(m => m.SatelliteDataPanel), { ssr: false });
+const ChangeDetectionPanel    = dynamic(() => import("./ChangeDetectionPanel").then(m => m.ChangeDetectionPanel), { ssr: false });
+const CropsPanel              = dynamic(() => import("./CropsPanel").then(m => m.CropsPanel), { ssr: false });
+const VolumeCalculationPanel  = dynamic(() => import("./VolumeCalculationPanel"), { ssr: false });
+const ElevationContourPanel   = dynamic(() => import("./ElevationContourPanel"), { ssr: false });
+const AnalysesManagerPanel    = dynamic(() => import("./AnalysesManagerPanel").then(m => m.AnalysesManagerPanel), { ssr: false });
+const GapFillNDVIPanel        = dynamic(() => import("./GapFillNDVIPanel"), { ssr: false });
 
 export function PanelContent({
   id,
   rasterTab = "default",
+  insightTab = "gap-fill-ndvi",
+  liveDashboardTab,
+  onLiveDashboardTabChange,
   selectedFeature,
   uploadedGeoJsonMap,
   captures,
@@ -54,11 +72,17 @@ export function PanelContent({
   onChangeDetectionPreview,
   onChangeDetectionSwipe,
   onSuperResolutionPreview,
+  onGapFillPreview,
   onOpenElevationFloat,
 }: {
   id: PanelId;
   /** which Raster Calc sub-tab is active — set from AnalysisSidebar's hover flyout on the sidebar icon */
   rasterTab?: RasterTabKey;
+  /** which Insight sub-tab is active — set from AnalysisSidebar's hover flyout, same pattern as rasterTab. Only "gap-fill-ndvi" exists today; more Insight features branch on this as they ship. */
+  insightTab?: InsightTab;
+  /** which Live Dashboard sub-tab is active — set from AnalysisSidebar's hover flyout on the sidebar icon, same pattern as rasterTab */
+  liveDashboardTab?: LiveDashboardTab;
+  onLiveDashboardTabChange?: (tab: LiveDashboardTab) => void;
   onOpenElevationFloat?: () => void;
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
@@ -98,6 +122,8 @@ export function PanelContent({
   onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
   /** Puts the Super Resolution result on the actual map as a georeferenced overlay. Pass null to remove it. */
   onSuperResolutionPreview?: (config: SuperResolutionPreviewConfig | null) => void;
+  /** Puts the reconstructed NDVI layer on the actual map as a georeferenced overlay — same idea as onRasterPreview, for the Insight panel's Gap Fill NDVI feature. */
+  onGapFillPreview?: (config: GapFillPreviewConfig | null) => void;
 }) {
   const [ndviExportData, setNdviExportData] = useState<any>(null);
   const ndviPanelRef = useRef<HTMLDivElement>(null);
@@ -105,6 +131,16 @@ export function PanelContent({
   const weatherPanelRef = useRef<HTMLDivElement>(null);
   const cropsPanelRef = useRef<HTMLDivElement>(null);
   const { t, isRTL } = useLang();
+
+  // Active sub-tab for the merged "Live Dashboard" panel (Overview / Charts / Weather / Crop Insight).
+  // Falls back to internal state so the tab switcher below works even if no parent controls it,
+  // but stays in sync with liveDashboardTab if a parent (e.g. a sidebar flyout, like rasterTab) does.
+  const [activeLiveDashboardTab, setActiveLiveDashboardTab] = useState<LiveDashboardTab>(
+    liveDashboardTab ?? "overview"
+  );
+  useEffect(() => {
+    if (liveDashboardTab) setActiveLiveDashboardTab(liveDashboardTab);
+  }, [liveDashboardTab]);
 
   if (id === "satellite") {
     return <SatelliteDataPanel selectedFeature={selectedFeature} onPreview={onSatellitePreview} />;
@@ -125,6 +161,15 @@ export function PanelContent({
     );
   }
 
+  if (id === "insight") {
+    // Only one Insight feature exists today. As more ship (e.g. "anomaly-detect"),
+    // add them here as extra branches — same shape as the raster / rasterTab switch above.
+    if (insightTab === "gap-fill-ndvi") {
+      return <GapFillNDVIPanel selectedFeature={selectedFeature} onPreview={onGapFillPreview} />;
+    }
+    return <GapFillNDVIPanel selectedFeature={selectedFeature} onPreview={onGapFillPreview} />;
+  }
+
   if (id === "super-resolution") {
     return <SuperResolutionPanel selectedFeature={selectedFeature} onPreview={onSuperResolutionPreview} />;
   }
@@ -139,74 +184,114 @@ export function PanelContent({
     );
   }
 
-  if (id === "ndvi") {
-    const coords = getMidCoords(selectedFeature);
-
-    const exportBundle = {
-        coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
-        ndviData: ndviExportData,
-        title: "NDVI Vegetation Index Analysis"
-    };
-
-    return (
-        <div className="flex flex-col gap-4 min-h-full">
-            <div ref={ndviPanelRef} data-export-panel="ndvi">
-              <NDVILivePanel feature={selectedFeature} onExport={setNdviExportData} />
-            </div>
-            {selectedFeature && (
-              <div className="sticky bottom-0 z-20 pt-3 pb-1 bg-gradient-to-t from-[#070f1e] via-[#070f1e]/95 to-transparent">
-                <ExportButton data={exportBundle} panelRef={ndviPanelRef} reportType="ndvi" block />
-              </div>
-            )}
-        </div>
-    );
-  }
-
-  if (id === "overview") {
-    const p = selectedFeature?.properties ?? {};
-    const coords = getMidCoords(selectedFeature);
-    
-    const exportData = {
-      coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
-      layers: layers.map(({ id: _id, ...rest }) => rest),
-      geoJsonFeatures: selectedFeature ? [selectedFeature] : undefined,
-    };
-
-    return (
-      <div className="flex flex-col gap-4 min-h-full">
-        <div ref={overviewPanelRef} data-export-panel="overview">
-          <OverviewLivePanel feature={selectedFeature} />
-        </div>
-
-        {selectedFeature && (
-          <div className="sticky bottom-0 z-20 pt-3 pb-1 bg-gradient-to-t from-[#070f1e] via-[#070f1e]/95 to-transparent">
-            <ExportButton data={exportData} panelRef={overviewPanelRef} reportType="overview" block />
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  if (id === "weather") {
+  if (id === "live-dashboard") {
     const coords = getMidCoords(selectedFeature);
     const p = selectedFeature?.properties ?? {};
     const areaHa = typeof p.areaHa === "number" ? p.areaHa : typeof p.area === "number" ? p.area : undefined;
 
-    const exportData = {
-      title: "Weather Report",
-      coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
-      selectedArea: areaHa != null ? { name: String(p.name ?? p.label ?? "Selected Area"), ha: areaHa } : undefined,
-      timestamp: new Date().toISOString(),
-    };
+    const tabs: { key: LiveDashboardTab; labelEn: string; labelAr: string }[] = [
+      { key: "overview", labelEn: "Overview", labelAr: "نظرة عامة" },
+      { key: "ndvi", labelEn: "Charts", labelAr: "الرسوم البيانية" },
+      { key: "weather", labelEn: "Weather", labelAr: "الطقس" },
+      { key: "crops", labelEn: "Crop Insight", labelAr: "تحليل المحاصيل" },
+    ];
 
-    return (
-      <div className="flex flex-col gap-4 min-h-full">
+    // Build the body + export config for only the active tab. The other three panels are
+    // intentionally NOT rendered here — Weather/Overview/NDVI/Crops each fetch/poll live data,
+    // so mounting all four at once would multiply network calls and background work for no
+    // benefit. Switching tabs mounts the new one and unmounts the previous one.
+    let panelBody: React.ReactNode;
+    let exportRef: React.RefObject<null | HTMLDivElement> = overviewPanelRef;
+    let exportData: any;
+    let reportType: "overview" | "ndvi" | "weather" | "crops";
+
+    if (activeLiveDashboardTab === "ndvi") {
+      exportRef = ndviPanelRef;
+      reportType = "ndvi";
+      exportData = {
+        coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+        ndviData: ndviExportData,
+        title: "NDVI Vegetation Index Analysis",
+      };
+      panelBody = (
+        <div ref={ndviPanelRef} data-export-panel="ndvi">
+          <NDVILivePanel feature={selectedFeature} onExport={setNdviExportData} />
+        </div>
+      );
+    } else if (activeLiveDashboardTab === "weather") {
+      exportRef = weatherPanelRef;
+      reportType = "weather";
+      exportData = {
+        title: "Weather Report",
+        coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+        selectedArea: areaHa != null ? { name: String(p.name ?? p.label ?? "Selected Area"), ha: areaHa } : undefined,
+        timestamp: new Date().toISOString(),
+      };
+      panelBody = (
         <div ref={weatherPanelRef} data-export-panel="weather">
           <WeatherLivePanel feature={selectedFeature} />
         </div>
+      );
+    } else if (activeLiveDashboardTab === "crops") {
+      exportRef = cropsPanelRef;
+      reportType = "crops";
+      exportData = {
+        title: "Crop Health Report",
+        coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+      };
+      panelBody = (
+        <div ref={cropsPanelRef} data-export-panel="crops">
+          <CropsPanel selectedFeature={selectedFeature} />
+        </div>
+      );
+    } else {
+      exportRef = overviewPanelRef;
+      reportType = "overview";
+      exportData = {
+        coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
+        layers: layers.map(({ id: _id, ...rest }) => rest),
+        geoJsonFeatures: selectedFeature ? [selectedFeature] : undefined,
+      };
+      panelBody = (
+        <div ref={overviewPanelRef} data-export-panel="overview">
+          <OverviewLivePanel feature={selectedFeature} />
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex flex-col gap-4 min-h-full">
+        {/* Sub-tab switcher — same "pick one sub-view" idea as the Raster Calculator / Palm Trees flyout */}
+        <div
+          className="flex items-center gap-1 p-1 rounded-xl bg-white/[0.03] border border-white/[0.06]"
+          dir={isRTL ? "rtl" : "ltr"}
+        >
+          {tabs.map((tabItem) => {
+            const active = activeLiveDashboardTab === tabItem.key;
+            return (
+              <button
+                key={tabItem.key}
+                onClick={() => {
+                  setActiveLiveDashboardTab(tabItem.key);
+                  onLiveDashboardTabChange?.(tabItem.key);
+                }}
+                className={`flex-1 text-[0.68rem] font-medium px-2 py-1.5 rounded-lg transition-all duration-150 truncate
+                  ${active
+                    ? "bg-cyan-400/15 text-cyan-300 border border-cyan-400/30"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] border border-transparent"
+                  }`}
+              >
+                {isRTL ? tabItem.labelAr : tabItem.labelEn}
+              </button>
+            );
+          })}
+        </div>
+
+        {panelBody}
+
         {selectedFeature && (
           <div className="sticky bottom-0 z-20 pt-3 pb-1 bg-gradient-to-t from-[#070f1e] via-[#070f1e]/95 to-transparent">
-            <ExportButton data={exportData} panelRef={weatherPanelRef} reportType="weather" block />
+            <ExportButton data={exportData} panelRef={exportRef} reportType={reportType} block />
           </div>
         )}
       </div>
@@ -221,27 +306,6 @@ export function PanelContent({
       />
     );
   }
-
- if (id === "crops") {
-  const coords = getMidCoords(selectedFeature);
-  const exportData = {
-    title: "Crop Health Report",
-    coords: coords ? { lat: coords[0], lng: coords[1] } : undefined,
-  };
-
-  return (
-    <div className="flex flex-col gap-4 min-h-full">
-      <div ref={cropsPanelRef} data-export-panel="crops">
-        <CropsPanel selectedFeature={selectedFeature} />
-      </div>
-      {selectedFeature && (
-        <div className="sticky bottom-0 z-20 pt-3 pb-1 bg-gradient-to-t from-[#070f1e] via-[#070f1e]/95 to-transparent">
-          <ExportButton data={exportData} panelRef={cropsPanelRef} reportType="crops" block />
-        </div>
-      )}
-    </div>
-  );
-}
 
   if (id === "template-match") {
     return (

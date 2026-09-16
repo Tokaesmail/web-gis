@@ -25,7 +25,7 @@ interface Props {
   /** Ref to the live panel content to capture with html2canvas */
   panelRef?: RefObject<HTMLElement | null>;
   /** Report type for styling and filename */
-  reportType?: PanelReportType;
+  reportType?:"overview" | "ndvi" | "weather" | "crops";
   /** Icon-only button for tight toolbars */
   compact?: boolean;
   /** Full-width button for sidebar panels */
@@ -274,7 +274,7 @@ function ExportMenuPortal({
 export default function ExportButton({
   data,
   panelRef,
-  reportType = "general",
+  reportType = "overview",
   compact = false,
   block = false,
 }: Props) {
@@ -333,11 +333,11 @@ export default function ExportButton({
 
       await exportPanelReport({
         panelElement: panelEl,
-        reportType,
+        reportType: reportType || "overview",
         title: data.title ?? (isRTL ? "تقرير GeoSense AI" : "GeoSense AI Report"),
         locale: isRTL ? "ar" : "en",
         structuredRows: buildStructuredRows(data, isRTL),
-        filename: `GeoSense_${reportType}_${Date.now()}.pdf`,
+        filename: `GeoSense_${reportType || "overview"}_${Date.now()}.pdf`,
         captureMap: true,
       });
     } catch (err) {

@@ -14,8 +14,21 @@ export type PanelId =
   | "template-match"
   | "volume"
   | "super-resolution"
-  | "saved-analyses"; 
+  | "saved-analyses"
+  | "live-dashboard"
+  | "insight";
   // | "saved-analyses";
+
+/** Sub-tabs shown inside the merged "Live Dashboard" panel (Crop Insight / Charts / Overview / Weather). */
+export type LiveDashboardTab = "overview" | "ndvi" | "weather" | "crops";
+
+/**
+ * Sub-tabs shown inside the "Insight" panel — same idea as RasterTabKey for "raster"
+ * (hover the sidebar icon → flyout → pick a sub-feature). "gap-fill-ndvi" is the first
+ * one; add new union members here as more Insight features ship (e.g. "anomaly-detect",
+ * "yield-forecast") and branch on them in PanelContent.tsx the same way rasterTab is.
+ */
+export type InsightTab = "gap-fill-ndvi";
 
 interface PanelItem {
   id: PanelId;
@@ -97,18 +110,31 @@ export const panels: PanelItem[] = [
   },
 
   {
-    id: "crops",
-    labelEn: "Crop Insight",
-    labelAr: "Crop Insight",
+    id: "insight",
+    labelEn: "Insight",
+    labelAr: "الرؤى",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M12 21V10" />
-        <path d="M12 10c-4.5 0-7-2.4-7-6 4.2 0 6.2 1.9 7 6Z" />
-        <path d="M12 13c4.8 0 7-2.6 7-6-4.4 0-6.4 2-7 6Z" />
-        <path d="M7 21h10" />
+        <path d="M3 16l4-6 4 4 3-5" />
+        <path d="M14 9l3 5 4-6" strokeDasharray="2.2 2.2" />
+        <circle cx="21" cy="8" r="1.3" fill="currentColor" stroke="none" />
       </svg>
     ),
-    badge: "CALC",
+    badge: "NEW",
+  },
+  {
+    id: "live-dashboard",
+    labelEn: "Live Dashboard",
+    labelAr: "لوحة البيانات المباشرة",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="3" y="3" width="7" height="9" rx="1" />
+        <rect x="14" y="3" width="7" height="5" rx="1" />
+        <rect x="14" y="12" width="7" height="9" rx="1" />
+        <rect x="3" y="16" width="7" height="5" rx="1" />
+      </svg>
+    ),
+    badge: "LIVE",
   },
 
   {
@@ -135,38 +161,6 @@ export const panels: PanelItem[] = [
   //   ),
   //   badge: "7",
   // },
-  {
-    id: "ndvi",
-    labelEn: "Charts",
-    labelAr: "Charts",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-3 3" />
-      </svg>
-    ),
-    badge: "NEW",
-  },
-  {
-    id: "overview",
-    labelEn: "Overview",
-    labelAr: "Overview",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect width="7" height="7" x="3" y="3" rx="1" /><rect width="7" height="7" x="14" y="3" rx="1" />
-        <rect width="7" height="7" x="3" y="14" rx="1" /><rect width="7" height="7" x="14" y="14" rx="1" />
-      </svg>
-    ),
-  },
-  {
-    id: "weather",
-    labelEn: "Weather",
-    labelAr: "Weather",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
-      </svg>
-    ),
-  },
   {
     id: "elevation",
     labelEn: "Elevation",

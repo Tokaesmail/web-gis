@@ -13,7 +13,9 @@ import "leaflet/dist/leaflet.css";
 import { toast } from "sonner";
 import { useMapCanvas }      from "./useMapCanvas";
 import { useLang }           from "../_components/translations";
-import * as turf from "@turf/turf";
+import turfBbox from "@turf/bbox";
+import turfArea from "@turf/area";
+import { polygon as turfPolygon } from "@turf/helpers";
 import {
   DrawTool, SAT_LAYERS,
   SatKey, LatLngPoint, CaptureMetadata, CaptureResult, CaptureTarget,
@@ -128,16 +130,6 @@ const TOOL_COLORS = {
   measure:   { stroke: "#fbbf24", fill: "rgba(251,191,36,0.1)" },
   marker:    { stroke: "#f97316", fill: "rgba(249,115,22,0.85)" },
 };
-
-// ── ألوان contour ────────────────────────────────────────────────────────────
-function getContourColor(value: number): string {
-  if (value < 50)   return "#38bdf8";
-  if (value < 100)  return "#22d3ee";
-  if (value < 200)  return "#34d399";
-  if (value < 500)  return "#a3e635";
-  if (value < 1000) return "#fbbf24";
-  return "#f87171";
-}
 
 // ── ألوان نطاقات الجامعات (service area breaks) ──────────────────────────────
 // أخضر = 0-5 دق (الأقرب) | برتقالي = 5-10 | أحمر = 10-15 (الأبعد)
@@ -885,101 +877,145 @@ useEffect(() => {
       geoJsonLayerRef.current = null;
     }
 
-    const layer = L.geoJSON(geoJsonData, {
-      style: (feature: any) => {
-        const p = feature?.properties ?? {};
+    const styleFn = (feature: any) => {
+      const p = feature?.properties ?? {};
 
-        // ── University service-area polygons ─────────────────────────────────
-        if (p._layerType === "university" || p.FromBreak !== undefined) {
-          const uc = p._fillColor
-            ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
-            : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
-          return {
-            color:       geoJsonStyle?.color       ?? uc.stroke,
-            weight:      geoJsonStyle?.weight      ?? 1.5,
-            opacity:     geoJsonStyle?.opacity     ?? 0.9,
-            fillColor:   geoJsonStyle?.fillColor   ?? uc.fill,
-            fillOpacity: geoJsonStyle?.fillOpacity ?? 0.25,
-            dashArray:   geoJsonStyle?.dashArray,
-          };
-        }
-
-        // ── Contour lines (الافتراضي) ─────────────────────────────────────────
-        const c = getContourColor(p.Contour ?? 0);
+      // ── University service-area polygons ─────────────────────────────────
+      if (p._layerType === "university" || p.FromBreak !== undefined) {
+        const uc = p._fillColor
+          ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
+          : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
         return {
-          color:       geoJsonStyle?.color       ?? c,
+          color:       geoJsonStyle?.color       ?? uc.stroke,
           weight:      geoJsonStyle?.weight      ?? 1.5,
-          opacity:     geoJsonStyle?.opacity     ?? 0.85,
-          fillColor:   geoJsonStyle?.fillColor   ?? c,
-          fillOpacity: geoJsonStyle?.fillOpacity ?? 0.08,
+          opacity:     geoJsonStyle?.opacity     ?? 0.9,
+          fillColor:   geoJsonStyle?.fillColor   ?? uc.fill,
+          fillOpacity: geoJsonStyle?.fillOpacity ?? 0.25,
           dashArray:   geoJsonStyle?.dashArray,
         };
-      },
-      pointToLayer: (_: any, latlng: any) =>
-        L.circleMarker(latlng, {
-          radius: 4, color: "#22d3ee",
-          fillColor: "#22d3ee", fillOpacity: 0.8, weight: 2,
-        }),
-      onEachFeature: (feature: any, lyr: any) => {
-        if (!feature.properties) return;
-        const p = feature.properties;
+      }
 
-        // ── University tooltip ────────────────────────────────────────────────
-        if (p._layerType === "university" || p.FromBreak !== undefined) {
-          const uc = p._fillColor
-            ? { fill: p._fillColor }
-            : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
-          const rangeLabel =
-            p.ToBreak <= 5  ? "0 – 5 دقائق  (الأقرب)" :
-            p.ToBreak <= 10 ? "5 – 10 دقائق" :
-                              "10 – 15 دقيقة (الأبعد)";
-          lyr.bindTooltip(
-            `<div style="font-size:.75rem;line-height:1.5;direction:rtl">
-              <span style="color:${uc.fill};font-weight:700">${p.Name?.split(" : ")[0] ?? ""}</span><br/>
-              <span style="color:#cbd5e1">${rangeLabel}</span>
-            </div>`,
-            { sticky: true, className: "ndvi-tooltip" }
-          );
-          lyr.on("click", (e: any) => {
-            L.DomEvent.stopPropagation(e);
-            if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
-            if (geoJsonLayerRef.current) geoJsonLayerRef.current.resetStyle();
-            lyr.setStyle({ weight: 3, opacity: 1, fillOpacity: 0.45 });
-          });
-          return;
-        }
+      // ── الافتراضي العام (غير الجامعات) ─────────────────────────────────────
+      return {
+        color:       geoJsonStyle?.color       ?? "#00c8ff",
+        weight:      geoJsonStyle?.weight      ?? 1.5,
+        opacity:     geoJsonStyle?.opacity     ?? 0.85,
+        fillColor:   geoJsonStyle?.fillColor   ?? "#00c8ff",
+        fillOpacity: geoJsonStyle?.fillOpacity ?? 0.08,
+        dashArray:   geoJsonStyle?.dashArray,
+      };
+    };
 
-        // ── Contour tooltip ───────────────────────────────────────────────────
-        const contour = p.Contour;
+    const pointToLayerFn = (_: any, latlng: any) =>
+      L.circleMarker(latlng, {
+        radius: 4, color: "#22d3ee",
+        fillColor: "#22d3ee", fillOpacity: 0.8, weight: 2,
+      });
+
+    const onEachFeatureFn = (feature: any, lyr: any) => {
+      if (!feature.properties) return;
+      const p = feature.properties;
+
+      // ── University tooltip ────────────────────────────────────────────────
+      if (p._layerType === "university" || p.FromBreak !== undefined) {
+        const uc = p._fillColor
+          ? { fill: p._fillColor }
+          : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
+        const rangeLabel =
+          p.ToBreak <= 5  ? "0 – 5 دقائق  (الأقرب)" :
+          p.ToBreak <= 10 ? "5 – 10 دقائق" :
+                            "10 – 15 دقيقة (الأبعد)";
         lyr.bindTooltip(
-          `<span style="color:#22d3ee;font-weight:600;font-size:.72rem">Contour: ${contour}m</span>`,
+          `<div style="font-size:.75rem;line-height:1.5;direction:rtl">
+            <span style="color:${uc.fill};font-weight:700">${p.Name?.split(" : ")[0] ?? ""}</span><br/>
+            <span style="color:#cbd5e1">${rangeLabel}</span>
+          </div>`,
           { sticky: true, className: "ndvi-tooltip" }
         );
         lyr.on("click", (e: any) => {
           L.DomEvent.stopPropagation(e);
           if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
           if (geoJsonLayerRef.current) geoJsonLayerRef.current.resetStyle();
-          lyr.setStyle({ weight: 3, opacity: 1, color: "#22d3ee", fillOpacity: 0.25 });
+          lyr.setStyle({ weight: 3, opacity: 1, fillOpacity: 0.45 });
         });
-      },
+        return;
+      }
+
+      // ── الافتراضي العام (غير الجامعات) — بدون tooltip مخصص ─────────────────
+      lyr.on("click", (e: any) => {
+        L.DomEvent.stopPropagation(e);
+        if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
+        if (geoJsonLayerRef.current) geoJsonLayerRef.current.resetStyle();
+        lyr.setStyle({ weight: 3, opacity: 1, color: "#22d3ee", fillOpacity: 0.25 });
+      });
+    };
+
+    // ── Performance: build the layer incrementally instead of feeding all
+    // features to L.geoJSON() in one synchronous call ───────────────────────
+    // Even with the Canvas renderer, Leaflet still has to project coordinates,
+    // run styleFn/onEachFeatureFn, and construct a layer object for every
+    // single feature — that JS work alone can block the main thread for
+    // seconds on a dataset this size (this was the real remaining cause of
+    // the ~3s Total Blocking Time). We create one empty L.geoJSON layer up
+    // front (so resetStyle()/getBounds() elsewhere keep working exactly like
+    // before) and feed it features in small batches across multiple
+    // requestAnimationFrame turns, so the browser always gets a chance to
+    // paint between batches instead of one giant blocking task.
+    const layer = L.geoJSON(undefined, {
+      renderer: L.canvas({ padding: 0.5 }),
+      style: styleFn,
+      pointToLayer: pointToLayerFn,
+      onEachFeature: onEachFeatureFn,
     });
 
     layer.addTo(map);
     geoJsonLayerRef.current = layer;
 
-    // ── Fly to GeoJSON bounds after load ─────────────────────────────────────
-    if (geoJsonFitBounds) {
+    const allFeatures: any[] =
+      geoJsonData.type === "FeatureCollection" ? (geoJsonData.features ?? []) :
+      geoJsonData.type === "Feature" ? [geoJsonData] : [];
+
+    // Fly to the full extent right away — computed from the raw GeoJSON via
+    // turf (pure math, no DOM/layer cost), so the map doesn't have to wait
+    // for every batch to finish rendering before it can fly to bounds.
+    if (geoJsonFitBounds && allFeatures.length) {
       try {
-        const bounds = layer.getBounds();
+        const [minX, minY, maxX, maxY] = turfBbox(geoJsonData as any);
+        const bounds = L.latLngBounds([minY, minX], [maxY, maxX]);
         if (bounds.isValid()) {
           map.flyToBounds(bounds, { padding: [40, 40], maxZoom: 16, duration: 1.2 });
         }
       } catch (_) {}
     }
 
-    console.log("✅ GeoJSON layer added");
+    let cancelled = false;
+    let rafId: number | null = null;
+    const BATCH_SIZE = 50;
+    const FRAME_BUDGET_MS = 8; // keep each frame well under the ~50ms "long task" threshold
+    let cursor = 0;
+
+    const processBatches = () => {
+      if (cancelled) return;
+      const frameStart = performance.now();
+      while (cursor < allFeatures.length && performance.now() - frameStart < FRAME_BUDGET_MS) {
+        const batch = allFeatures.slice(cursor, cursor + BATCH_SIZE);
+        layer.addData({ type: "FeatureCollection", features: batch } as any);
+        cursor += BATCH_SIZE;
+      }
+      if (cursor < allFeatures.length) {
+        rafId = requestAnimationFrame(processBatches);
+      } else {
+        console.log("✅ GeoJSON layer added");
+      }
+    };
+
+    if (allFeatures.length) {
+      rafId = requestAnimationFrame(processBatches);
+    }
 
     return () => {
+      cancelled = true;
+      if (rafId !== null) cancelAnimationFrame(rafId);
       if (geoJsonLayerRef.current) {
         map.removeLayer(geoJsonLayerRef.current);
         geoJsonLayerRef.current = null;
@@ -1001,6 +1037,8 @@ useEffect(() => {
     if (!extraGeoJsonData) return;
 
     const layer = L.geoJSON(extraGeoJsonData, {
+      // Canvas renderer avoids one DOM <path> per feature (was the main-thread bottleneck for large GeoJSON layers)
+      renderer: L.canvas({ padding: 0.5 }),
       style: (feature: any) => {
         const p   = feature?.properties ?? {};
         const layerOpacity = typeof p._opacity === "number" ? Math.max(0, Math.min(1, p._opacity)) : 1;
@@ -1325,10 +1363,10 @@ if (!check.ok) {
     drawLayersRef.current.push(poly);
     const coords = [...pts, pts[0]].map(([lat, lng]) => [lng, lat]);
 
-const polygon = turf.polygon([coords]);
+const polygon = turfPolygon([coords]);
 
 const area = parseFloat(
-  (turf.area(polygon) / 10000).toFixed(1)
+  (turfArea(polygon) / 10000).toFixed(1)
 );
     poly.bindPopup(() => {
       const div = document.createElement("div");
@@ -2002,13 +2040,13 @@ const rectCoords = [
   [p1[1], p1[0]],
 ];
 
-const polygon = turf.polygon([rectCoords]);
+const polygon = turfPolygon([rectCoords]);
 
 const area = parseFloat(
-  (turf.area(polygon) / 10000).toFixed(1)
+  (turfArea(polygon) / 10000).toFixed(1)
 );
 console.log("Area ha:", area);
-console.log("Area m²:", turf.area(polygon));
+console.log("Area m²:", turfArea(polygon));
 
 
 
