@@ -6,6 +6,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextRequest, NextResponse } from "next/server";
+import { getToken } from "next-auth/jwt";
 import sharp from "sharp";
 import { fromArrayBuffer } from "geotiff";
 import proj4 from "proj4";
@@ -238,7 +239,12 @@ function sieveClasses(classIndex: Int16Array, width: number, height: number, min
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const tifUrl   = searchParams.get("url");
-  const token    = searchParams.get("token");
+  const jwt = await getToken({
+    req,
+    secret: process.env.NEXTAUTH_SECRET,
+    cookieName: "next-auth.session-token",
+  });
+  const token = jwt?.accessToken as string | undefined;
   const rMin     = parseFloat(searchParams.get("min") ?? "-1");
   const rMax     = parseFloat(searchParams.get("max") ?? "1");
   const colormap = searchParams.get("colormap") ?? "rdylgn";

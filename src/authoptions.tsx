@@ -27,7 +27,6 @@ async function reLoginForToken(token: any) {
       Buffer.from(newAccessToken.split(".")[1], "base64").toString()
     );
 
-    console.log("[reLogin] token refreshed successfully");
     return {
       ...token,
       accessToken: newAccessToken,
@@ -174,7 +173,6 @@ export const authOptions: NextAuthOptions = {
         session.user = {
           ...session.user,
           id          : token.id as string,
-          accessToken : token.accessToken as string,
           username    : token.username as string,
           email       : token.email as string,
         } as any;

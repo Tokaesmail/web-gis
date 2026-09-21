@@ -11,7 +11,6 @@
 
 import { useMemo, useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { useSession } from "next-auth/react";
 import { useSelectedScene, setSelectedScene } from "./sharedSceneSelection";
 import { useSharedDateRange } from "./sharedDateRange";
 
@@ -150,15 +149,15 @@ const COLOR_RAMPS: { key: string; label: string; gradient: string }[] = [
 
 
 
-const BACKEND_RASTER_URL = "https://webgiss.duckdns.org/gis/raster-calc";
+const BACKEND_RASTER_URL = "/api/gis/raster-calc";
 
 // ── Saved analyses — الحفظ بقى يدوي بالكامل (زرار "Save Analysis" بعد
 // راستر-كالك أو تايم-سيريز)، مفيش أي حفظ أوتوماتيك من الباكند. نفس الـ
 // endpoints دول بتتستخدم في AnalysesManagerPanel.tsx (تبويب "Saved" في
 // السايد بار) عشان تعرض/تمسح كل اللي اتحفظ ──────────────────────────────
-const BACKEND_ANALYSES_LIST_URL = "https://webgiss.duckdns.org/gis/analyses";
+const BACKEND_ANALYSES_LIST_URL = "/api/gis/analyses";
 const BACKEND_ANALYSES_DELETE_URL = (id: string) =>
-  `https://webgiss.duckdns.org/gis/analyses/${encodeURIComponent(id)}`;
+  `/api/gis/analyses/${encodeURIComponent(id)}`;
 
 // Matches the RasterPreviewConfig type already used by onRasterPreview
 // (see AnalysisSidebar.tsx / MapClient.tsx) so this panel is a drop-in
@@ -374,8 +373,6 @@ function readZoneStatsFromHeaders(res: Response): ZoneStat[] | null {
 // مشكلة CORS، ومفيش fetch إضافي للملف من المتصفح.
 
 export default function PlanetaryRasterPanel({ selectedFeature, onPreview }: Props) {
-  const { data: session } = useSession();
-  const accessToken = (session?.user as any)?.accessToken as string | undefined;
 
   const coords = getMidCoords(selectedFeature);
   const fallbackCoords = coords ? { lat: coords[0], lng: coords[1] } : undefined;
@@ -460,7 +457,6 @@ async function saveAnalysis(type: string, parameters: any, result: any) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
     },
     body: JSON.stringify({ type, parameters, result }),
   });
@@ -590,7 +586,6 @@ if (!requestGeometry) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       body: JSON.stringify(renderRequestBody)
     });
@@ -686,7 +681,7 @@ if (!requestGeometry) {
     // المنطقة. flatRender بس هو اللي بيتحكم في شكل الصورة (flat ولا gradient)
     const proxyUrl = `/api/raster-proxy?url=${encodeURIComponent(tifUrl)}&min=${finalMin}&max=${finalMax}&colormap=${colormap}&zero=0&alphaLow=0&alphaHigh=0.18&zeroMode=${zeroMode}&classes=${nClasses}&minZoneArea=${minZoneArea}&flatRender=${
       renderMode === "zones" ? 1 : 0
-    }${accessToken ? `&token=${encodeURIComponent(accessToken)}` : ""}`;
+    }`;
     const pngRes = await fetch(proxyUrl);
     if (!pngRes.ok) throw new Error(`PNG conversion failed (${pngRes.status})`);
 
@@ -771,7 +766,7 @@ if (!requestGeometry) {
 // "{{baseUrl}}/gis/time-series" — مش "/gis/raster-calc/timeseries" —
 // وبياخد "bbox" (array [west, south, east, north]) بدل "geometry"،
 // وكمان "cloud_cover_max".
-const BACKEND_TIME_SERIES_URL = "https://webgiss.duckdns.org/gis/time-series";
+const BACKEND_TIME_SERIES_URL = "/api/gis/time-series";
 
 const runChart = async () => {
   if (!validation.ok) return;
@@ -803,7 +798,6 @@ const runChart = async () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       body: JSON.stringify(chartRequestBody),
     });
