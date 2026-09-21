@@ -680,8 +680,12 @@ if (!requestGeometry) {
     // الـ proxy route بيجيب الـ TIF ويحوله PNG بـ sharp، وبيرجّع كمان
     // الـ extent الحقيقي (X-Real-Bbox header) اللي قراه من جوه الملف نفسه
     const zeroMode = finalMin >= 0 ? "at-or-below" : "around";
-    const proxyUrl = `/api/raster-proxy?url=${encodeURIComponent(tifUrl)}&min=${finalMin}&max=${finalMax}&colormap=${colormap}&zero=0&alphaLow=0&alphaHigh=0.18&zeroMode=${zeroMode}${
-      renderMode === "zones" ? `&classes=${nClasses}&minZoneArea=${minZoneArea}` : ""
+    // ✅ الإصلاح: classes/minZoneArea بيتبعتوا دايمًا (مش بس في zones) عشان
+    // جدول "Zone distribution" يقرا نفس الـ real zoneStats من الباكند في
+    // الحالتين، ومتختلفش الأرقام لما تبدّلي بين continuous/zones على نفس
+    // المنطقة. flatRender بس هو اللي بيتحكم في شكل الصورة (flat ولا gradient)
+    const proxyUrl = `/api/raster-proxy?url=${encodeURIComponent(tifUrl)}&min=${finalMin}&max=${finalMax}&colormap=${colormap}&zero=0&alphaLow=0&alphaHigh=0.18&zeroMode=${zeroMode}&classes=${nClasses}&minZoneArea=${minZoneArea}&flatRender=${
+      renderMode === "zones" ? 1 : 0
     }${accessToken ? `&token=${encodeURIComponent(accessToken)}` : ""}`;
     const pngRes = await fetch(proxyUrl);
     if (!pngRes.ok) throw new Error(`PNG conversion failed (${pngRes.status})`);
@@ -1619,14 +1623,6 @@ const runChart = async () => {
                   </div>
                 )}
               </div>
-              {/* ⚠️ تحذير واضح لو فيه نسبة معتبرة من المنطقة no-data — عشان محدش
-                  يفتكر إن المنطقة اتصنفت بالكامل وهي مش كده */}
-              {noDataStat && noDataStat.pct > 1 && (
-                <p className="text-[0.55rem] text-amber-400/90 leading-relaxed">
-                  ⚠ {noDataStat.pct.toFixed(1)}% من المنطقة المختارة no-data (سحاب، حواف الـ scene، أو NDVI غير صالحة) ومش
-                  داخلة في تصنيف أي Zone.
-                </p>
-              )}
 
               {/* Classification label */}
               <div className="pt-1 border-t border-white/[0.05]">

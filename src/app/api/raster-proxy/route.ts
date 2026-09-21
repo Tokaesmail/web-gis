@@ -255,6 +255,14 @@ export async function GET(req: NextRequest) {
   const classesParam = searchParams.get("classes");
   const numClasses = classesParam ? Math.max(2, Math.min(50, parseInt(classesParam, 10) || 5)) : null;
   const minZoneAreaM2 = Math.max(0, parseFloat(searchParams.get("minZoneArea") ?? "0") || 0);
+  // ✅ الإصلاح: flatRender بقى مستقل عن numClasses — الفرونت بقى بيبعت
+  // classes/minZoneArea دايمًا (في continuous وzones) عشان جدول التحليل
+  // "Zone distribution" يفضل بيقرا zoneStats حقيقية من الباكند في الحالتين
+  // بدل ما يرجع لتقريب الـ histogram القديم في continuous (وده اللي كان
+  // بيخلي الأرقام تختلف بين الوضعين على نفس المنطقة بالظبط). flatRender
+  // بس هو اللي بيتحكم في شكل الـ PNG (ألوان flat للـ zones، ولا gradient
+  // ناعم للـ continuous) — الاتنين بياخدوا نفس zoneStats تحتهم.
+  const flatRender = (searchParams.get("flatRender") ?? "1") !== "0";
 
   // ── شفافية ذكية: نخفي البكسلات "المحايدة" (قريبة من الصفر = مفيش تحليل
   // حقيقي) ونوريّ بس البكسلات اللي بعيدة عن الصفر (إشارة قوية فعلًا) ──────────
@@ -475,17 +483,42 @@ export async function GET(req: NextRequest) {
   }> | null = null;
 
   if (numClasses !== null && validPixels > 0) {
-    // equal-interval breaks على الـ range الحقيقي للبيانات (زي EOS بالظبط:
-    // بتقسم من أصغر قيمة فعلية لأكبر قيمة فعلية جوه الـ AOI، مش من rMin/rMax
-    // الثابتين بتوع الـ colormap)
-    const classSpan = Math.max(1, grayMax - grayMin);
+    // ✅ الإصلاح: equal-interval breaks بقت على percentile range (2%-98%
+    // افتراضيًا) بدل الـ raw grayMin/grayMax الخام. قبل كده بكسل شاذ واحد
+    // (سحابة، ظل، حافة مياه) بقيمة متطرفة كان بيمطط الـ range كله، فباقي
+    // الـ classes كانت بتتكدّس في نطاق لوني ضيق. دلوقتي بنبني histogram على
+    // الـ 256 قيمة الممكنة (grayData أصلاً uint8) ونلاقي القيم اللي عندها
+    // zoneLow%/zoneHigh% من الـ valid pixels تحتها، ونستخدمهم كحدود الـ
+    // classification. أي بكسل برّه الحدود دي (outlier) بينـclamp لأقرب طرف
+    // (Zone 1 أو آخر Zone)، مش بيتحسب زيه بالظبط.
+    const zoneLow  = parseFloat(searchParams.get("zoneLow")  ?? "2");
+    const zoneHigh = parseFloat(searchParams.get("zoneHigh") ?? "98");
+
+    const grayHist = new Uint32Array(256);
+    for (let i = 0; i < width * height; i++) {
+      const isMasked = maskUsable && nodataMask![i] === 1;
+      if (isMasked) continue;
+      grayHist[grayData[i]]++;
+    }
+    const lowCount = (zoneLow / 100) * validPixels;
+    const highCount = (zoneHigh / 100) * validPixels;
+    let cum = 0, pLow = grayMin, pHigh = grayMax, foundLow = false;
+    for (let v = 0; v < 256; v++) {
+      cum += grayHist[v];
+      if (!foundLow && cum >= lowCount) { pLow = v; foundLow = true; }
+      if (cum >= highCount) { pHigh = v; break; }
+    }
+    // لو الداتا كلها شبه متطابقة (pHigh <= pLow بعد الـ percentile)، نرجع
+    // للـ raw min/max عادي بدل ما نطلع classSpan صفري/سالب
+    if (pHigh <= pLow) { pLow = grayMin; pHigh = grayMax; }
+    const classSpan = Math.max(1, pHigh - pLow);
 
     const classIndex = new Int16Array(width * height).fill(-1);
     for (let i = 0; i < width * height; i++) {
       const isMasked = maskUsable && nodataMask![i] === 1;
       if (isMasked) continue;
       const v = grayData[i];
-      let cls = Math.floor(((v - grayMin) / classSpan) * numClasses);
+      let cls = Math.floor(((v - pLow) / classSpan) * numClasses);
       cls = Math.max(0, Math.min(numClasses - 1, cls));
       classIndex[i] = cls;
     }
@@ -506,22 +539,33 @@ export async function GET(req: NextRequest) {
     const minPixels = minZoneAreaM2 > 0 && pixelAreaM2 ? Math.round(minZoneAreaM2 / pixelAreaM2) : 0;
     const finalClassIndex = minPixels > 1 ? sieveClasses(classIndex, width, height, minPixels) : classIndex;
 
-    // ── لون كل class من نفس الـ colormap المختار (نفس الـ ramp اللي شكل
-    // الـ continuous gradient، بس مقسّم flat) ──────────────────────────────
+    // ── لون كل class من نفس الـ colormap المختار، بس دلوقتي بموقعه المطلق
+    // جوه نفس مدى [rMin, rMax] اللي الـ Continuous بيستخدمه — مش بترتيبه
+    // بين 0 و numClasses. ✅ الإصلاح: قبل كده كنا بنحسب
+    // t = (i+0.5)/numClasses، يعني كنا بنمطط مدى القيم الفعلي (grayMin..
+    // grayMax، غالبًا أضيق بكتير من rMin..rMax) ليغطي الـ colormap كله من
+    // الأول للآخر — فزون فيها قيم متوسطة كانت بتطلع حمرا غامقة رغم إنها في
+    // الـ Continuous كانت خضرا/صفرا. دلوقتي كل Zone بتاخد نفس اللون بالظبط
+    // اللي القيمة دي كانت هتاخده في الـ Continuous gradient.
     const zoneColorsRgb: [number, number, number][] = Array.from({ length: numClasses }, (_, i) => {
-      const t = (i + 0.5) / numClasses;
+      const grayCenter = pLow + (classSpan * (i + 0.5)) / numClasses;
+      const t = grayCenter / 255;
       return applyColormap(stops, t);
     });
 
     // ── إعادة بناء rgbaData بألوان flat بدل الـ continuous gradient ──────
-    for (let i = 0; i < width * height; i++) {
-      const cls = finalClassIndex[i];
-      const isMasked = cls < 0;
-      const [r, g, b] = isMasked ? [0, 0, 0] : zoneColorsRgb[cls];
-      rgbaData[i * 4] = r;
-      rgbaData[i * 4 + 1] = g;
-      rgbaData[i * 4 + 2] = b;
-      rgbaData[i * 4 + 3] = isMasked ? 0 : 255;
+    // بس لو flatRender=1 (وضع Zones). في continuous بنسيب rgbaData الأصلية
+    // (gradient ناعم) زي ما هي، ونكتفي بحساب zoneStats تحت للتحليل بس ──────
+    if (flatRender) {
+      for (let i = 0; i < width * height; i++) {
+        const cls = finalClassIndex[i];
+        const isMasked = cls < 0;
+        const [r, g, b] = isMasked ? [0, 0, 0] : zoneColorsRgb[cls];
+        rgbaData[i * 4] = r;
+        rgbaData[i * 4 + 1] = g;
+        rgbaData[i * 4 + 2] = b;
+        rgbaData[i * 4 + 3] = isMasked ? 0 : 255;
+      }
     }
 
     // ── إحصائيات كل zone (بعد الـ sieve) عشان الفرونت يعرضها زي ما هي، من
@@ -535,8 +579,8 @@ export async function GET(req: NextRequest) {
     // بس — عشان لو فيه no-data جوه المنطقة، النسب متجمعش غلط على 100%
     // وتدّي انطباع إن كل حاجة اتصنفت وهي مش كده ────────────────────────────
     zoneStats = counts.map((count, i) => {
-      const lo = grayToValue(grayMin + (classSpan * i) / numClasses);
-      const hi = grayToValue(grayMin + (classSpan * (i + 1)) / numClasses);
+      const lo = grayToValue(pLow + (classSpan * i) / numClasses);
+      const hi = grayToValue(pLow + (classSpan * (i + 1)) / numClasses);
       const [r, g, b] = zoneColorsRgb[i];
       const hexColor = "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
       return {

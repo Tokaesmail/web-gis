@@ -6,12 +6,18 @@ import JSONUploadModal from "./DataManagerPanel";
 import { type MapCapture } from "./TemplateMatchPanel";
 import { MapLayer } from "../../map/LayerPanel";
 import { PanelContent } from "./PanelContent";
-import { panels, type PanelId } from "./panels";
+import { panels, type PanelId, type InsightTab } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
 import { type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
+import { type InterpolationPreviewConfig } from "./temporalInterpolation";
 import { OPEN_RASTER_CALCULATOR_EVENT } from "./sharedSceneSelection";
 import { RasterCalcSidebarItem, PALM_ICON, type RasterTabKey, type PalmHeatmapPreviewConfig, type PalmPointsPreviewConfig } from "./PalmTreesPanel";
+
+/** Sub-features shown in the Insight hover flyout. Add new InsightTab members here as they ship. */
+const INSIGHT_ITEMS: { key: InsightTab; labelEn: string; labelAr: string }[] = [
+  { key: "interpolation", labelEn: "Interpolation", labelAr: "الاستيفاء الزمني" },
+];
 
 export default function AnalysisSidebar(
   {
@@ -54,6 +60,7 @@ export default function AnalysisSidebar(
   onChangeDetectionPreview,
   onChangeDetectionSwipe,
   onSuperResolutionPreview,
+  onInterpolationPreview,
   onOpenElevationFloat,
 }: {
   selectedFeature?: GeoJSON.Feature | null;
@@ -99,6 +106,8 @@ export default function AnalysisSidebar(
   onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
   /** Puts the Super Resolution result on the actual map as a georeferenced overlay. Pass null to remove it. */
   onSuperResolutionPreview?: (config: SuperResolutionPreviewConfig | null) => void;
+  /** Puts the interpolated index layer (Insight ▸ Interpolation) on the actual map as a georeferenced overlay. Pass null to remove it. */
+  onInterpolationPreview?: (config: InterpolationPreviewConfig | null) => void;
   onOpenElevationFloat?: () => void;
 }) {
   const [internalActivePanel, setInternalActivePanel] = useState<PanelId | null>(null);
@@ -107,6 +116,9 @@ export default function AnalysisSidebar(
   // Lives here (not inside PanelContent) so it survives re-renders of the
   // panel body and so the sidebar header label/icon can reflect it too.
   const [rasterTab, setRasterTab] = useState<RasterTabKey>("default");
+  // Which Insight sub-tab is active — only "interpolation" exists today.
+  // Same pattern as rasterTab: lives here so the header + hover flyout stay in sync.
+  const [insightTab, setInsightTab] = useState<InsightTab>("interpolation");
   const [uploadOpen, setUploadOpen] = useState(false);
   const { isRTL } = useLang();
   const [sidebarWidth, setSidebarWidth] = useState(340);
@@ -155,6 +167,17 @@ export default function AnalysisSidebar(
     }
   };
 
+  // Used by the Insight hover flyout — always OPENS the insight panel with
+  // the chosen sub-tab (never toggles it closed).
+  const selectInsightTab = (tab: InsightTab) => {
+    setInsightTab(tab);
+    if (onActivePanelChange) {
+      onActivePanelChange("insight");
+    } else {
+      setInternalActivePanel("insight");
+    }
+  };
+
   // SatelliteDataPanel dispatches this when the user clicks "Use this scene
   // in Raster Calculator" — always OPEN the panel (unlike togglePanel,
   // never close it even if it's already the active one).
@@ -174,7 +197,13 @@ export default function AnalysisSidebar(
   const activeItem = panels.find((p) => p.id === activePanel);
   const isPalmsActive = activePanel === "raster" && rasterTab === "palms";
   const headerIcon = isPalmsActive ? PALM_ICON : activeItem?.icon;
-  const headerLabel = isPalmsActive ? "Palms" : (isRTL ? activeItem?.labelAr : activeItem?.labelEn);
+  const isInsightActive = activePanel === "insight";
+  const activeInsightItem = INSIGHT_ITEMS.find((i) => i.key === insightTab);
+  const headerLabel = isPalmsActive
+    ? "Palms"
+    : isInsightActive && activeInsightItem
+      ? (isRTL ? activeInsightItem.labelAr : activeInsightItem.labelEn)
+      : (isRTL ? activeItem?.labelAr : activeItem?.labelEn);
 
   return (
     <>
@@ -235,6 +264,7 @@ export default function AnalysisSidebar(
                 <PanelContent
                   id={activePanel}
                   rasterTab={rasterTab}
+                  insightTab={insightTab}
                   selectedFeature={selectedFeature}
                   uploadedGeoJsonMap={uploadedGeoJsonMap}
                   captures={captures}
@@ -269,6 +299,7 @@ export default function AnalysisSidebar(
                   onChangeDetectionPreview={onChangeDetectionPreview}
                   onChangeDetectionSwipe={onChangeDetectionSwipe}
                   onSuperResolutionPreview={onSuperResolutionPreview}
+                  onInterpolationPreview={onInterpolationPreview}
                   onOpenElevationFloat={onOpenElevationFloat}
                 />
               )}
@@ -297,6 +328,52 @@ export default function AnalysisSidebar(
                   rasterLabelAr={item.labelAr}
                   badge={item.badge}
                 />
+              );
+            }
+
+            // "insight" gets a hover flyout (Interpolation, ...) — same idea as raster.
+            if (item.id === "insight") {
+              return (
+                <div key={item.id} className="relative group w-full flex justify-center">
+                  <button
+                    onClick={() => selectInsightTab(insightTab)}
+                    aria-label={isRTL ? item.labelAr : item.labelEn}
+                    className={`
+                      relative w-9 h-9 rounded-lg flex items-center justify-center
+                      transition-all duration-150 cursor-pointer
+                      ${activePanel === "insight"
+                        ? "bg-cyan-400/15 text-cyan-400 shadow-[inset_0_0_0_1px_rgba(0,212,255,0.3)]"
+                        : "text-slate-500 hover:text-slate-200 hover:bg-white/[0.07]"
+                      }
+                    `}
+                  >
+                    {item.icon}
+                    {item.badge && (
+                      <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-3.5 bg-cyan-400 text-[#040d1a] text-[0.52rem] font-bold rounded-full flex items-center justify-center px-0.5">
+                        {item.badge}
+                      </span>
+                    )}
+                  </button>
+
+                  {/* Flyout */}
+                  <div className={`absolute top-0 hidden group-hover:block z-50 ${isRTL ? "right-9 pr-2" : "left-[-8px] -translate-x-full pr-2"}`}>
+                    <div className="bg-[#0d1b2e] border border-white/10 rounded-lg shadow-xl p-1 min-w-[150px]">
+                      {INSIGHT_ITEMS.map((s) => (
+                        <button
+                          key={s.key}
+                          onClick={() => selectInsightTab(s.key)}
+                          className={`w-full text-start text-[0.72rem] px-2.5 py-1.5 rounded-md whitespace-nowrap cursor-pointer ${
+                            activePanel === "insight" && insightTab === s.key
+                              ? "bg-cyan-400/15 text-cyan-400"
+                              : "text-slate-300 hover:bg-white/[0.07]"
+                          }`}
+                        >
+                          {isRTL ? s.labelAr : s.labelEn}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               );
             }
 

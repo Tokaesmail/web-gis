@@ -11,7 +11,7 @@ import type { RasterTabKey, PalmHeatmapPreviewConfig, PalmPointsPreviewConfig } 
 import type { SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
 import type { RasterPreviewConfig, SatellitePreviewConfig } from "./SatelliteDataPanel";
 import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
-import type { GapFillPreviewConfig } from "./GapFillNDVIPanel";
+import type { InterpolationPreviewConfig } from "./temporalInterpolation";
 
 // ── lazy-loaded components (كل واحد chunk لوحده) ───────────────────────────
 const TemplateMatchPanel     = dynamic(() => import("./TemplateMatchPanel"), { ssr: false });
@@ -30,12 +30,12 @@ const CropsPanel              = dynamic(() => import("./CropsPanel").then(m => m
 const VolumeCalculationPanel  = dynamic(() => import("./VolumeCalculationPanel"), { ssr: false });
 const ElevationContourPanel   = dynamic(() => import("./ElevationContourPanel"), { ssr: false });
 const AnalysesManagerPanel    = dynamic(() => import("./AnalysesManagerPanel").then(m => m.AnalysesManagerPanel), { ssr: false });
-const GapFillNDVIPanel        = dynamic(() => import("./GapFillNDVIPanel"), { ssr: false });
+const TemporalInterpolationPanel = dynamic(() => import("./TemporalInterpolationPanel"), { ssr: false });
 
 export function PanelContent({
   id,
   rasterTab = "default",
-  insightTab = "gap-fill-ndvi",
+  insightTab = "interpolation",
   liveDashboardTab,
   onLiveDashboardTabChange,
   selectedFeature,
@@ -72,13 +72,13 @@ export function PanelContent({
   onChangeDetectionPreview,
   onChangeDetectionSwipe,
   onSuperResolutionPreview,
-  onGapFillPreview,
+  onInterpolationPreview,
   onOpenElevationFloat,
 }: {
   id: PanelId;
   /** which Raster Calc sub-tab is active — set from AnalysisSidebar's hover flyout on the sidebar icon */
   rasterTab?: RasterTabKey;
-  /** which Insight sub-tab is active — set from AnalysisSidebar's hover flyout, same pattern as rasterTab. Only "gap-fill-ndvi" exists today; more Insight features branch on this as they ship. */
+  /** which Insight sub-tab is active — set from AnalysisSidebar's hover flyout, same pattern as rasterTab. Only "interpolation" exists today; more Insight features branch on this as they ship. */
   insightTab?: InsightTab;
   /** which Live Dashboard sub-tab is active — set from AnalysisSidebar's hover flyout on the sidebar icon, same pattern as rasterTab */
   liveDashboardTab?: LiveDashboardTab;
@@ -122,8 +122,8 @@ export function PanelContent({
   onChangeDetectionSwipe?: (config: ChangeDetectionSwipeConfig | null) => void;
   /** Puts the Super Resolution result on the actual map as a georeferenced overlay. Pass null to remove it. */
   onSuperResolutionPreview?: (config: SuperResolutionPreviewConfig | null) => void;
-  /** Puts the reconstructed NDVI layer on the actual map as a georeferenced overlay — same idea as onRasterPreview, for the Insight panel's Gap Fill NDVI feature. */
-  onGapFillPreview?: (config: GapFillPreviewConfig | null) => void;
+  /** Puts the interpolated index layer on the actual map as a georeferenced overlay — same idea as onRasterPreview, for the Insight panel's Temporal Interpolation feature. Pass null to remove it. */
+  onInterpolationPreview?: (config: InterpolationPreviewConfig | null) => void;
 }) {
   const [ndviExportData, setNdviExportData] = useState<any>(null);
   const ndviPanelRef = useRef<HTMLDivElement>(null);
@@ -164,10 +164,9 @@ export function PanelContent({
   if (id === "insight") {
     // Only one Insight feature exists today. As more ship (e.g. "anomaly-detect"),
     // add them here as extra branches — same shape as the raster / rasterTab switch above.
-    if (insightTab === "gap-fill-ndvi") {
-      return <GapFillNDVIPanel selectedFeature={selectedFeature} onPreview={onGapFillPreview} />;
+    if (insightTab === "interpolation") {
+      return <TemporalInterpolationPanel selectedFeature={selectedFeature} onPreview={onInterpolationPreview} />;
     }
-    return <GapFillNDVIPanel selectedFeature={selectedFeature} onPreview={onGapFillPreview} />;
   }
 
   if (id === "super-resolution") {

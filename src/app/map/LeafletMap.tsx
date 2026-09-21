@@ -62,6 +62,9 @@ interface Props {
   onOpacityChangeRegister?: (handler: (o: number) => void) => void;
   /** register an image placement workflow (2 clicks to place image) */
   onImagePlacerRegister?: (handler: (file: File) => void) => void;
+  /** Call the registered handler with `null` to remove whatever analysis overlay is
+   *  currently on the map (same cleanup "Delete Analysis" uses) — added for panels
+   *  like Temporal Interpolation that need a real "Remove from map" action. */
   onRasterOverlayRegister?: (handler: (config: {
     name: string;
     indexKey: string;
@@ -73,7 +76,7 @@ interface Props {
     opacity: number;
     colorRamp: string;
     coords: { lat: number; lng: number };
-  }) => void) => void;
+  } | null) => void) => void;
   /** register a real, georeferenced Before/After swipe overlay directly on the map
    *  (Change Detection panel only). Call the registered handler with `null` to remove it. */
   onSwipeOverlayRegister?: (handler: (config: {
@@ -486,7 +489,16 @@ useEffect(() => {
     onRasterOverlayRegister((config) => {
       const map = mapInstanceRef.current;
       const L = LRef.current;
-      if (!map || !L || (!config.dataUrl && !config.tileUrl)) return;
+      if (!map || !L) return;
+
+      // config === null → "Remove from map" (شوفي التعليق فوق onRasterOverlayRegister
+      // في الـ props) — بنمسح بنفس دالة "Delete Analysis" ونوقف هنا، من غير ما
+      // نكمل لبناء أي layer جديد.
+      if (config === null) {
+        clearAllAnalysisOverlaysRef.current();
+        return;
+      }
+      if (!config.dataUrl && !config.tileUrl) return;
 
       // كل analysis ليه key فريد — name + date عشان نعرض نفس الـ analysis مع update
       const overlayKey = `${config.indexKey}_${config.date}`;

@@ -24,11 +24,15 @@ export type LiveDashboardTab = "overview" | "ndvi" | "weather" | "crops";
 
 /**
  * Sub-tabs shown inside the "Insight" panel — same idea as RasterTabKey for "raster"
- * (hover the sidebar icon → flyout → pick a sub-feature). "gap-fill-ndvi" is the first
- * one; add new union members here as more Insight features ship (e.g. "anomaly-detect",
+ * (hover the sidebar icon → flyout → pick a sub-feature). "interpolation" (temporal
+ * per-pixel interpolation of a Sentinel-2 index to a target date) is the first one;
+ * add new union members here as more Insight features ship (e.g. "anomaly-detect",
  * "yield-forecast") and branch on them in PanelContent.tsx the same way rasterTab is.
+ *
+ * ⚠️ (2026-09-20) كان هنا "gap-fill-ndvi" — اتشالت واتبدلت بـ "interpolation".
+ * لو الـ AnalysisSidebar بيبعت القيمة القديمة من flyout، لازم تتغير هناك كمان.
  */
-export type InsightTab = "gap-fill-ndvi";
+export type InsightTab = "interpolation";
 
 interface PanelItem {
   id: PanelId;

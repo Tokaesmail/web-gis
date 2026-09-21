@@ -25,6 +25,7 @@ import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from ".
 import type { SuperResolutionPreviewConfig } from "../_components/AnalysisSidebar/SuperResolutionPanel";
 import type { SatellitePreviewConfig } from "../_components/AnalysisSidebar/SatelliteDataPanel";
 import type { PalmHeatmapPreviewConfig, PalmPointsPreviewConfig } from "../_components/AnalysisSidebar/PalmTreesPanel";
+import type { InterpolationPreviewConfig } from "../_components/AnalysisSidebar/temporalInterpolation";
 import { SOURCE_META } from "../_components/AnalysisSidebar/SatellitePipelines";
 import AITriggerButton from "./AITriggerButton";
 import { FloatingElevationPanel } from "../_components/AnalysisSidebar/ElevationContourPanel";
@@ -136,7 +137,7 @@ export default function MapPage() {
   const changeSatRef           = useRef<((sat: SatKey) => void) | null>(null);
   const changeOpacityRef       = useRef<((o: number) => void) | null>(null);
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
-  const rasterOverlayRef       = useRef<((config: RasterPreviewConfig) => void) | null>(null);
+  const rasterOverlayRef       = useRef<((config: RasterPreviewConfig | null) => void) | null>(null);
   const pointsOverlayRef       = useRef<((config: {
     name: string;
     indexKey: string;
@@ -869,6 +870,73 @@ useEffect(() => {
     superResOverlayRef.current?.(config);
   }, []);
 
+  // ── Temporal Interpolation (Insight panel) — نفس آلية handlePalmPreview
+  // بالظبط: InterpolationPreviewConfig نفس شكل RasterPreviewConfig عدا
+  // "expression" (مش موجود هنا لإنه مش صيغة واحدة ثابتة زي NDVI، القيمة
+  // بالفعل محسوبة ومنترپلة جوه الراوت) — بنمرره فاضي زي ما PalmTreesPanel
+  // بيعمل بالظبط، لنفس السبب (addRasterOverlay في LeafletMap.tsx مش بيستخدم
+  // الحقل ده في الرسم أصلًا).
+  // ⚠️ config === null معناها "Remove from map" من جوه البانل — rasterOverlayRef
+  // نفسه مش nullable (بعكس superResOverlayRef/swipeCompareRef)، فمفيش مسار
+  // جاهز يشيل الـ overlay الفعلي من فوق الخريطة هنا. اللي بيتعمل دلوقتي هو
+  // إخفاء/حذف "interp-result" من قائمة الـ layers بس (زي أي layer تاني قابل
+  // للإخفاء من onLayerToggle) — لو محتاجة إزالة حقيقية للـ overlay نفسه من
+  // فوق اللوحة، ده محتاج تعديل في LeafletMap.tsx (addRasterOverlay يقبل null).
+  const handleInterpolationPreview = useCallback((config: InterpolationPreviewConfig | null) => {
+    if (!config) {
+      // ⚠️ (تحديث) rasterOverlayRef بقى بيقبل null فعليًا (شوفي LeafletMap.tsx
+      // onRasterOverlayRegister) وبيمسح الـ overlay الحقيقي من فوق الخريطة —
+      // مش بس بيشيله من ليستة الـ layers زي قبل كده.
+      rasterOverlayRef.current?.(null);
+      setLayers((prev) => prev.filter((layer) => layer.id !== "interp-result"));
+      return;
+    }
+
+    rasterOverlayRef.current?.({
+      name: config.name,
+      indexKey: config.indexKey,
+      expression: "",
+      date: config.targetDate,
+      coords: config.coords,
+      bounds: config.bounds,
+      opacity: config.opacity,
+      colorRamp: config.colorRamp,
+      dataUrl: config.dataUrl,
+    });
+    changeOpacityRef.current?.(config.opacity);
+
+    setLayers((prev) => {
+      const resultLayer: MapLayer = {
+        id: "interp-result",
+        name: config.name,
+        nameAr: config.name,
+        type: "raster",
+        visible: true,
+        opacity: config.opacity,
+        color: "#22d3ee",
+        source: `Temporal interpolation (${config.method}) | target ${config.targetDate}`,
+      };
+      return [resultLayer, ...prev.filter((layer) => layer.id !== "interp-result")];
+    });
+
+    // نحفظها زي أي analysis تاني عشان ترجع تظهر لما اليوزر يفتح المشروع تاني
+    // (نفس منطق handleRasterPreview/handlePalmPreview فوق).
+    setSavedAnalyses((prev) => [...prev, {
+      id: crypto.randomUUID(),
+      type: "raster" as const,
+      name: config.name,
+      indexKey: config.indexKey,
+      expression: `interpolation:${config.method}`,
+      date: config.targetDate,
+      coords: config.coords,
+      bounds: config.bounds,
+      opacity: config.opacity,
+      colorRamp: config.colorRamp,
+      dataUrl: config.dataUrl,
+      savedAt: new Date().toISOString(),
+    }]);
+  }, []);
+
   // ── Palm Trees: نفس آلية handleRasterPreview بالظبط — كانت ناقصة قبل
   // كده، فالهيت ماب بتاع النخل كان بيرجع لـ fallback الصورة جوا السايد بار
   // بس (شوفي PalmTreesPanel.tsx: "heatmapDataUrl && !onPreview") بدل ما
@@ -1247,6 +1315,7 @@ useEffect(() => {
       onChangeDetectionPreview={handleChangeDetectionPreview}
       onChangeDetectionSwipe={handleSwipeCompare}
       onSuperResolutionPreview={handleSuperResolutionPreview}
+      onInterpolationPreview={handleInterpolationPreview}
       onOpenElevationFloat={() => setElevationFloatOpen(true)}
     />
   ), [
@@ -1284,6 +1353,7 @@ useEffect(() => {
     handleChangeDetectionPreview,
     handleSwipeCompare,
     handleSuperResolutionPreview,
+    handleInterpolationPreview,
   ]);
 
   const toggle2DButton = useMemo(() => (
