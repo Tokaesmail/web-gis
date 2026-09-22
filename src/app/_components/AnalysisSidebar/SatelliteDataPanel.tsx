@@ -2122,7 +2122,7 @@ useEffect(() => {
 
       let features: StacFeature[] = [];
       let nextReq: { url: string; body: Record<string, unknown> } | null = {
-        url: "https://planetarycomputer.microsoft.com/api/stac/v1/search",
+        url: "/api/stac-proxy/search",
         body: baseRequestBody,
       };
       const MAX_PAGES = 10;
@@ -2145,7 +2145,7 @@ useEffect(() => {
           : null;
         nextReq =
           nextLink?.href && nextLink?.body
-            ? { url: nextLink.href, body: nextLink.body as Record<string, unknown> }
+            ? { url: "/api/stac-proxy/search", body: nextLink.body as Record<string, unknown> }
             : null;
         page += 1;
         if (!pageFeatures.length) break;

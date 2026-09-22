@@ -2313,17 +2313,48 @@ async function readBand(
   const window: [number, number, number, number] = [x0, y0, x1, y1];
 
   const tRead = performance.now();
-  // ⚠️ (2026-08-23) `samples: [bidx - 1]` picks one band out of a multi-band
-  // file (geotiff.js sample index is 0-based) — omitted entirely for the
-  // normal single-band-per-href case, same as before this param existed.
-  const rasters = await level.image.readRasters({
-    window,
-    interleave: false,
-    ...(bidx ? { samples: [bidx - 1] } : {}),
-  });
+  // ⚠️ (2026-09-22) readRasters() does its own internal HTTP range-requests
+  // against Azure Blob Storage — intermittent connection hiccups/throttling
+  // there surface as geotiff.js's generic "Error fetching data." with zero
+  // diagnostic detail (no status, no cause). This is characteristic of a
+  // transient network blip rather than a real bug, and gets worse under
+  // change detection's higher concurrency (before+after bands read at
+  // once). A short bounded retry clears most of these without masking a
+  // genuinely broken URL — if it's still failing after 3 tries, it's a real
+  // problem, not a blip, and we surface that clearly.
+  let rasters: Awaited<ReturnType<typeof level.image.readRasters>> | undefined;
+  let lastErr: unknown;
+  const MAX_READ_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt++) {
+    try {
+      // ⚠️ (2026-08-23) `samples: [bidx - 1]` picks one band out of a multi-band
+      // file (geotiff.js sample index is 0-based) — omitted entirely for the
+      // normal single-band-per-href case, same as before this param existed.
+      rasters = await level.image.readRasters({
+        window,
+        interleave: false,
+        ...(bidx ? { samples: [bidx - 1] } : {}),
+      });
+      lastErr = undefined;
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_READ_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 300 * attempt)); // 300ms, then 600ms
+      }
+    }
+  }
+  if (lastErr) {
+    const cause = (lastErr as { cause?: unknown })?.cause;
+    throw new Error(
+      `Pixel read failed after ${MAX_READ_ATTEMPTS} attempts for ${effectiveUrl} (window ${window.join(",")}, level ${level.width}x${level.height}): ` +
+      `${(lastErr as Error).message}` +
+      (cause ? ` — cause: ${cause instanceof Error ? cause.message : String(cause)}` : "")
+    );
+  }
   t.pixelRead = performance.now() - tRead;
 
-  const data = rasters[0] as Float32Array | Uint16Array | Uint8Array;
+  const data = rasters![0] as Float32Array | Uint16Array | Uint8Array;
   const width = window[2] - window[0];
   const height = window[3] - window[1];
 
