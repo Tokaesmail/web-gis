@@ -20,31 +20,15 @@
 
 import { SOURCE_INDICES, type SatelliteAnalysisType } from "./SatellitePipelines";
 
-/** طريقة الانتربوليشن اللي اليوزر بيختارها من الـ dropdown في البانل. */
-export type InterpolationMethod = "linear" | "weighted";
+/**
+ * طريقة الانتربوليشن — خطي بس (أقرب قيمة صالحة قبل + أقرب قيمة صالحة بعد).
+ * لسه نوع بدل ما نشيله خالص عشان الـ meta وإعدادات الـ overlay بتحمل `method`.
+ */
+export type InterpolationMethod = "linear";
 
-export const INTERPOLATION_METHODS: {
-  key: InterpolationMethod;
-  labelEn: string;
-  labelAr: string;
-  hintEn: string;
-  hintAr: string;
-}[] = [
-  {
-    key: "linear",
-    labelEn: "Linear (nearest before/after)",
-    labelAr: "خطي (أقرب صورة قبل/بعد)",
-    hintEn: "For each pixel: linear interpolation between its nearest valid observation before and after the target date.",
-    hintAr: "For each pixel: linear interpolation between the nearest valid value before the date and the nearest valid value after it."
-  },
-  {
-    key: "weighted",
-    labelEn: "Weighted fit (all scenes)",
-    labelAr: "انحدار موزون (كل المشاهد)",
-    hintEn: "For each pixel: a time-weighted least-squares line through every valid observation in the range, evaluated at the target date.",
-    hintAr: "لكل بكسل: خط انحدار (least squares) موزون زمنيًا على كل القيم الصالحة في المدى، وبنقرا قيمته عند التاريخ المطلوب.",
-  },
-];
+export const LINEAR_METHOD_LABEL = "Linear (nearest before/after)";
+export const LINEAR_METHOD_HINT =
+  "For each pixel: linear interpolation between its nearest valid observation before the target date and its nearest valid observation after it.";
 
 // ─── الـ indices المدعومة ────────────────────────────────────────────────────
 // Sentinel-2 بس (طلب صريح) — و RGB مستبعدة لإنها composite مش index، مفيش قيمة
@@ -290,31 +274,47 @@ export type InterpolationRequestBody = {
   bbox: [number, number, number, number];
   /** YYYY-MM-DD — التاريخ اللي عايزين نطلّع صورته */
   target: string;
-  method: InterpolationMethod;
   scenes: InterpolationSceneInput[];
   useScl: boolean;
   maskClasses?: number[];
-  /** نصف عمر الوزن الزمني بالأيام (weighted method بس). */
-  tauDays?: number;
   colormap?: string;
   min?: number;
   max?: number;
   transparent?: boolean;
 };
 
-/** ملخص بيرجع في هيدر X-Interp-Meta. */
+/**
+ * ملخص بيرجع في هيدر X-Interp-Meta.
+ *
+ * تصنيف البكسلات (كل بكسل فيه قيمة صالحة واحدة على الأقل بيقع في تصنيف واحد بس):
+ *   • same-day     → فيه قيمة صالحة في نفس يوم الـ target بالظبط (date === target) — بتتاخد زي ما هي.
+ *   • interpolated → فيه قيمة صالحة قبل الـ target (date < target) وقيمة بعده (date > target).
+ *   • one-sided    → القيم الصالحة كلها على ناحية واحدة (hold / extrapolation).
+ */
 export type InterpolationMeta = {
   method: InterpolationMethod;
   targetDate: string;
   usedScl: boolean;
-  /** نسبة البكسلات اللي الانتربوليشن نجح فيها (فيها قيمة قبل وبعد أو fit صالح). */
+  /** Output coverage: نسبة البكسلات اللي طلع لها output صالح (same-day + interpolated + one-sided). */
   coverage: number;
   /** نسبة البكسلات اللي اتحسبت من ناحية واحدة بس (hold/extrapolation). */
   extrapolated: number;
-  /** متوسط عدد القيم الصالحة لكل بكسل عبر المشاهد. */
+  /** نسبة البكسلات اللي اتاخدت من مشهد في نفس يوم الـ target (مفيش انتربوليشن فيها). */
+  exactDay: number;
+  /** Valid observations / pixel: متوسط عدد القيم الصالحة لكل بكسل عبر المشاهد. */
   meanValidObservations: number;
-  /** متوسط الفجوة الزمنية (بالأيام) بين التاريخ المطلوب وأقرب قيمة صالحة. */
-  meanGapDays: number;
+  /**
+   * Mean interpolation gap (بالأيام): متوسط الفترة بين الـ observation المستخدمة قبل الـ target
+   * والـ observation المستخدمة بعده (afterT − beforeT)، على البكسلات اللي فيها before + after بس.
+   * null لو مفيش ولا بكسل بالشكل ده.
+   */
+  meanInterpolationGapDays: number | null;
+  /**
+   * Mean extrapolation distance (بالأيام): متوسط المسافة بين الـ target وأقرب observation،
+   * على البكسلات الـ one-sided بس. مقياس منفصل لأن extrapolation distance ≠ interpolation gap.
+   * null لو مفيش بكسلات one-sided.
+   */
+  meanExtrapolationDistanceDays: number | null;
   perScene: { id: string; date: string; validPercent: number }[];
 };
 

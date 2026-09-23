@@ -354,7 +354,7 @@ function readRasterStatsFromHeaders(res: Response, fallbackMin: number, fallback
 // sieve merge الحقيقي، مش محسوبين تقريبيًا من الـ histogram في الفرونت ──────
 type ZoneStat = {
   zone: number; label: string; color: string; pixels: number;
-  pct: number; areaM2: number; lo: number; hi: number; isNoData?: boolean;
+  pct: number; areaM2: number | null; lo: number; hi: number; isNoData?: boolean;
 };
 
 function readZoneStatsFromHeaders(res: Response): ZoneStat[] | null {
@@ -1408,7 +1408,7 @@ const runChart = async () => {
         // مساحة حقيقية (م²→كم²) لكل zone لو جاية من الباكند، غير كده تقدير
         // تقريبي زي الأول من الـ bbox
         const zoneAreasKm2: (number | null)[] = classifiedZoneStats
-          ? classifiedZoneStats.map((z) => z.areaM2 / 1_000_000)
+          ? classifiedZoneStats.map((z) => (z.areaM2 != null ? z.areaM2 / 1_000_000 : null))
           : new Array(numZones).fill(null);
 
         // ── Dynamic legend range ──────────────────────────────────────────────
@@ -1612,7 +1612,7 @@ const runChart = async () => {
                       {noDataStat.pct.toFixed(3)}%
                     </span>
                     <span className="text-[0.52rem] text-slate-500 w-14 text-right shrink-0">
-                      ({(noDataStat.areaM2 / 1_000_000).toFixed(3)}km²)
+                      ({noDataStat.areaM2 != null ? (noDataStat.areaM2 / 1_000_000).toFixed(3) : "—"}km²)
                     </span>
                   </div>
                 )}

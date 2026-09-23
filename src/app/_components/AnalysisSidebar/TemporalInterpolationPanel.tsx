@@ -20,7 +20,8 @@ import { getFeatureBounds, getMidCoords } from "./geoFeatureUtils";
 import { SOURCE_COLLECTIONS, type SatelliteAnalysisType } from "./SatellitePipelines";
 import {
   INTERPOLATION_INDICES,
-  INTERPOLATION_METHODS,
+  LINEAR_METHOD_HINT,
+  LINEAR_METHOD_LABEL,
   DEFAULT_MASKED_SCL_CLASSES,
   daysBetween,
   getInterpolationStyle,
@@ -28,7 +29,6 @@ import {
   resolveSceneBandUrls,
   resolveSclUrl,
   S2_INDEX_ASSETS,
-  type InterpolationMethod,
   type InterpolationMeta,
   type InterpolationPreviewConfig,
 } from "./temporalInterpolation";
@@ -69,6 +69,18 @@ const formatDMY = (iso: string) => {
   if (!iso) return "";
   const [y, m, d] = iso.split("-");
   return `${d}/${m}/${y}`;
+};
+
+// Opt-in selection shortcut (the "Select N before + N after" button): the N closest
+// scenes strictly before the target date (date < target) plus the N closest strictly
+// after it (date > target). A scene ON the target date is deliberately left out — it
+// is neither "before" nor "after", and taking it would skip the interpolation.
+// N = 6 → 12 scenes, which is exactly the route's MAX_SCENES.
+const NEAREST_PER_SIDE = 6;
+const pickNearestScenes = <T extends { date: string }>(sorted: T[], target: string): T[] => {
+  const before = sorted.filter((s) => s.date < target).slice(-NEAREST_PER_SIDE);
+  const after = sorted.filter((s) => s.date > target).slice(0, NEAREST_PER_SIDE);
+  return [...before, ...after];
 };
 
 const CalendarIcon = () => (
@@ -171,9 +183,7 @@ export default function TemporalInterpolationPanel({
   const [dateTo, setDateTo] = useState(() => todayISO());
   const [targetDate, setTargetDate] = useState(() => shiftISO(todayISO(), -45));
   const [cloudCover, setCloudCover] = useState(30);
-  const [method, setMethod] = useState<InterpolationMethod>("linear");
   const [useScl, setUseScl] = useState(true);
-  const [tauDays, setTauDays] = useState(30);
   const [opacity, setOpacity] = useState(0.85);
 
   // ── Scenes ────────────────────────────────────────────────────────────────
@@ -209,8 +219,11 @@ export default function TemporalInterpolationPanel({
   const requiredBands = S2_INDEX_ASSETS[analysis] ?? [];
   const targetInRange = targetDate >= dateFrom && targetDate <= dateTo;
   const selectedScenes = scenes.filter((s) => selectedIds.includes(s.id));
-  const hasBefore = selectedScenes.some((s) => s.date <= targetDate);
-  const hasAfter = selectedScenes.some((s) => s.date >= targetDate);
+  // Strict sides: before = date < target, after = date > target.
+  const hasBefore = selectedScenes.some((s) => s.date < targetDate);
+  const hasAfter = selectedScenes.some((s) => s.date > targetDate);
+  // A selected scene on the target date itself: pixels valid in it are used as-is.
+  const targetIsObservedScene = selectedScenes.some((s) => s.date === targetDate);
 
   // ── Scene search (STAC) ───────────────────────────────────────────────────
   const searchScenes = async () => {
@@ -230,7 +243,7 @@ export default function TemporalInterpolationPanel({
 
       let features: StacFeature[] = [];
       let nextReq: { url: string; body: Record<string, unknown> } | null = {
-        url: "https://planetarycomputer.microsoft.com/api/stac/v1/search",
+        url: "/api/stac-proxy/search",
         body: baseBody,
       };
       let page = 0;
@@ -285,11 +298,8 @@ export default function TemporalInterpolationPanel({
         return;
       }
 
-      // Smart default selection: the 3 closest scenes before the target date and
-      // 3 after — interpolation works best with this layout, and the user can adjust.
-      const before = mapped.filter((s) => s.date <= targetDate).slice(-3);
-      const after = mapped.filter((s) => s.date > targetDate).slice(0, 3);
-      setSelectedIds([...before, ...after].map((s) => s.id));
+      // No auto-selection: the user picks the scenes they want (selection was cleared
+      // when the search started). The "Select N before + N after" button is an opt-in shortcut.
     } catch (err) {
       setSearchStatus("error");
       setError(err instanceof Error ? err.message : "STAC search failed.");
@@ -311,10 +321,8 @@ export default function TemporalInterpolationPanel({
         type: indexRouteType(analysis),
         bbox,
         target: targetDate,
-        method,
         useScl,
         maskClasses: DEFAULT_MASKED_SCL_CLASSES,
-        tauDays,
         colormap: style.colormap,
         min: style.min,
         max: style.max,
@@ -360,7 +368,7 @@ export default function TemporalInterpolationPanel({
         name: `${analysis} — interpolated ${targetDate}`,
         indexKey: indexRouteType(analysis),
         analysis,
-        method,
+        method: "linear",
         targetDate,
         bounds: outBounds,
         coords: { lat: coords?.[0] ?? 0, lng: coords?.[1] ?? 0 },
@@ -429,35 +437,13 @@ First, draw a shape on the map             </p>
       </label>
 
       {/* Method */}
-      <label className="block space-y-1">
+      <div className="space-y-1">
         <span className="text-[0.72rem] uppercase tracking-wider text-slate-500">Interpolation method</span>
-        <select
-          value={method}
-          onChange={(e) => setMethod(e.target.value as InterpolationMethod)}
-          className="h-8 w-full rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 text-[0.8rem] text-slate-200 outline-none focus:border-cyan-400/40"
-        >
-          {INTERPOLATION_METHODS.map((m) => (
-            <option key={m.key} value={m.key}>{m.labelEn}</option>
-          ))}
-        </select>
-        <span dir="rtl" className="block text-[0.78rem] leading-relaxed text-slate-400">
-          {INTERPOLATION_METHODS.find((m) => m.key === method)?.hintAr}
-        </span>
-      </label>
-
-      {method === "weighted" && (
-        <label className="block space-y-1">
-          <div className="flex items-center justify-between">
-            <span className="text-[0.72rem] uppercase tracking-wider text-slate-500">Time weight τ</span>
-            <span className="text-[0.8rem] font-semibold text-cyan-300">{tauDays} d</span>
-          </div>
-          <input type="range" min={5} max={120} step={5} value={tauDays}
-            onChange={(e) => setTauDays(Number(e.target.value))} className="w-full accent-cyan-400" />
-          <span dir="rtl" className="block text-[0.78rem] leading-relaxed text-slate-400">
-            كل ما τ تصغر، الصور القريبة من التاريخ المطلوب بتاخد وزن أكبر والنتيجة بتبقى أقرب للخطي.
-          </span>
-        </label>
-      )}
+        <div className="flex h-8 w-full items-center rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 text-[0.8rem] text-slate-200">
+          {LINEAR_METHOD_LABEL}
+        </div>
+        <span className="block text-[0.78rem] leading-relaxed text-slate-400">{LINEAR_METHOD_HINT}</span>
+      </div>
 
       {/* Cloud + SCL */}
       <div className="space-y-2 rounded-xl border border-white/[0.06] bg-white/[0.02] p-2.5">
@@ -503,10 +489,12 @@ It removes cloud, shadow, and cirrus pixels from each image prior to interpolati
             </span>
             <button
               type="button"
-              onClick={() => setSelectedIds(selectedIds.length ? [] : scenes.slice(0, 12).map((s) => s.id))}
+              onClick={() =>
+                setSelectedIds(selectedIds.length ? [] : pickNearestScenes(scenes, targetDate).map((s) => s.id))
+              }
               className="text-[0.72rem] text-cyan-400 hover:text-cyan-300"
             >
-              {selectedIds.length ? "Clear" : "Select first 12"}
+              {selectedIds.length ? "Clear" : `Select ${NEAREST_PER_SIDE} before + ${NEAREST_PER_SIDE} after`}
             </button>
           </div>
 
@@ -556,6 +544,12 @@ It removes cloud, shadow, and cirrus pixels from each image prior to interpolati
             <p dir="rtl" className="rounded-lg border border-amber-400/20 bg-amber-400/[0.07] px-2.5 py-1.5 text-[0.75rem] leading-relaxed text-amber-300">
               كل المشاهد المختارة على جنب واحد من التاريخ المطلوب — النتيجة هتبقى امتداد (extrapolation) مش انتربوليشن حقيقي.
               اختار مشهد واحد على الأقل {hasBefore ? "بعد" : "قبل"} {targetDate}.
+            </p>
+          )}
+
+          {targetIsObservedScene && (
+            <p className="rounded-lg border border-sky-400/20 bg-sky-400/[0.07] px-2.5 py-1.5 text-[0.75rem] leading-relaxed text-sky-300">
+              Target date matches an observed scene — no interpolation is required.
             </p>
           )}
         </div>
@@ -608,7 +602,7 @@ It removes cloud, shadow, and cirrus pixels from each image prior to interpolati
                   name: `${analysis} — interpolated ${result.meta?.targetDate ?? targetDate}`,
                   indexKey: indexRouteType(analysis),
                   analysis,
-                  method,
+                  method: "linear",
                   targetDate: result.meta?.targetDate ?? targetDate,
                   bounds: result.bounds,
                   coords: { lat: coords?.[0] ?? 0, lng: coords?.[1] ?? 0 },
@@ -626,20 +620,36 @@ It removes cloud, shadow, and cirrus pixels from each image prior to interpolati
           {result.meta && (
             <dl className="grid grid-cols-2 gap-1.5 text-[0.75rem]">
               <div className="rounded-lg bg-white/[0.03] px-2 py-1.5">
-                <dt className="text-slate-500">Coverage</dt>
+                <dt className="text-slate-500" title="Share of pixels that received a valid output value">Output coverage</dt>
                 <dd className="font-mono text-slate-200">{result.meta.coverage}%</dd>
               </div>
               <div className="rounded-lg bg-white/[0.03] px-2 py-1.5">
-                <dt className="text-slate-500">One-sided (held)</dt>
+                <dt className="text-slate-500" title="Pixels whose valid observations are all on one side of the target date">One-sided (held)</dt>
                 <dd className="font-mono text-slate-200">{result.meta.extrapolated}%</dd>
               </div>
               <div className="rounded-lg bg-white/[0.03] px-2 py-1.5">
-                <dt className="text-slate-500">Obs / pixel</dt>
+                <dt className="text-slate-500">Valid observations / pixel</dt>
                 <dd className="font-mono text-slate-200">{result.meta.meanValidObservations}</dd>
               </div>
               <div className="rounded-lg bg-white/[0.03] px-2 py-1.5">
-                <dt className="text-slate-500">Mean gap</dt>
-                <dd className="font-mono text-slate-200">{result.meta.meanGapDays} d</dd>
+                <dt
+                  className="text-slate-500"
+                  title="Mean time between the observation used before the target and the one used after it — only pixels with both"
+                >
+                  Mean interpolation gap
+                </dt>
+                <dd className="font-mono text-slate-200">
+                  {result.meta.meanInterpolationGapDays != null ? `${result.meta.meanInterpolationGapDays} d` : "—"}
+                </dd>
+              </div>
+              <div
+                className="col-span-2 rounded-lg bg-white/[0.03] px-2 py-1.5"
+                title="Mean distance from the target date to the nearest observation — only one-sided pixels"
+              >
+                <dt className="text-slate-500">Mean extrapolation distance</dt>
+                <dd className="font-mono text-slate-200">
+                  {result.meta.meanExtrapolationDistanceDays != null ? `${result.meta.meanExtrapolationDistanceDays} d` : "—"}
+                </dd>
               </div>
             </dl>
           )}

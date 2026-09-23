@@ -1,41 +1,3 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/raster-proxy/interpolate
-// ─────────────────────────────────────────────────────────────────────────────
-// انتربوليشن زمني بكسل-بكسل لـ index من Sentinel-2.
-//
-// الفكرة: الفرونت بيبعت مجموعة مشاهد (كل مشهد = تاريخ + روابط الباندات الخام
-// بتاعته + رابط SCL اختياري) + التاريخ المطلوب (target). الراوت بيقرا نافذة الـ
-// AOI بس من كل باند (نفس منطق readBand بتاع /analyze — COG range requests +
-// overview level مناسب)، يحسب الـ index لكل بكسل في كل تاريخ، يشيل البكسلات
-// المغطاة بسحاب (SCL)، وبعدين لكل بكسل لوحده بيعمل:
-//
-//   linear   →  V(t*) = V₁ + (V₂ − V₁) × (t* − t₁)/(t₂ − t₁)
-//               حيث V₁ أقرب قيمة صالحة قبل t*، و V₂ أقرب قيمة صالحة بعده.
-//               ⚠️ "أقرب قبل/بعد" بتتحسب لكل بكسل على حدة مش لكل مشهد — لإن
-//               الغيوم مش بتغطي المشهد كله، فبكسل ممكن يكون صافي في تاريخ
-//               وجاره يكون متغطي في نفس التاريخ.
-//
-//   weighted →  انحدار خطي least-squares موزون على كل القيم الصالحة للبكسل،
-//               بأوزان w = exp(−|tₖ − t*| / τ) (τ = tauDays، افتراضي 30 يوم)،
-//               وبنقرا الخط عند t*. أهدى من الخطي مع الضوضاء لإنه بيستخدم كل
-//               الصور مش اتنين بس، لكنه ممكن ينعّم القفزات الحقيقية (حصاد،
-//               حريق، غمر) — عشان كده الاتنين متاحين في الـ dropdown.
-//
-// الرد: PNG (RGBA) ملوّن بنفس منطق renderIndex بتاع /analyze (نفس RAMPS +
-// auto percentile stretch 2-98)، مع هيدرز:
-//   X-Real-Bbox     → bbox الحقيقي للنافذة المقروءة (للـ overlay على الخريطة)
-//   X-Raster-Stats  → min/max/mean/validPixels/appliedRange
-//   X-Interp-Meta   → coverage/extrapolated/meanGapDays/perScene (شوفي
-//                     InterpolationMeta في temporalInterpolation.ts)
-//   X-Debug-Timing  → أزمنة القراءة/الحساب/الرسم
-//
-// ⚠️ ليه ملف مستقل ومش إضافة على /api/raster-proxy/analyze؟ الراوت ده بيقرا
-// N مشهد × M باند (+SCL) في نفس الطلب ومحتاج stack زمني كامل في الميموري قبل
-// ما يرسم — ده مسار مختلف تمامًا عن analyze اللي بيقرا مشهد واحد ويرسمه فورًا،
-// وadd-on عليه كان هيعقّد راوت شغال ومتأكد منه. الـ helpers هنا (التوقيع/
-// القراءة/الإسقاط) منسوخة منه عن قصد بنفس السبب.
-// ─────────────────────────────────────────────────────────────────────────────
-
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
 import { fromUrl } from "geotiff";
@@ -47,7 +9,6 @@ import {
   S2_INDEX_ASSETS,
   DEFAULT_MASKED_SCL_CLASSES,
   daysBetween,
-  type InterpolationMethod,
   type InterpolationRequestBody,
   type InterpolationMeta,
 } from "@/src/app/_components/AnalysisSidebar/temporalInterpolation";
@@ -62,6 +23,14 @@ const SIGN_CACHE_TTL_MS = 50 * 60 * 1000;
 const IMAGE_CACHE_TTL_MS = 4 * 60 * 1000;
 /** سقف أمان: أكتر من كده والقراءة بتاخد وقت غير معقول (وبتفضي الميموري). */
 const MAX_SCENES = 12;
+/**
+ * أقصى عدد مشاهد بتتقرا في نفس اللحظة. كل مشهد = 2-5 باندات + SCL، فـ 12 مشهد بالتوازي
+ * = عشرات الاتصالات المفتوحة على Azure Blob مرة واحدة، وده بيطلّع "fetch failed"
+ * (connection reset / timeout) خصوصًا على النت البطيء أو الـ dev server.
+ */
+const SCENE_READ_CONCURRENCY = 3;
+/** عدد محاولات قراءة الباند الواحد قبل ما نفشّل الطلب (بنعيد بس على أخطاء الشبكة). */
+const READ_ATTEMPTS = 3;
 
 type BandRaster = {
   data: Float32Array | Uint16Array | Uint8Array;
@@ -373,6 +342,62 @@ async function readBand(
   };
 }
 
+// Node's fetch (undici) بيرمي "fetch failed" من غير تفاصيل؛ السبب الحقيقي
+// (ECONNRESET / UND_ERR_CONNECT_TIMEOUT / ENOTFOUND ...) في err.cause.
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = (err as Error & { cause?: unknown }).cause as { code?: string; message?: string } | undefined;
+  const detail = cause ? [cause.code, cause.message].filter(Boolean).join(" ") : "";
+  return detail ? `${err.message} (${detail})` : err.message;
+}
+
+// نفس Promise.all بس بحد أقصى `limit` مهام شغّالة في نفس الوقت، والنتايج بنفس ترتيب المدخلات.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  let failed = false; // أول فشل بيوقّف باقي الـ workers بدل ما يكملوا يقرأوا في الخلفية
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (!failed) {
+      const idx = next++;
+      if (idx >= items.length) return;
+      try {
+        results[idx] = await fn(items[idx]);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function readBandWithRetry(
+  url: string,
+  token: string | null | undefined,
+  queryBboxWGS84: [number, number, number, number]
+): Promise<BandRaster> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt++) {
+    try {
+      return await readBand(url, token, queryBboxWGS84);
+    } catch (err) {
+      lastErr = err;
+      // أخطاء حتمية (الـ AOI برة الـ CRS) مفيش فايدة من إعادتها.
+      if (err instanceof Error && err.message.startsWith("Could not project")) throw err;
+      console.warn(
+        `[interp] read attempt ${attempt}/${READ_ATTEMPTS} failed for ${url.split("?")[0]}: ${describeError(err)}`
+      );
+      if (attempt < READ_ATTEMPTS) await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+  }
+  throw lastErr;
+}
+
 // ─── محاذاة الشبكات ──────────────────────────────────────────────────────────
 // باندات Sentinel-2 مش كلها نفس الدقة (B11/B12/SCL = 20م، B02-B08 = 10م)، وكمان
 // مشاهد مختلفة ممكن ترجع نافذة أكبر/أصغر ببكسل أو اتنين حسب الـ overview level
@@ -497,11 +522,9 @@ export async function POST(req: NextRequest) {
     type,
     bbox,
     target,
-    method = "linear" as InterpolationMethod,
     scenes = [],
     useScl = true,
     maskClasses = DEFAULT_MASKED_SCL_CLASSES,
-    tauDays = 30,
     colormap = "rdylgn",
     min: rMin = -1,
     max: rMax = 1,
@@ -562,26 +585,25 @@ export async function POST(req: NextRequest) {
   const tRead = performance.now();
   let perSceneBands: { scene: (typeof ordered)[number]; bands: BandRaster[]; scl: BandRaster | null }[];
   try {
-    perSceneBands = await Promise.all(
-      ordered.map(async (scene) => {
-        const bands = await Promise.all(
-          scene.urls.map((u) => readBand(u, token, bbox as [number, number, number, number]))
-        );
-        const scl =
-          useScl && scene.sclUrl
-            ? await readBand(scene.sclUrl, token, bbox as [number, number, number, number]).catch((err) => {
-                // ⚠️ فشل قراءة SCL مش سبب كافي إننا نفشّل الطلب كله — بنكمل
-                // من غير ماسك للمشهد ده (وبيتسجل في اللوج) بدل ما نرمي 502 على
-                // مشهد واحد مكسور جوه stack من 6.
-                console.warn(`[interp] SCL read failed for ${scene.id}: ${(err as Error).message}`);
-                return null;
-              })
-            : null;
-        return { scene, bands, scl };
-      })
-    );
+    perSceneBands = await mapWithConcurrency(ordered, SCENE_READ_CONCURRENCY, async (scene) => {
+      const bands = await Promise.all(
+        scene.urls.map((u) => readBandWithRetry(u, token, bbox as [number, number, number, number]))
+      );
+      const scl =
+        useScl && scene.sclUrl
+          ? await readBandWithRetry(scene.sclUrl, token, bbox as [number, number, number, number]).catch((err) => {
+              // ⚠️ فشل قراءة SCL مش سبب كافي إننا نفشّل الطلب كله — بنكمل
+              // من غير ماسك للمشهد ده (وبيتسجل في اللوج) بدل ما نرمي 502 على
+              // مشهد واحد مكسور جوه stack من 6.
+              console.warn(`[interp] SCL read failed for ${scene.id}: ${describeError(err)}`);
+              return null;
+            })
+          : null;
+      return { scene, bands, scl };
+    });
   } catch (err) {
-    return NextResponse.json({ error: `Failed to read bands: ${(err as Error).message}` }, { status: 502 });
+    console.error(`[interp] band read failed: ${describeError(err)}`);
+    return NextResponse.json({ error: `Failed to read bands: ${describeError(err)}` }, { status: 502 });
   }
   const readMs = performance.now() - tRead;
 
@@ -644,121 +666,77 @@ export async function POST(req: NextRequest) {
   }
 
   // ── (4) الانتربوليشن — بكسل بكسل ──────────────────────────────────────────
+  // تعريف before/after (t = date − target بالأيام):
+  //   before = date < target  (t < 0)
+  //   after  = date > target  (t > 0)
+  //   same-day = date === target (t === 0) — مش before ولا after، وبتتعامل لوحدها.
   const out = new Float32Array(n);
   const outValid = new Uint8Array(n);
-  let extrapolatedPixels = 0;
   let observationsSum = 0;
-  let gapSum = 0;
+
+  let exactPixels = 0; // فيه قيمة صالحة في نفس يوم الـ target → مفيش انتربوليشن
+  let gapSum = 0; // Σ (afterT − beforeT) على البكسلات اللي فيها before + after
   let gapCount = 0;
+  let extrapolatedPixels = 0; // البكسلات one-sided (hold / extrapolation)
+  let extrapSum = 0; // Σ |t| لأقرب observation على البكسلات دي
+  let extrapCount = 0;
 
-  if (method === "weighted") {
-    // انحدار موزون: v = a + b·t، بأوزان exp(−|t|/τ). القيمة عند t* (يعني t=0
-    // بعد ما حوّلنا كل التواريخ لـ "أيام بالنسبة للتاريخ المطلوب") = a.
-    const tau = Math.max(1, tauDays);
-    for (let i = 0; i < n; i++) {
-      let sw = 0, swt = 0, swtt = 0, swv = 0, swtv = 0;
-      let count = 0;
-      let nearestGap = Infinity;
-      let lo = Infinity;
-      let hi = -Infinity;
-
-      for (const s of stack) {
-        if (!s.valid[i]) continue;
-        const t = s.days;
-        const v = s.values[i];
-        const w = Math.exp(-Math.abs(t) / tau);
-        sw += w;
-        swt += w * t;
-        swtt += w * t * t;
-        swv += w * v;
-        swtv += w * t * v;
-        count++;
-        if (Math.abs(t) < nearestGap) nearestGap = Math.abs(t);
-        if (v < lo) lo = v;
-        if (v > hi) hi = v;
-      }
-
-      if (count === 0) continue;
-      observationsSum += count;
-      if (Number.isFinite(nearestGap)) { gapSum += nearestGap; gapCount++; }
-
-      if (count === 1) {
-        // قيمة واحدة بس — مفيش انحدار، بناخدها زي ما هي ونعتبرها extrapolation.
-        out[i] = swv / sw;
-        outValid[i] = 1;
-        extrapolatedPixels++;
-        continue;
-      }
-
-      const denom = sw * swtt - swt * swt;
-      let value: number;
-      if (Math.abs(denom) < 1e-9) {
-        // كل القيم الصالحة في نفس التاريخ تقريبًا — الانحدار degenerate،
-        // بنرجع للمتوسط الموزون بدل ما نقسم على صفر ونطلع قيمة عشوائية.
-        value = swv / sw;
-      } else {
-        const a = (swtt * swv - swt * swtv) / denom; // الجزء الثابت = القيمة عند t=0 = التاريخ المطلوب
-        // ⚠️ قصّ النتيجة على مدى القيم المرصودة فعلاً للبكسل ده: الانحدار
-        // بيقدر يطلّع قيم برة المدى الفيزيائي (NDVI = 1.4 مثلًا) لو الميل حاد
-        // والتاريخ المطلوب برة تغطية القيم الصالحة.
-        value = Math.max(lo, Math.min(hi, a));
-      }
-
-      // البكسل يعتبر extrapolated لو كل قيمه الصالحة على جنب واحد من التاريخ.
-      let hasBefore = false;
-      let hasAfter = false;
-      for (const s of stack) {
-        if (!s.valid[i]) continue;
-        if (s.days <= 0) hasBefore = true;
-        if (s.days >= 0) hasAfter = true;
-      }
-      if (!hasBefore || !hasAfter) extrapolatedPixels++;
-
-      out[i] = value;
-      outValid[i] = 1;
+  // تصنيف البكسل لمقاييس الميتا. Interpolation gap ≠ extrapolation distance، فكل واحد له
+  // accumulator منفصل: الـ gap بيتحسب للبكسلات اللي فيها before + after بس، والمسافة
+  // للـ one-sided بتتحسب لوحدها.
+  const tally = (
+    hasExact: boolean,
+    hasBefore: boolean, beforeT: number,
+    hasAfter: boolean, afterT: number
+  ) => {
+    if (hasExact) {
+      exactPixels++;
+    } else if (hasBefore && hasAfter) {
+      gapSum += afterT - beforeT;
+      gapCount++;
+    } else {
+      extrapolatedPixels++;
+      extrapSum += Math.abs(hasBefore ? beforeT : afterT);
+      extrapCount++;
     }
-  } else {
-    // linear: أقرب قيمة صالحة قبل + أقرب قيمة صالحة بعد، لكل بكسل على حدة.
-    for (let i = 0; i < n; i++) {
-      let beforeT = -Infinity, beforeV = 0, hasBefore = false;
-      let afterT = Infinity, afterV = 0, hasAfter = false;
-      let count = 0;
+  };
 
-      for (const s of stack) {
-        if (!s.valid[i]) continue;
-        count++;
-        const t = s.days; // سالب = قبل التاريخ المطلوب، موجب = بعده
-        if (t <= 0 && t > beforeT) { beforeT = t; beforeV = s.values[i]; hasBefore = true; }
-        if (t >= 0 && t < afterT)  { afterT = t;  afterV = s.values[i];  hasAfter = true; }
-      }
+  // أقرب قيمة صالحة قبل + أقرب قيمة صالحة بعد، لكل بكسل على حدة (انتربوليشن خطي).
+  for (let i = 0; i < n; i++) {
+    let beforeT = -Infinity, beforeV = 0, hasBefore = false;
+    let afterT = Infinity, afterV = 0, hasAfter = false;
+    let exactV = 0, hasExact = false;
+    let count = 0;
 
-      if (!count) continue;
-      observationsSum += count;
-
-      if (hasBefore && hasAfter) {
-        if (afterT === beforeT) {
-          // فيه صورة صالحة في نفس التاريخ المطلوب بالظبط — مفيش انترببوليشن أصلًا.
-          out[i] = beforeV;
-        } else {
-          // V(t*) = V₁ + (V₂ − V₁) × (t* − t₁)/(t₂ − t₁)، و t* = 0 هنا.
-          const frac = (0 - beforeT) / (afterT - beforeT);
-          out[i] = beforeV + (afterV - beforeV) * frac;
-        }
-        gapSum += Math.min(Math.abs(beforeT), Math.abs(afterT));
-        gapCount++;
-      } else {
-        // جنب واحد بس (البكسل متغطي بسحاب في كل الصور اللي على الناحية التانية):
-        // بنثبّت على أقرب قيمة متاحة (hold) بدل ما نمد الخط ونخترع قيمة.
-        const v = hasBefore ? beforeV : afterV;
-        const g = hasBefore ? Math.abs(beforeT) : Math.abs(afterT);
-        out[i] = v;
-        gapSum += g;
-        gapCount++;
-        extrapolatedPixels++;
-      }
-      outValid[i] = 1;
+    for (const s of stack) {
+      if (!s.valid[i]) continue;
+      count++;
+      const t = s.days; // سالب = قبل التاريخ المطلوب، موجب = بعده، صفر = نفس اليوم
+      if (t === 0) { exactV = s.values[i]; hasExact = true; }
+      else if (t < 0) { if (t > beforeT) { beforeT = t; beforeV = s.values[i]; hasBefore = true; } }
+      else if (t < afterT) { afterT = t; afterV = s.values[i]; hasAfter = true; }
     }
+
+    if (!count) continue;
+    observationsSum += count;
+    tally(hasExact, hasBefore, beforeT, hasAfter, afterT);
+
+    if (hasExact) {
+      // فيه صورة صالحة في نفس يوم الـ target بالظبط — مفيش انتربوليشن أصلًا،
+      // بناخد القيمة المرصودة مباشرة (منطقي رياضيًا، والـ UI بيوضّح ده لليوزر).
+      out[i] = exactV;
+    } else if (hasBefore && hasAfter) {
+      // V(t*) = V₁ + (V₂ − V₁) × (t* − t₁)/(t₂ − t₁)، و t* = 0 هنا.
+      const frac = (0 - beforeT) / (afterT - beforeT);
+      out[i] = beforeV + (afterV - beforeV) * frac;
+    } else {
+      // جنب واحد بس (البكسل متغطي بسحاب في كل الصور اللي على الناحية التانية):
+      // بنثبّت على أقرب قيمة متاحة (hold) بدل ما نمد الخط ونخترع قيمة.
+      out[i] = hasBefore ? beforeV : afterV;
+    }
+    outValid[i] = 1;
   }
+
   const calcMs = performance.now() - tCalc;
 
   let validPixels = 0;
@@ -785,14 +763,19 @@ export async function POST(req: NextRequest) {
   );
   const renderMs = performance.now() - tRender;
 
+  const pct = (x: number) => Math.round((x / n) * 1000) / 10;
+  const mean1 = (sum: number, cnt: number) => (cnt ? Math.round((sum / cnt) * 10) / 10 : null);
+
   const meta: InterpolationMeta = {
-    method,
+    method: "linear",
     targetDate: target,
     usedScl: useScl,
-    coverage: Math.round((validPixels / n) * 1000) / 10,
-    extrapolated: Math.round((extrapolatedPixels / n) * 1000) / 10,
+    coverage: pct(validPixels),
+    extrapolated: pct(extrapolatedPixels),
+    exactDay: pct(exactPixels),
     meanValidObservations: Math.round((observationsSum / Math.max(1, validPixels)) * 100) / 100,
-    meanGapDays: gapCount ? Math.round((gapSum / gapCount) * 10) / 10 : 0,
+    meanInterpolationGapDays: mean1(gapSum, gapCount),
+    meanExtrapolationDistanceDays: mean1(extrapSum, extrapCount),
     perScene,
   };
 

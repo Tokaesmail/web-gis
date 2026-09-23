@@ -303,6 +303,9 @@ export async function GET(req: NextRequest) {
   // فيرجّع صورة بتغطي مساحة أكبر شوية من اللي اتطلبت (مشكلة ArcGIS Pro).
   let realBbox: [number, number, number, number] | null = null;
   let nodataMask: Uint8Array | null = null; // 1 = pixel is masked/outside the polygon, 0 = valid
+  // القيم الحقيقية (float) لكل بكسل، مقروءة من الـ TIFF نفسه — بنستخدمها في الإحصائيات
+  // والـ Zones بدل قيم الـ 8-bit المتقصوصة (اللي بتتقص عند Min/Max).
+  let rawValues: ArrayLike<number> | null = null;
   try {
     const arrayBuffer = tifBuffer.buffer.slice(
       tifBuffer.byteOffset,
@@ -316,22 +319,24 @@ export async function GET(req: NextRequest) {
     // من الـ GDAL_NODATA tag جوه الملف نفسه — عشان نعرف بالظبط أنهي بكسلات
     // اتحطت NaN بسبب إنها برّه الـ polygon اللي رسمه اليوزر.
     const gdalNoData = image.getGDALNoData?.();
-    if (gdalNoData !== null && gdalNoData !== undefined && Number.isFinite(gdalNoData)) {
-      try {
-        const rasters = await image.readRasters({ interleave: false });
-        const band = rasters[0] as unknown as Float32Array | Float64Array;
-        const mask = new Uint8Array(band.length);
-        for (let i = 0; i < band.length; i++) {
-          const v = band[i];
-          if (Number.isNaN(v) || Math.abs(v - gdalNoData) < 1e-3) {
-            mask[i] = 1;
-          }
+    const hasNoDataTag = gdalNoData !== null && gdalNoData !== undefined && Number.isFinite(gdalNoData);
+    try {
+      const rasters = await image.readRasters({ interleave: false });
+      const band = rasters[0] as unknown as ArrayLike<number>;
+      const mask = new Uint8Array(band.length);
+      for (let i = 0; i < band.length; i++) {
+        const v = band[i];
+        // NaN/Infinity دايمًا nodata (حتى لو مفيش GDAL_NODATA tag)، وأي قيمة
+        // مطابقة للـ nodata tag لو موجود.
+        if (!Number.isFinite(v) || (hasNoDataTag && Math.abs(v - (gdalNoData as number)) < 1e-3)) {
+          mask[i] = 1;
         }
-        nodataMask = mask;
-        console.log("🎭 raster-proxy: nodata mask built, masked pixels:", mask.reduce((a, b) => a + b, 0), "/", mask.length);
-      } catch (maskErr) {
-        console.warn("⚠️ raster-proxy: could not build nodata mask, falling back to unmasked render:", maskErr);
       }
+      nodataMask = mask;
+      rawValues = band;
+      console.log("🎭 raster-proxy: nodata mask built, masked pixels:", mask.reduce((a, b) => a + b, 0), "/", mask.length);
+    } catch (maskErr) {
+      console.warn("⚠️ raster-proxy: could not read raster values/mask, falling back to 8-bit values:", maskErr);
     }
 
     // ── الـ CRS مش بالضرورة WGS84! لو Sentinel-2 محفوظ بـ UTM مثلًا، الأرقام
@@ -427,16 +432,20 @@ export async function GET(req: NextRequest) {
     alphaLUT[i] = Math.round(smooth * 255);
   }
 
+  const grayToValue = (v: number) => rMin + (v / 255) * range;
   const histogram = new Array(bins).fill(0);
   let validPixels = 0;
-  let grayMin = 255;
-  let grayMax = 0;
-  let graySum = 0;
+  // إحصائيات على القيم الحقيقية (مش المتقصوصة 8-bit)
+  let realMin = Infinity;
+  let realMax = -Infinity;
+  let realSum = 0;
 
   const rgbaData = Buffer.alloc(width * height * 4);
   // نتأكد إن الـ mask بنفس حجم الصورة قبل ما نستخدمه (احتياطًا لو فيه
   // اختلاف نادر بين قراءة sharp وقراءة geotiff.js لأي سبب)
   const maskUsable = nodataMask !== null && nodataMask.length === width * height;
+  // القيم الحقيقية صالحة بس لو حجمها بحجم الصورة اللي sharp قراها
+  const valuesUsable = rawValues !== null && (rawValues as ArrayLike<number>).length === width * height;
   if (nodataMask !== null && !maskUsable) {
     console.warn("⚠️ raster-proxy: nodata mask size mismatch, ignoring mask:", nodataMask.length, "vs", width * height);
   }
@@ -453,9 +462,10 @@ export async function GET(req: NextRequest) {
     // اللي كان بيخلي الـ Zones تتلخبط وتتركّز في زون واحدة غريبة.
     if (!isMasked) {
       validPixels += 1;
-      grayMin = Math.min(grayMin, v);
-      grayMax = Math.max(grayMax, v);
-      graySum += v;
+      const realV = valuesUsable ? rawValues![i] : grayToValue(v);
+      if (realV < realMin) realMin = realV;
+      if (realV > realMax) realMax = realV;
+      realSum += realV;
       histogram[Math.min(bins - 1, Math.floor((v / 256) * bins))] += 1;
     }
 
@@ -465,7 +475,6 @@ export async function GET(req: NextRequest) {
     rgbaData[i * 4 + 3] = alpha;
   }
 
-  const grayToValue = (v: number) => rMin + (v / 255) * range;
   // ✅ إضافة: totalPixels = إجمالي بكسلات الـ render rectangle (width×height)،
   // بغض النظر هي valid ولا masked/nodata. ده اللي الفرونت محتاجه عشان يقدر
   // يحسب نسبة الـ "No Data" الحقيقية بدل ما يفترض إن validPixels = الكل ────
@@ -473,9 +482,9 @@ export async function GET(req: NextRequest) {
   const maskedPixels = totalPixels - validPixels;
   const valueStats = validPixels > 0
     ? {
-        min: grayToValue(grayMin),
-        max: grayToValue(grayMax),
-        mean: grayToValue(graySum / validPixels),
+        min: realMin,
+        max: realMax,
+        mean: realSum / validPixels,
         validPixels,
         totalPixels,
         maskedPixels,
@@ -485,46 +494,41 @@ export async function GET(req: NextRequest) {
   // ── 3.5. Zones/Classes discrete classification (لو numClasses !== null) ───
   let zoneStats: Array<{
     zone: number; label: string; color: string; pixels: number;
-    pct: number; areaM2: number; lo: number; hi: number; isNoData?: boolean;
+    pct: number; areaM2: number | null; lo: number; hi: number; isNoData?: boolean;
   }> | null = null;
 
   if (numClasses !== null && validPixels > 0) {
-    // ✅ الإصلاح: equal-interval breaks بقت على percentile range (2%-98%
-    // افتراضيًا) بدل الـ raw grayMin/grayMax الخام. قبل كده بكسل شاذ واحد
-    // (سحابة، ظل، حافة مياه) بقيمة متطرفة كان بيمطط الـ range كله، فباقي
-    // الـ classes كانت بتتكدّس في نطاق لوني ضيق. دلوقتي بنبني histogram على
-    // الـ 256 قيمة الممكنة (grayData أصلاً uint8) ونلاقي القيم اللي عندها
-    // zoneLow%/zoneHigh% من الـ valid pixels تحتها، ونستخدمهم كحدود الـ
-    // classification. أي بكسل برّه الحدود دي (outlier) بينـclamp لأقرب طرف
-    // (Zone 1 أو آخر Zone)، مش بيتحسب زيه بالظبط.
+    // ✅ الـ classification بقى على القيم الحقيقية (float) مش على الـ 8-bit
+    // المتقصوص: بنجمع قيم الـ valid pixels وبنرتبها ونطلع حدود الـ percentile
+    // (2%–98% افتراضيًا) عشان بكسل شاذ واحد ما يمطّطش المدى. أي بكسل برّه
+    // الحدود دي بيتقص لأول/آخر Zone. لو القيم الحقيقية مش متاحة (فشلت قراءة
+    // الـ TIFF) بنرجع لقيم الـ 8-bit المحوّلة زي الأول.
     const zoneLow  = parseFloat(searchParams.get("zoneLow")  ?? "2");
     const zoneHigh = parseFloat(searchParams.get("zoneHigh") ?? "98");
 
-    const grayHist = new Uint32Array(256);
+    const getValue = (i: number) => (valuesUsable ? rawValues![i] : grayToValue(grayData[i]));
+
+    const sortedVals = new Float32Array(validPixels);
+    let k = 0;
     for (let i = 0; i < width * height; i++) {
-      const isMasked = maskUsable && nodataMask![i] === 1;
-      if (isMasked) continue;
-      grayHist[grayData[i]]++;
+      if (maskUsable && nodataMask![i] === 1) continue;
+      sortedVals[k++] = getValue(i);
     }
-    const lowCount = (zoneLow / 100) * validPixels;
-    const highCount = (zoneHigh / 100) * validPixels;
-    let cum = 0, pLow = grayMin, pHigh = grayMax, foundLow = false;
-    for (let v = 0; v < 256; v++) {
-      cum += grayHist[v];
-      if (!foundLow && cum >= lowCount) { pLow = v; foundLow = true; }
-      if (cum >= highCount) { pHigh = v; break; }
-    }
-    // لو الداتا كلها شبه متطابقة (pHigh <= pLow بعد الـ percentile)، نرجع
-    // للـ raw min/max عادي بدل ما نطلع classSpan صفري/سالب
-    if (pHigh <= pLow) { pLow = grayMin; pHigh = grayMax; }
-    const classSpan = Math.max(1, pHigh - pLow);
+    sortedVals.sort(); // Float32Array.sort() بدون comparator = ترتيب رقمي
+
+    const idxAt = (p: number) =>
+      Math.min(validPixels - 1, Math.max(0, Math.floor((p / 100) * (validPixels - 1))));
+    let vLow = sortedVals[idxAt(zoneLow)];
+    let vHigh = sortedVals[idxAt(zoneHigh)];
+    // لو الداتا كلها شبه متطابقة بعد الـ percentile، نرجع للـ min/max الحقيقي
+    if (!(vHigh > vLow)) { vLow = realMin; vHigh = realMax; }
+    const classSpan = vHigh > vLow ? vHigh - vLow : 1e-6;
 
     const classIndex = new Int16Array(width * height).fill(-1);
     for (let i = 0; i < width * height; i++) {
       const isMasked = maskUsable && nodataMask![i] === 1;
       if (isMasked) continue;
-      const v = grayData[i];
-      let cls = Math.floor(((v - pLow) / classSpan) * numClasses);
+      let cls = Math.floor(((getValue(i) - vLow) / classSpan) * numClasses);
       cls = Math.max(0, Math.min(numClasses - 1, cls));
       classIndex[i] = cls;
     }
@@ -554,8 +558,8 @@ export async function GET(req: NextRequest) {
     // الـ Continuous كانت خضرا/صفرا. دلوقتي كل Zone بتاخد نفس اللون بالظبط
     // اللي القيمة دي كانت هتاخده في الـ Continuous gradient.
     const zoneColorsRgb: [number, number, number][] = Array.from({ length: numClasses }, (_, i) => {
-      const grayCenter = pLow + (classSpan * (i + 0.5)) / numClasses;
-      const t = grayCenter / 255;
+      const centerValue = vLow + (classSpan * (i + 0.5)) / numClasses;
+      const t = (centerValue - rMin) / range; // نفس تحويل الـ continuous (بيتقص جوه applyColormap)
       return applyColormap(stops, t);
     });
 
@@ -585,8 +589,8 @@ export async function GET(req: NextRequest) {
     // بس — عشان لو فيه no-data جوه المنطقة، النسب متجمعش غلط على 100%
     // وتدّي انطباع إن كل حاجة اتصنفت وهي مش كده ────────────────────────────
     zoneStats = counts.map((count, i) => {
-      const lo = grayToValue(pLow + (classSpan * i) / numClasses);
-      const hi = grayToValue(pLow + (classSpan * (i + 1)) / numClasses);
+      const lo = vLow + (classSpan * i) / numClasses;
+      const hi = vLow + (classSpan * (i + 1)) / numClasses;
       const [r, g, b] = zoneColorsRgb[i];
       const hexColor = "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
       return {
@@ -595,7 +599,7 @@ export async function GET(req: NextRequest) {
         color: hexColor,
         pixels: count,
         pct: (count / totalPixels) * 100,
-        areaM2: pixelAreaM2 ? count * pixelAreaM2 : 0,
+        areaM2: pixelAreaM2 ? count * pixelAreaM2 : null,
         lo, hi,
       };
     });
@@ -610,7 +614,7 @@ export async function GET(req: NextRequest) {
         color: "#475569", // slate-600 — رمادي محايد، مش من الـ colormap
         pixels: maskedPixels,
         pct: (maskedPixels / totalPixels) * 100,
-        areaM2: pixelAreaM2 ? maskedPixels * pixelAreaM2 : 0,
+        areaM2: pixelAreaM2 ? maskedPixels * pixelAreaM2 : null,
         lo: 0, hi: 0,
         isNoData: true,
       });
@@ -628,7 +632,9 @@ export async function GET(req: NextRequest) {
   const pngBuffer = await sharp(rgbaData, {
     raw: { width, height, channels: 4 },
   })
-    .resize(outW, outH, { kernel: sharp.kernel.lanczos3 })
+    .resize(outW, outH, {
+      kernel: flatRender && numClasses !== null ? sharp.kernel.nearest : sharp.kernel.lanczos3,
+    })
     // الـ ramps بقت vivid من نفسها، فبنزود شوية بسيطة بس مش هنحرق الألوان
     // (modulate ما بيلمسش قناة الـ alpha)
     .modulate({ saturation: 1.12, brightness: 1.03 })
