@@ -175,6 +175,12 @@ export const authOptions: NextAuthOptions = {
           id          : token.id as string,
           username    : token.username as string,
           email       : token.email as string,
+          // ✅ الفكس: من غير السطر ده، token.accessToken (اللي jwt() callback
+          // فوق بيخزّنه ويعمله refresh لما ينتهي) مكانش بيوصل خالص لـ
+          // session.user اللي بيقراه useSession() في الـ client — فكل مكان
+          // بيقرا (session?.user as any)?.accessToken كان بياخد undefined
+          // دايمًا، بغض النظر مين الـ user، فكان بيطلع "missing JWT" للكل.
+          accessToken : token.accessToken as string,
         } as any;
         (session as any).error = token.error;
       }

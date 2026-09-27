@@ -543,22 +543,10 @@ useEffect(() => {
       rasterOverlayRef.current.set(overlayKey, layer);
 
       // map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 14, duration: 0.8 });
-      const sceneMarker = L.circleMarker([config.coords.lat, config.coords.lng], {
-        radius: 7,
-        color: "#22d3ee",
-        fillColor: "#22d3ee",
-        fillOpacity: 0.75,
-        weight: 2,
-      }).addTo(map).bindPopup(`<b>${config.name}</b><br/>${config.coords.lat.toFixed(5)}, ${config.coords.lng.toFixed(5)}`);
-
-      // سجّليه عشان زرار Clear يقدر يمسحه لو احتاج
-      drawLayersRef.current.push(sceneMarker);
-
-      // ولو المستخدم قفل الـ popup بزرار X، امسحي النقطة خالص مش بس اقفلي الـ popup
-      sceneMarker.on("popupclose", () => {
-        map.removeLayer(sceneMarker);
-        drawLayersRef.current = drawLayersRef.current.filter((l) => l !== sceneMarker);
-      });
+      // ❌ اتشالت نقطة الـ sceneMarker (الدائرة السماوي جوه الإطار الأصفر) خالص
+      // بناءً على طلبك — كانت بتتضاف مع كل preview وميتمسحش غير لو المستخدم
+      // قفل الـ popup بتاعها يدويًا، فكانت بتتراكم على الخريطة مع كل تحليل جديد.
+      // دلوقتي التحليل بيظهر (overlay/tile) من غير أي نقطة زيادة فوقه.
     });
   }, [onRasterOverlayRegister, mapReady]);
 

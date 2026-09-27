@@ -2505,13 +2505,87 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     }
   }, [beforeScene, afterScene, indexKey, previewDef, threshold, west, south, east, north, source, sentinelDecodeToken]);
 
-  const downloadDiff = useCallback(() => {
+  // ⚠️ FIX (2026-09-27): used to just download the raw classification PNG
+  // as-is — the legend (colors/labels/percentages) only ever existed as React
+  // markup below the image, so it never made it into the exported file. This
+  // now redraws the map onto a canvas with the same legend baked in underneath,
+  // so the PNG people download/share matches what's shown on screen.
+  const downloadDiff = useCallback(async () => {
     if (!diffDataUrl) return;
+
+    if (!changeResult) {
+      // Shouldn't happen (downloadDiff only renders once changeResult is set
+      // too), but fall back to the old plain-image behavior just in case.
+      const a = document.createElement("a");
+      a.href = diffDataUrl;
+      a.download = `change_detection_${indexKey}_${Date.now()}.png`;
+      a.click();
+      return;
+    }
+
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error("Failed to load the change map for export"));
+      img.src = diffDataUrl;
+    });
+
+    // Upscale the (small, categorical) classification image with nearest-
+    // neighbor so exported pixels stay crisp flat classes — matches the
+    // on-screen `imageRendering: pixelated` and the backend's nearest-kernel
+    // resize, instead of the browser's default smoothing blurring class edges.
+    const displayScale = Math.max(1, Math.round(640 / Math.max(img.width, img.height)));
+    const mapW = img.width * displayScale;
+    const mapH = img.height * displayScale;
+
+    const pad = 16;
+    const rowH = 22;
+    const legendH = pad * 2 + changeResult.legend.length * rowH;
+    const canvas = document.createElement("canvas");
+    canvas.width = mapW;
+    canvas.height = mapH + legendH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    // Background (matches the app's dark card style)
+    ctx.fillStyle = "#020817";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Classification map, pixelated upscale
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0, mapW, mapH);
+
+    // Legend
+    let y = mapH + pad;
+    ctx.textBaseline = "middle";
+    changeResult.legend.forEach((item) => {
+      const pct = changeResult.stats ? (changeResult.stats as any)[`${item.key}Pct`] as number | undefined : undefined;
+      const swatchSize = 12;
+      const rowMidY = y + rowH / 2 - 4;
+
+      ctx.fillStyle = item.color;
+      ctx.fillRect(pad, rowMidY - swatchSize / 2, swatchSize, swatchSize);
+
+      ctx.fillStyle = "#cbd5e1";
+      ctx.font = "13px system-ui, -apple-system, sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(item.label, pad + swatchSize + 10, rowMidY);
+
+      if (typeof pct === "number") {
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "600 13px system-ui, -apple-system, sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(`${pct.toFixed(1)}%`, mapW - pad, rowMidY);
+      }
+
+      y += rowH;
+    });
+
     const a = document.createElement("a");
-    a.href = diffDataUrl;
+    a.href = canvas.toDataURL("image/png");
     a.download = `change_detection_${indexKey}_${Date.now()}.png`;
     a.click();
-  }, [diffDataUrl, indexKey]);
+  }, [diffDataUrl, changeResult, indexKey]);
 
   return (
     <div className="space-y-4">

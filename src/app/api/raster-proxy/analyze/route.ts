@@ -231,12 +231,17 @@ async function signPlanetaryComputerUrl(url: string): Promise<string> {
     signCache.set(url, { href, expiresAt });
     return href;
   } catch (err) {
-    // ⚠️ فشل الشبكة (DNS/فايروول/timeout) بيوصل هنا. كان بيترجع url من غير
-    // توقيع بصمت — دلوقتي بنسجّل السبب الحقيقي في اللوج قبل ما نكمل، عشان
-    // تقدري تفرّقي بين "فشل توقيع" و"فشل شبكة" من اللوج مباشرة بدل ما تلفّي
-    // على fromUrl() تاني كل مرة.
+    // ⚠️ FIX (2026-09-27): this used to log the real reason and then still
+    // return the unsigned `url` — but every URL that reaches this catch block
+    // is a private *.blob.core.windows.net asset (public URLs and already-signed
+    // ones both return early at line 201), so an unsigned fallback here isn't
+    // a fallback at all: Azure will reject it every time. That's exactly what
+    // produced "[signed=false]" downstream — a guaranteed-to-fail fetch with
+    // the real cause (PC sign API down/rate-limited/network) buried in a
+    // server log the person calling this never sees. Rethrowing surfaces the
+    // actual reason immediately instead of a doomed extra round-trip.
     console.error(`[sign] Failed to sign ${url}:`, err instanceof Error ? err.message : err);
-    return url;
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }
 
@@ -2172,7 +2177,21 @@ async function readBand(
     let tp = performance.now();
     // الـ crop endpoint عام (public) — مش محتاج SAS signing زيه زي الـ raw
     // blob urls، فبنتخطى signPlanetaryComputerUrl تمامًا في الحالة دي.
-    const signedUrl = cropUrl ?? (await signPlanetaryComputerUrl(url));
+    // ⚠️ FIX (2026-09-27): signing now happens in its own try/catch — it used
+    // to share the fetch's catch block below, but signPlanetaryComputerUrl
+    // can now throw (see its FIX comment), and a signing failure and an
+    // upstream-fetch failure are different problems with different fixes
+    // (retry/check the PC sign API vs. a genuinely bad/expired asset URL).
+    // Reporting them with the same "Upstream fetch failed ... [signed=false]"
+    // message was actively misleading — signed=false there didn't mean the
+    // fetch rejected an unsigned URL, it meant signing itself threw and never
+    // produced a URL to fetch in the first place.
+    let signedUrl: string;
+    try {
+      signedUrl = cropUrl ?? (await signPlanetaryComputerUrl(url));
+    } catch (err) {
+      throw new Error(`SAS signing failed for ${url}: ${(err as Error).message}`);
+    }
     t.sign = performance.now() - tp;
 
     const headers: Record<string, string> = {};
@@ -2829,12 +2848,21 @@ async function renderChange(
     otherPct: (counts.other / total) * 100,
   };
 
+  // ⚠️ FIX (2026-09-27): was sharp.kernel.lanczos3. This buffer only ever
+  // holds 5 flat classification colors (CHANGE_COLORS), not a continuous
+  // photo — lanczos3 is a sinc kernel meant for smooth imagery, so at the AOI
+  // upscales this does (up to 32×, see `scale` below) it rings/blends across
+  // the hard color edges and invents extra speckled pixels that were never
+  // classified as gain/loss. That's why the exported map can visually look
+  // like far more red/other than the stats (computed pre-resize, on the real
+  // pixel counts) report — the percentages were always correct, the picture
+  // was lying. `nearest` keeps every output pixel one of the 5 real classes,
+  // which also matches the frontend's `imageRendering: pixelated` CSS.
   const scale = Math.min(32, Math.max(1, TARGET_MAX_DIM / Math.max(width, height)));
   const outW = Math.round(width * scale);
   const outH = Math.round(height * scale);
-
   const pngBuffer = await sharp(rgbaData, { raw: { width, height, channels: 4 } })
-    .resize(outW, outH, { kernel: sharp.kernel.lanczos3 })
+    .resize(outW, outH, { kernel: sharp.kernel.nearest })
     .png({ compressionLevel: 6 })
     .toBuffer();
 
@@ -2922,7 +2950,10 @@ async function renderCategoricalChange(
   const outH = Math.round(height * scale);
 
   const pngBuffer = await sharp(rgbaData, { raw: { width, height, channels: 4 } })
-    .resize(outW, outH, { kernel: sharp.kernel.lanczos3 })
+  // ⚠️ FIX (2026-09-27): was lanczos3 — same categorical-color reasoning as
+  // renderChange() above (this buffer is flat CHANGE_COLORS classes too);
+  // nearest keeps the exported map's colors matching the real per-pixel counts.
+    .resize(outW, outH, { kernel: sharp.kernel.nearest })
     .png({ compressionLevel: 6 })
     .toBuffer();
 
@@ -3301,7 +3332,10 @@ async function renderDemChange(
   const outH = Math.round(height * scale);
 
   const pngBuffer = await sharp(rgbaData, { raw: { width, height, channels: 4 } })
-    .resize(outW, outH, { kernel: sharp.kernel.lanczos3 })
+  // ⚠️ FIX (2026-09-27): was lanczos3 — same categorical-color reasoning as
+  // renderChange() above (this buffer is flat CHANGE_COLORS classes too);
+  // nearest keeps the exported map's colors matching the real per-pixel counts.
+    .resize(outW, outH, { kernel: sharp.kernel.nearest })
     .png({ compressionLevel: 6 })
     .toBuffer();
 
