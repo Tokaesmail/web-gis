@@ -178,14 +178,8 @@ function getUniversityColor(
 }
 
 function makePolygonFeature(
-<<<<<<< HEAD
-  name: string,
-  points: [number, number][],
-  area: number,
-=======
   name: string, points: [number, number][], area: number,
   meta?: { id: string; kind: "polygon" | "rectangle" | "circle" }
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
 ): GeoJSON.Feature {
   const ring = points.map(([lat, lng]) => [lng, lat]);
   const first = ring[0];
@@ -266,15 +260,10 @@ export default function LeafletMap({
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const restoredRef = useRef(false);
-<<<<<<< HEAD
-  const activeToolRef = useRef<DrawTool>(activeTool);
-  const drawLayersRef = useRef<any[]>([]);
-=======
   const aoiRegistryRef = useRef<AOIRegistry | null>(null);
   const editSessionRef = useRef<{ id: string; handles: any[]; dirty: boolean } | null>(null);
   const activeToolRef  = useRef<DrawTool>(activeTool);
   const drawLayersRef  = useRef<any[]>([]);
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
   const draftLayersRef = useRef<any[]>([]);
   const tempLayerRef = useRef<any>(null);
   const drawPointsRef = useRef<[number, number][]>([]);
@@ -353,23 +342,6 @@ export default function LeafletMap({
       } catch (_) {}
     });
     pointsOverlayRef.current.clear();
-<<<<<<< HEAD
-    if (superResOverlayRef.current) {
-      try {
-        map.removeLayer(superResOverlayRef.current.layer);
-      } catch (_) {}
-      try {
-        map.removeLayer(superResOverlayRef.current.marker);
-      } catch (_) {}
-      superResOverlayRef.current = null;
-    }
-    if (swipeOverlayRef.current) {
-      try {
-        swipeOverlayRef.current.cleanup();
-      } catch (_) {}
-      swipeOverlayRef.current = null;
-    }
-=======
   };
   const clearSuperResOnlyRef = useRef<() => void>(() => {});
   clearSuperResOnlyRef.current = () => {
@@ -396,7 +368,6 @@ export default function LeafletMap({
     clearPointsOnlyRef.current();
     clearSuperResOnlyRef.current();
     clearSwipeOnlyRef.current();
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
   };
   const placingImageRef = useRef<{
     file: File;
@@ -778,15 +749,9 @@ export default function LeafletMap({
     } catch (_) {}
     drawLayersRef.current = drawLayersRef.current.filter((l) => l !== layer);
     draftLayersRef.current = draftLayersRef.current.filter((l) => l !== layer);
-<<<<<<< HEAD
-    initialFeaturesLayerRef.current = initialFeaturesLayerRef.current.filter(
-      (l) => l !== layer,
-    );
-=======
     initialFeaturesLayerRef.current = initialFeaturesLayerRef.current.filter((l) => l !== layer);
     // شيله من قائمة الـ AOIs (ولو كان هو النشط، آخر واحد باقي هيبقى نشط)
     aoiRegistryRef.current?.removeByLayer(layer);
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
   };
 
   /** صف الأزرار اللي بتتحط جوه popup أي شكل مرسوم — Delete بس (Edit AOI اتشالت لأنها كانت مش شغالة). */
@@ -1005,15 +970,10 @@ export default function LeafletMap({
       // لو هو مجرد رابط ملف GeoTIFF واحد (زي اللي راجع من raster-calc)، بيبقى
       // مش صالح كـ tile source خالص (المتصفح مش بيقدر يعرض TIFF كـ tile)،
       // فبنرجع لـ imageOverlay اللي شغال أصلًا بالـ PNG + bounds الحقيقية.
-<<<<<<< HEAD
-      const hasTileTemplate =
-        !!config.tileUrl && config.tileUrl.includes("{z}");
-=======
       const hasTileTemplate = !!config.tileUrl && config.tileUrl.includes("{z}");
       const isSceneImage =
         config.colorRamp === "Scene preview" ||
         String(config.indexKey).toUpperCase() === "RGB";
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
       const layer = hasTileTemplate
         ? L.tileLayer(config.tileUrl!, {
             opacity: config.opacity,
@@ -1031,14 +991,6 @@ export default function LeafletMap({
         : L.imageOverlay(config.dataUrl, bounds, {
             opacity: config.opacity,
             pane: "imagePane",
-<<<<<<< HEAD
-            // الصورة الأصلية low-res (كلاسات مصنّفة، مش صورة عادية)، فلو المتصفح
-            // كبّرها بـ smooth/bilinear scaling الافتراضي، البقع/النقط الحمرا
-            // والخضرا الصغيرة بتتمسح وتتحول لبقعة ضبابية (زي اللي كان بيبان أخضر
-            // "شايل" فوق الخريطة). pixelated بيخلي كل بكسل مصنّف يبان بحدوده
-            // واضحة زي في صورة السايد بار بالظبط.
-            className: "change-detection-raster-overlay",
-=======
         // الصورة الأصلية low-res (كلاسات مصنّفة، مش صورة عادية)، فلو المتصفح
         // كبّرها بـ smooth/bilinear scaling الافتراضي، البقع/النقط الحمرا
         // والخضرا الصغيرة بتتمسح وتتحول لبقعة ضبابية (زي اللي كان بيبان أخضر
@@ -1047,7 +999,6 @@ export default function LeafletMap({
             // ⚠️ pixelated بس للكلاسات المصنّفة (Change Detection). صور المشاهد
             // (RGB / Scene preview) لازم تتعرض smooth وإلا بتطلع مكعبات ومشوّهة.
             className: isSceneImage ? "scene-preview-raster-overlay" : "change-detection-raster-overlay",
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
           }).addTo(map);
       rasterOverlayRef.current.set(overlayKey, layer);
 
@@ -1788,14 +1739,8 @@ export default function LeafletMap({
 
     // امسح أي layers قديمة من load سابق
     initialFeaturesLayerRef.current.forEach((layer) => {
-<<<<<<< HEAD
-      try {
-        map.removeLayer(layer);
-      } catch (_) {}
-=======
       try { map.removeLayer(layer); } catch (_) {}
       aoiRegistryRef.current?.removeByLayer(layer);
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
     });
     initialFeaturesLayerRef.current = [];
 
@@ -1833,11 +1778,6 @@ export default function LeafletMap({
           drawLayersRef.current.push(poly);
           initialFeaturesLayerRef.current.push(poly);
 
-<<<<<<< HEAD
-          try {
-            bounds.push(poly.getBounds());
-          } catch (_) {}
-=======
           // سجّل الـ AOI المستعاد في القائمة (آخر واحد بيبقى النشط)
           const aoiId = String(props.id ?? newAoiId());
           const aoiKind = props.kind === "rectangle" || props.kind === "circle" ? props.kind : "polygon";
@@ -1850,7 +1790,6 @@ export default function LeafletMap({
           });
 
           try { bounds.push(poly.getBounds()); } catch (_) {}
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
         }
 
         // ── Circle (bounds approximation) ─────────────────────────────────────
@@ -2094,26 +2033,6 @@ export default function LeafletMap({
       })
       .openPopup();
 
-<<<<<<< HEAD
-    const feature = makePolygonFeature("Drawn Polygon", pts, area);
-
-    // ⬇️⬇️ الكود الجديد هنا ⬇️⬇️
-    const aoiId = crypto.randomUUID();
-    (poly as any)._aoiId = aoiId;
-    feature.properties = { ...feature.properties, aoiId };
-
-    saveAOI({
-      id: aoiId,
-      name: "Drawn Polygon",
-      tool: "polygon",
-      coords: [...pts], // نسخة، لأن pts هتتفرّغ تحت
-      areaHa: area,
-      createdAt: new Date().toISOString(),
-    }).catch((e) => console.error("AOI save failed", e));
-    // ⬆️⬆️ نهاية الكود الجديد ⬆️⬆️
-
-    onAreaSelected("Drawn Polygon", area, feature);
-=======
     const reg = aoiRegistryRef.current;
     const aoiId = newAoiId();
     const aoiName = reg?.nextName("Drawn Polygon") ?? "Drawn Polygon";
@@ -2123,7 +2042,6 @@ export default function LeafletMap({
       coords: pts.map(([lat, lng]: [number, number]) => ({ lat, lng })), stroke: c.stroke,
     });
     onAreaSelected(aoiName, area, feature);
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
     onFeatureClick?.(feature);
     // ... باقي الدالة زي ما هو
 
@@ -2141,15 +2059,8 @@ export default function LeafletMap({
         ),
       );
       const metadata: CaptureMetadata = {
-<<<<<<< HEAD
-        areaName: "Drawn Polygon",
-        areaSizeHa: area,
-        zoom: map.getZoom(),
-        capturedAt: new Date().toISOString(),
-=======
         areaName: aoiName, areaSizeHa: area,
         zoom: map.getZoom(), capturedAt: new Date().toISOString(),
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
       };
       await handleCapture(canvasRef.current, map, L, coordinates, metadata);
     }
@@ -2687,22 +2598,10 @@ export default function LeafletMap({
 
       clearRef.current = () => {
         drawLayersRef.current.forEach((l) => map.removeLayer(l));
-<<<<<<< HEAD
-        drawLayersRef.current = [];
-        draftLayersRef.current = [];
-        drawPointsRef.current = [];
-        lastCoordsRef.current = [];
-        lastToolRef.current = "pointer";
-        if (tempLayerRef.current) {
-          map.removeLayer(tempLayerRef.current);
-          tempLayerRef.current = null;
-        }
-=======
         aoiRegistryRef.current?.clear();
         drawLayersRef.current = []; draftLayersRef.current = []; drawPointsRef.current = [];
         lastCoordsRef.current = []; lastToolRef.current = "pointer";
         if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
         if (canvasRef.current) clearCanvas(canvasRef.current);
         if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
 
@@ -3124,20 +3023,6 @@ export default function LeafletMap({
               .openPopup();
 
             drawLayersRef.current.push(rect);
-<<<<<<< HEAD
-            const coordinates: LatLngPoint[] = [
-              { lat: p1[0], lng: p1[1] },
-              { lat, lng: p1[1] },
-              { lat, lng },
-              { lat: p1[0], lng },
-            ];
-            const feature = makePolygonFeature(
-              "Drawn Rectangle",
-              coordinates.map((point) => [point.lat, point.lng]),
-              area,
-            );
-            onAreaSelected("Drawn Rectangle", area, feature);
-=======
             const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
             const reg = aoiRegistryRef.current;
             const aoiId = newAoiId();
@@ -3148,37 +3033,15 @@ export default function LeafletMap({
               coords: [{ lat: p1[0], lng: p1[1] }, { lat, lng }], stroke: c.stroke,
             });
             onAreaSelected(aoiName, area, feature);
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
             onFeatureClick?.(feature);
             if (canvasRef.current) {
               const px1 = map.latLngToContainerPoint(L.latLng(p1[0], p1[1]));
               const px2 = map.latLngToContainerPoint(L.latLng(lat, lng));
               drawRect(canvasRef.current, px1, px2);
-<<<<<<< HEAD
-              lastCoordsRef.current = [
-                { lat: p1[0], lng: p1[1] },
-                { lat, lng },
-              ];
-              lastToolRef.current = "rectangle";
-              const metadata: CaptureMetadata = {
-                areaName: "Drawn Rectangle",
-                areaSizeHa: area,
-                zoom: map.getZoom(),
-                capturedAt: new Date().toISOString(),
-              };
-              await handleCapture(
-                canvasRef.current,
-                map,
-                L,
-                coordinates,
-                metadata,
-              );
-=======
               lastCoordsRef.current = [{ lat: p1[0], lng: p1[1] }, { lat, lng }];
               lastToolRef.current   = "rectangle";
               const metadata: CaptureMetadata = { areaName: aoiName, areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
               await handleCapture(canvasRef.current, map, L, coordinates, metadata);
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
             }
             draftLayersRef.current = [];
             drawPointsRef.current = [];
@@ -3230,32 +3093,6 @@ export default function LeafletMap({
             drawLayersRef.current.push(circ);
 
             // التعديل الجديد باستخدام الدالة الحقيقية بدل المربع
-<<<<<<< HEAD
-            const circleRing = circleToPolygonLatLng(
-              center[0],
-              center[1],
-              radius,
-              64,
-            );
-            const aoiId = crypto.randomUUID();
-            (circ as any)._aoiId = aoiId;
-
-            saveAOI({
-              id: aoiId,
-              name: "Drawn Circle",
-              tool: "circle",
-              coords: circleRing, // إرسال النقاط المحيطة بالدائرة
-              areaHa: area,
-              createdAt: new Date().toISOString(),
-            }).catch((e) => console.error("Circle save failed", e));
-            const feature = makePolygonFeature(
-              "Drawn Circle",
-              circleRing,
-              area,
-            );
-
-            onAreaSelected("Drawn Circle", area, feature);
-=======
             const circleRing = circleToPolygonLatLng(center[0], center[1], radius, 64);
             const reg = aoiRegistryRef.current;
             const aoiId = newAoiId();
@@ -3267,7 +3104,6 @@ export default function LeafletMap({
             });
             
             onAreaSelected(aoiName, area, feature);
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
             onFeatureClick?.(feature);
 
             if (canvasRef.current) {
@@ -3284,37 +3120,10 @@ export default function LeafletMap({
                 lng: center[1],
               };
               lastCoordsRef.current = [centerCoord, { lat, lng }];
-<<<<<<< HEAD
-              lastToolRef.current = "circle";
-              const metadata: CaptureMetadata = {
-                areaName: "Drawn Circle",
-                areaSizeHa: area,
-                zoom: map.getZoom(),
-                capturedAt: new Date().toISOString(),
-              };
-              const captureResult = await captureCircle(
-                canvasRef.current,
-                map,
-                L,
-                centerCoord,
-                radius,
-                metadata,
-                captureTarget,
-              );
-              const {
-                smallBlob,
-                largeBlob,
-                selectedCoordinates,
-                viewportCoordinates,
-                selectedBounds,
-                viewportBounds,
-              } = captureResult;
-=======
               lastToolRef.current   = "circle";
               const metadata: CaptureMetadata = { areaName: aoiName, areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
             const captureResult = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata, captureTarget);
               const { smallBlob, largeBlob, selectedCoordinates, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
->>>>>>> 970cef179cecf6ddf01fae29436ce4eda08e11a7
               onCapture?.(captureResult);
               // نفس التعديل: مبنرفعش largeBlob للباك إلا لو captureTarget فعلاً "large"
               const res = await sendToBackend(
