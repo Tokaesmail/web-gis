@@ -2835,8 +2835,8 @@ export default function LeafletMap({
           saveAOI({
             id: aoiId,
             name: "Marker",
-            tool: "marker",
-            coords: [{ lat, lng }],
+            tool: "marker" as any,
+            coords: [{ lat, lng }] as any ,
             areaHa: 0,
             createdAt: new Date().toISOString(),
           }).catch((e) => console.error("Marker save failed", e));
@@ -3002,7 +3002,7 @@ export default function LeafletMap({
               id: aoiiId,
               name: "Drawn Rectangle",
               tool: "rectangle",
-              coords: rectPoints,
+              coords: rectPoints as any,
               areaHa: area,
               createdAt: new Date().toISOString(),
             }).catch((e) => console.error("Rectangle save failed", e));
@@ -3107,7 +3107,7 @@ export default function LeafletMap({
               id: aoiId,
               name: "Drawn Circle",
               tool: "circle",
-              coords: [{ lat: center[0], lng: center[1] }, { lat, lng }],
+              coords: [{ lat: center[0], lng: center[1] }, { lat, lng }] as any,
               areaHa: area,
               createdAt: new Date().toISOString(),
             }).catch((e) => console.error("Circle save failed", e));
