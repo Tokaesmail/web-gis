@@ -21,6 +21,7 @@ import {
   SatKey, LatLngPoint, CaptureMetadata, CaptureResult, CaptureTarget,
 } from "./mapTypes_proxy";
 import { validateAOI, MAX_AOI_SIZE_HA } from "./aoiValidation";
+import { AOIRegistry, newAoiId, type AOIControl, type AOIListItem } from "./AOIRegistry";
 
 type ExtrusionConfig = {
   enabled: boolean;
@@ -123,6 +124,12 @@ interface Props {
   geoJsonFitBounds?: boolean;
   /** features محفوظة في البروجيكت — بترسمهم تاني لما نفتح البروجيكت */
   initialFeatures?: GeoJSON.Feature[];
+  /** واجهة للتحكم في الـ AOIs المرسومة (activate / focus / remove) من بره */
+  aoiControlRef?: React.MutableRefObject<AOIControl | null>;
+  /** بتتنادى كل ما قائمة الـ AOIs أو الـ AOI النشط يتغيّر */
+  onAOIListChange?: (items: AOIListItem[], activeId: string | null) => void;
+  /** بتتنادى لما AOI يتمسح من الخريطة */
+  onAOIRemove?: (id: string) => void;
 }
 
 // ── ألوان كل أداة — للعرض فقط، مش بتتبعت للباك ──────────────────────────────
@@ -142,7 +149,10 @@ function getUniversityColor(from: number, to: number): { fill: string; stroke: s
   return           { fill: "#ef4444", stroke: "#dc2626" };
 }
 
-function makePolygonFeature(name: string, points: [number, number][], area: number): GeoJSON.Feature {
+function makePolygonFeature(
+  name: string, points: [number, number][], area: number,
+  meta?: { id: string; kind: "polygon" | "rectangle" | "circle" }
+): GeoJSON.Feature {
   const ring = points.map(([lat, lng]) => [lng, lat]);
   const first = ring[0];
   const last = ring[ring.length - 1];
@@ -153,7 +163,7 @@ function makePolygonFeature(name: string, points: [number, number][], area: numb
   return {
     type: "Feature",
     geometry: { type: "Polygon", coordinates: [closedRing] },
-    properties: { name, areaHa: area, _drawn: true },
+    properties: { name, areaHa: area, _drawn: true, ...(meta ?? {}) },
   };
 }
 
@@ -186,6 +196,9 @@ export default function LeafletMap({
   extrusionGeoJson,
   extrusionConfig,
   initialFeatures,
+  aoiControlRef,
+  onAOIListChange,
+  onAOIRemove,
 }: Props) {
   const { t, isRTL } = useLang();
 
@@ -198,6 +211,7 @@ export default function LeafletMap({
   const mapRef         = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const restoredRef = useRef(false);
+  const aoiRegistryRef = useRef<AOIRegistry | null>(null);
   const activeToolRef  = useRef<DrawTool>(activeTool);
   const drawLayersRef  = useRef<any[]>([]);
   const draftLayersRef = useRef<any[]>([]);
@@ -331,6 +345,8 @@ export default function LeafletMap({
     drawLayersRef.current = drawLayersRef.current.filter((l) => l !== layer);
     draftLayersRef.current = draftLayersRef.current.filter((l) => l !== layer);
     initialFeaturesLayerRef.current = initialFeaturesLayerRef.current.filter((l) => l !== layer);
+    // شيله من قائمة الـ AOIs (ولو كان هو النشط، آخر واحد باقي هيبقى نشط)
+    aoiRegistryRef.current?.removeByLayer(layer);
   };
 
   /** صف الأزرار اللي بتتحط جوه popup أي شكل مرسوم — Delete بس (Edit AOI اتشالت لأنها كانت مش شغالة). */
@@ -1161,6 +1177,7 @@ useEffect(() => {
     // امسح أي layers قديمة من load سابق
     initialFeaturesLayerRef.current.forEach((layer) => {
       try { map.removeLayer(layer); } catch (_) {}
+      aoiRegistryRef.current?.removeByLayer(layer);
     });
     initialFeaturesLayerRef.current = [];
 
@@ -1192,6 +1209,17 @@ useEffect(() => {
 
           drawLayersRef.current.push(poly);
           initialFeaturesLayerRef.current.push(poly);
+
+          // سجّل الـ AOI المستعاد في القائمة (آخر واحد بيبقى النشط)
+          const aoiId = String(props.id ?? newAoiId());
+          const aoiKind = props.kind === "rectangle" || props.kind === "circle" ? props.kind : "polygon";
+          aoiRegistryRef.current?.add({
+            id: aoiId, name, kind: aoiKind, tool: "polygon", layer: poly,
+            feature: { ...feature, properties: { ...props, id: aoiId, kind: aoiKind } },
+            areaHa: area,
+            coords: ring.map(([lat, lng]: number[]) => ({ lat, lng })),
+            stroke: c.stroke,
+          });
 
           try { bounds.push(poly.getBounds()); } catch (_) {}
         }
@@ -1236,6 +1264,15 @@ useEffect(() => {
         console.warn("Failed to restore feature:", err);
       }
     });
+
+    // خلّي الـ AOI النشط بعد الاستعادة هو اللي الـ panels بتقرأه (بدون ما نفتح أي panel)
+    const reg = aoiRegistryRef.current;
+    const activeId = reg?.getActiveId();
+    const activeEntry = activeId ? reg?.get(activeId) : null;
+    if (activeEntry) {
+      lastCoordsRef.current = activeEntry.coords;
+      lastToolRef.current   = "polygon";
+    }
 
     // Fly to الـ bounds بتاعت كل الـ features المرسومة
     if (bounds.length) {
@@ -1377,8 +1414,15 @@ const area = parseFloat(
       return div;
     }).openPopup();
 
-    const feature = makePolygonFeature("Drawn Polygon", pts, area);
-    onAreaSelected("Drawn Polygon", area, feature);
+    const reg = aoiRegistryRef.current;
+    const aoiId = newAoiId();
+    const aoiName = reg?.nextName("Drawn Polygon") ?? "Drawn Polygon";
+    const feature = makePolygonFeature(aoiName, pts, area, { id: aoiId, kind: "polygon" });
+    reg?.add({
+      id: aoiId, name: aoiName, kind: "polygon", tool: "polygon", layer: poly, feature, areaHa: area,
+      coords: pts.map(([lat, lng]: [number, number]) => ({ lat, lng })), stroke: c.stroke,
+    });
+    onAreaSelected(aoiName, area, feature);
     onFeatureClick?.(feature);
 
     const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
@@ -1390,7 +1434,7 @@ const area = parseFloat(
         map.latLngToContainerPoint(L.latLng(p.lat, p.lng))
       ));
       const metadata: CaptureMetadata = {
-        areaName: "Drawn Polygon", areaSizeHa: area,
+        areaName: aoiName, areaSizeHa: area,
         zoom: map.getZoom(), capturedAt: new Date().toISOString(),
       };
       await handleCapture(canvasRef.current, map, L, coordinates, metadata);
@@ -1771,8 +1815,49 @@ if (!restoredRef.current) {
   }, 1700);
 };
 
+      // ── AOI registry: يتابع كل الـ AOIs المرسومة، واحد بس نشط والباقي معطّل ──
+      aoiRegistryRef.current = new AOIRegistry({
+        onListChange: (items, activeId) => onAOIListChange?.(items, activeId),
+        onRemove: (e) => onAOIRemove?.(e.id),
+        onActivate: (e) => {
+          if (!e) {
+            lastCoordsRef.current = []; lastToolRef.current = "pointer";
+            if (canvasRef.current) clearCanvas(canvasRef.current);
+            return;
+          }
+          // captureCurrentRef والـ panels بتشتغل على lastCoordsRef/lastToolRef
+          lastCoordsRef.current = e.coords;
+          lastToolRef.current   = e.tool;
+          if (canvasRef.current) {
+            clearCanvas(canvasRef.current);
+            redrawCurrent(canvasRef.current, map, L);
+          }
+          onAreaSelected(e.name, e.areaHa, e.feature);
+          onFeatureClick?.(e.feature);
+        },
+      });
+
+      const focusAoi = (id: string) => {
+        const e = aoiRegistryRef.current?.get(id);
+        if (!e) return;
+        try {
+          map.flyToBounds(e.layer.getBounds(), { padding: [60, 60], maxZoom: 16, duration: 0.8 });
+        } catch (_) {}
+      };
+      if (aoiControlRef) {
+        aoiControlRef.current = {
+          activate: (id) => { aoiRegistryRef.current?.activate(id); focusAoi(id); },
+          focus: focusAoi,
+          remove: (id) => {
+            const e = aoiRegistryRef.current?.get(id);
+            if (e) deleteSingleShape(e.layer);
+          },
+        };
+      }
+
       clearRef.current = () => {
         drawLayersRef.current.forEach((l) => map.removeLayer(l));
+        aoiRegistryRef.current?.clear();
         drawLayersRef.current = []; draftLayersRef.current = []; drawPointsRef.current = [];
         lastCoordsRef.current = []; lastToolRef.current = "pointer";
         if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
@@ -2062,8 +2147,15 @@ console.log("Area m²:", turfArea(polygon));
 
             drawLayersRef.current.push(rect);
             const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
-            const feature = makePolygonFeature("Drawn Rectangle", coordinates.map((point) => [point.lat, point.lng]), area);
-            onAreaSelected("Drawn Rectangle", area, feature);
+            const reg = aoiRegistryRef.current;
+            const aoiId = newAoiId();
+            const aoiName = reg?.nextName("Drawn Rectangle") ?? "Drawn Rectangle";
+            const feature = makePolygonFeature(aoiName, coordinates.map((point) => [point.lat, point.lng]), area, { id: aoiId, kind: "rectangle" });
+            reg?.add({
+              id: aoiId, name: aoiName, kind: "rectangle", tool: "rectangle", layer: rect, feature, areaHa: area,
+              coords: [{ lat: p1[0], lng: p1[1] }, { lat, lng }], stroke: c.stroke,
+            });
+            onAreaSelected(aoiName, area, feature);
             onFeatureClick?.(feature);
             if (canvasRef.current) {
               const px1 = map.latLngToContainerPoint(L.latLng(p1[0], p1[1]));
@@ -2071,7 +2163,7 @@ console.log("Area m²:", turfArea(polygon));
               drawRect(canvasRef.current, px1, px2);
               lastCoordsRef.current = [{ lat: p1[0], lng: p1[1] }, { lat, lng }];
               lastToolRef.current   = "rectangle";
-              const metadata: CaptureMetadata = { areaName: "Drawn Rectangle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
+              const metadata: CaptureMetadata = { areaName: aoiName, areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
               await handleCapture(canvasRef.current, map, L, coordinates, metadata);
             }
             draftLayersRef.current = [];
@@ -2107,9 +2199,16 @@ console.log("Area m²:", turfArea(polygon));
             
             // التعديل الجديد باستخدام الدالة الحقيقية بدل المربع
             const circleRing = circleToPolygonLatLng(center[0], center[1], radius, 64);
-            const feature = makePolygonFeature("Drawn Circle", circleRing, area);
+            const reg = aoiRegistryRef.current;
+            const aoiId = newAoiId();
+            const aoiName = reg?.nextName("Drawn Circle") ?? "Drawn Circle";
+            const feature = makePolygonFeature(aoiName, circleRing, area, { id: aoiId, kind: "circle" });
+            reg?.add({
+              id: aoiId, name: aoiName, kind: "circle", tool: "circle", layer: circ, feature, areaHa: area,
+              coords: [{ lat: center[0], lng: center[1] }, { lat, lng }], stroke: c.stroke,
+            });
             
-            onAreaSelected("Drawn Circle", area, feature);
+            onAreaSelected(aoiName, area, feature);
             onFeatureClick?.(feature);
             
             if (canvasRef.current) {
@@ -2120,7 +2219,7 @@ console.log("Area m²:", turfArea(polygon));
               const centerCoord: LatLngPoint = { lat: center[0], lng: center[1] };
               lastCoordsRef.current = [centerCoord, { lat, lng }];
               lastToolRef.current   = "circle";
-              const metadata: CaptureMetadata = { areaName: "Drawn Circle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
+              const metadata: CaptureMetadata = { areaName: aoiName, areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
             const captureResult = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata, captureTarget);
               const { smallBlob, largeBlob, selectedCoordinates, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
               onCapture?.(captureResult);

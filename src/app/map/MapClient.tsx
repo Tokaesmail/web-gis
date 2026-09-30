@@ -28,6 +28,8 @@ import type { PalmHeatmapPreviewConfig, PalmPointsPreviewConfig } from "../_comp
 import type { InterpolationPreviewConfig } from "../_components/AnalysisSidebar/temporalInterpolation";
 import { SOURCE_META } from "../_components/AnalysisSidebar/SatellitePipelines";
 import AITriggerButton from "./AITriggerButton";
+import AOIListPanel from "./AOIListPanel";
+import type { AOIControl, AOIListItem } from "./AOIRegistry";
 import { FloatingElevationPanel } from "../_components/AnalysisSidebar/ElevationContourPanel";
 import CoordsPopup from "./CoordsPopup";
 
@@ -89,6 +91,9 @@ export default function MapPage() {
   const [projectSaving,    setProjectSaving]     = useState(false);
   const [elevationFloatOpen, setElevationFloatOpen] = useState(false);
   const [drawnFeatures, setDrawnFeatures] = useState<GeoJSON.Feature[]>([]);
+  // ── قائمة الـ AOIs المرسومة + الـ AOI النشط (الباقي معطّل على الخريطة) ──
+  const [aoiItems, setAoiItems] = useState<AOIListItem[]>([]);
+  const [activeAoiId, setActiveAoiId] = useState<string | null>(null);
   const [initialFeaturesToRestore, setInitialFeaturesToRestore] = useState<GeoJSON.Feature[] | null>(null);
   const [savedAnalyses, setSavedAnalyses] = useState<import("./projects/projectTypes").SavedAnalysisConfig[]>([]);
 
@@ -130,6 +135,7 @@ export default function MapPage() {
 
   const flyToRef               = useRef<((lat: number, lng: number) => void) | null>(null);
   const clearRef               = useRef<(() => void) | null>(null);
+  const aoiControlRef          = useRef<AOIControl | null>(null);
   const clearAnalysisRef       = useRef<(() => void) | null>(null);
   // Captures the currently-drawn shape on demand (no redraw required) —
   // used by Palm Trees so it can reuse whatever shape is already selected.
@@ -1403,7 +1409,12 @@ useEffect(() => {
               if (feature) {
                 handleFeatureClick(feature);
                 setDrawnFeatures((prev) => {
-                  const filtered = prev.filter((f) => f.properties?.name !== feature.properties?.name);
+                  // لو الـ feature ليها id قارن بيه (عشان كذا Polygon يفضلوا موجودين)، وإلا بالاسم
+                  const filtered = prev.filter((f) =>
+                    feature.properties?.id
+                      ? f.properties?.id !== feature.properties.id
+                      : f.properties?.name !== feature.properties?.name
+                  );
                   return [...filtered, feature];
                 });
               }
@@ -1430,6 +1441,9 @@ useEffect(() => {
             extrusionConfig={extrusionCfg || { enabled: false }}
             onFeatureClick={handleFeatureClick}
             initialFeatures={initialFeaturesToRestore ?? undefined}
+            aoiControlRef={aoiControlRef}
+            onAOIListChange={(items, id) => { setAoiItems(items); setActiveAoiId(id); }}
+            onAOIRemove={(id) => setDrawnFeatures((prev) => prev.filter((f) => f.properties?.id !== id))}
           />
         </div>
 
@@ -1507,6 +1521,14 @@ useEffect(() => {
             </div>
 
             <MapSearch onFlyTo={(lat, lng) => flyToRef.current?.(lat, lng)} />
+            <AOIListPanel
+              items={aoiItems}
+              activeId={activeAoiId}
+              onSelect={(id) => aoiControlRef.current?.activate(id)}
+              onDelete={(id) => aoiControlRef.current?.remove(id)}
+              isRTL={isRTL}
+              areaUnit={areaUnit}
+            />
             <MapToolbar
               activeTool={activeTool}
               onToolChange={setActiveTool}
