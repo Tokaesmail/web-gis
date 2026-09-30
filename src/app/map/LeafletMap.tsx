@@ -3025,11 +3025,11 @@ export default function LeafletMap({
             drawLayersRef.current.push(rect);
             const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
             const reg = aoiRegistryRef.current;
-            const aoiId = newAoiId();
+            const aoiiId = newAoiId();
             const aoiName = reg?.nextName("Drawn Rectangle") ?? "Drawn Rectangle";
-            const feature = makePolygonFeature(aoiName, coordinates.map((point) => [point.lat, point.lng]), area, { id: aoiId, kind: "rectangle" });
+            const feature = makePolygonFeature(aoiName, coordinates.map((point) => [point.lat, point.lng]), area, { id: aoiiId, kind: "rectangle" });
             reg?.add({
-              id: aoiId, name: aoiName, kind: "rectangle", tool: "rectangle", layer: rect, feature, areaHa: area,
+              id: aoiiId, name: aoiName, kind: "rectangle", tool: "rectangle", layer: rect, feature, areaHa: area,
               coords: [{ lat: p1[0], lng: p1[1] }, { lat, lng }], stroke: c.stroke,
             });
             onAreaSelected(aoiName, area, feature);
@@ -3095,11 +3095,11 @@ export default function LeafletMap({
             // التعديل الجديد باستخدام الدالة الحقيقية بدل المربع
             const circleRing = circleToPolygonLatLng(center[0], center[1], radius, 64);
             const reg = aoiRegistryRef.current;
-            const aoiId = newAoiId();
+            const aoiiId = newAoiId();
             const aoiName = reg?.nextName("Drawn Circle") ?? "Drawn Circle";
-            const feature = makePolygonFeature(aoiName, circleRing, area, { id: aoiId, kind: "circle" });
+            const feature = makePolygonFeature(aoiName, circleRing, area, { id: aoiiId, kind: "circle" });
             reg?.add({
-              id: aoiId, name: aoiName, kind: "circle", tool: "circle", layer: circ, feature, areaHa: area,
+              id: aoiiId, name: aoiName, kind: "circle", tool: "circle", layer: circ, feature, areaHa: area,
               coords: [{ lat: center[0], lng: center[1] }, { lat, lng }], stroke: c.stroke,
             });
             
