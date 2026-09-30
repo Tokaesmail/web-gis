@@ -1526,6 +1526,8 @@ useEffect(() => {
               activeId={activeAoiId}
               onSelect={(id) => aoiControlRef.current?.activate(id)}
               onDelete={(id) => aoiControlRef.current?.remove(id)}
+              onEdit={(id) => aoiControlRef.current?.startEdit(id)}
+              onStopEdit={() => aoiControlRef.current?.stopEdit()}
               isRTL={isRTL}
               areaUnit={areaUnit}
             />

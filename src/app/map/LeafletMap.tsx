@@ -21,7 +21,7 @@ import {
   SatKey, LatLngPoint, CaptureMetadata, CaptureResult, CaptureTarget,
 } from "./mapTypes_proxy";
 import { validateAOI, MAX_AOI_SIZE_HA } from "./aoiValidation";
-import { AOIRegistry, newAoiId, type AOIControl, type AOIListItem } from "./AOIRegistry";
+import { AOIRegistry, newAoiId, type AOIControl, type AOIEntry, type AOIListItem } from "./AOIRegistry";
 
 type ExtrusionConfig = {
   enabled: boolean;
@@ -212,6 +212,7 @@ export default function LeafletMap({
   const mapInstanceRef = useRef<any>(null);
   const restoredRef = useRef(false);
   const aoiRegistryRef = useRef<AOIRegistry | null>(null);
+  const editSessionRef = useRef<{ id: string; handles: any[]; dirty: boolean } | null>(null);
   const activeToolRef  = useRef<DrawTool>(activeTool);
   const drawLayersRef  = useRef<any[]>([]);
   const draftLayersRef = useRef<any[]>([]);
@@ -256,27 +257,52 @@ export default function LeafletMap({
   // لو المستخدم بدّل من نوع تحليل لنوع تاني (مثلاً من Raster لـ Super
   // Resolution أو من Palm Points لـ Swipe)، القديم يتشال أول ما الجديد
   // يتحط بدل ما يترسموا فوق بعض.
-  const clearAllAnalysisOverlaysRef = useRef<() => void>(() => {});
-  clearAllAnalysisOverlaysRef.current = () => {
+  // ✅ دوال مسح مفصّلة لكل نوع overlay — عشان handler من نوع معيّن لما ينادى
+  // بـ null (مثلاً Swipe أو Super Resolution بيتنادوا بـ null من البانل) يمسح
+  // نوعه هو بس، ومايمسحش الراستر اللي لسه متضاف على الخريطة.
+  const clearRasterOnlyRef = useRef<() => void>(() => {});
+  clearRasterOnlyRef.current = () => {
     const map = mapInstanceRef.current;
     if (!map) return;
     rasterOverlayRef.current.forEach((layer) => {
       try { map.removeLayer(layer); } catch (_) {}
     });
     rasterOverlayRef.current.clear();
+  };
+  const clearPointsOnlyRef = useRef<() => void>(() => {});
+  clearPointsOnlyRef.current = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
     pointsOverlayRef.current.forEach((layer) => {
       try { map.removeLayer(layer); } catch (_) {}
     });
     pointsOverlayRef.current.clear();
-    if (superResOverlayRef.current) {
-      try { map.removeLayer(superResOverlayRef.current.layer); } catch (_) {}
-      try { map.removeLayer(superResOverlayRef.current.marker); } catch (_) {}
-      superResOverlayRef.current = null;
-    }
-    if (swipeOverlayRef.current) {
-      try { swipeOverlayRef.current.cleanup(); } catch (_) {}
-      swipeOverlayRef.current = null;
-    }
+  };
+  const clearSuperResOnlyRef = useRef<() => void>(() => {});
+  clearSuperResOnlyRef.current = () => {
+    const map = mapInstanceRef.current;
+    if (!map || !superResOverlayRef.current) return;
+    try { map.removeLayer(superResOverlayRef.current.layer); } catch (_) {}
+    try { map.removeLayer(superResOverlayRef.current.marker); } catch (_) {}
+    superResOverlayRef.current = null;
+  };
+  const clearSwipeOnlyRef = useRef<() => void>(() => {});
+  clearSwipeOnlyRef.current = () => {
+    if (!swipeOverlayRef.current) return;
+    try { swipeOverlayRef.current.cleanup(); } catch (_) {}
+    swipeOverlayRef.current = null;
+  };
+
+  // ✅ دالة موحّدة بتمسح كل أنواع overlays التحليل مرة واحدة (Delete Analysis
+  // + قبل ما يتحط تحليل جديد فعلي). ⚠️ ماتتنادّاش لما handler ياخد null
+  // (مسح نوعه بس) — استخدمي الدوال المفصّلة فوق.
+  const clearAllAnalysisOverlaysRef = useRef<() => void>(() => {});
+  clearAllAnalysisOverlaysRef.current = () => {
+    if (!mapInstanceRef.current) return;
+    clearRasterOnlyRef.current();
+    clearPointsOnlyRef.current();
+    clearSuperResOnlyRef.current();
+    clearSwipeOnlyRef.current();
   };
   const placingImageRef = useRef<{
     file: File;
@@ -334,6 +360,285 @@ export default function LeafletMap({
     }
     drawPointsRef.current = [];
     if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ✏️ AOI shape editing
+  //  • Polygon / Rectangle: drag any vertex · drag a faint midpoint on an edge
+  //    to add a vertex · right-click or double-click a vertex to delete it.
+  //  • Circle: drag the centre to move it · drag the edge handle to resize.
+  // Every drag-end is validated (no self-intersection, max size); an invalid
+  // result is reverted. A valid one updates the registry, the list, the popup,
+  // the canvas overlay and lastCoordsRef (so the analysis panels see the new shape).
+  // ═══════════════════════════════════════════════════════════════════════════
+  const teardownEditHandles = () => {
+    const s = editSessionRef.current;
+    if (!s) return;
+    const map = mapInstanceRef.current;
+    s.handles.forEach((h) => { try { map?.removeLayer(h); } catch (_) {} });
+    editSessionRef.current = null;
+  };
+
+  const makeEditIcon = (L: any, size: number, solid: boolean) =>
+    L.divIcon({
+      className: "",
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
+      html: `<div style="width:${size}px;height:${size}px;box-sizing:border-box;border-radius:50%;background:${solid ? "#ffffff" : "rgba(255,255,255,0.45)"};border:2px solid #00c8ff;box-shadow:0 0 0 3px rgba(0,200,255,0.25);cursor:grab"></div>`,
+    });
+
+  /** بعد أي تعديل ناجح: حدّث الـ canvas / lastCoordsRef / الـ popup / الـ panels */
+  const applyEditedAoi = (id: string) => {
+    const map = mapInstanceRef.current;
+    const L   = LRef.current;
+    const e   = aoiRegistryRef.current?.get(id);
+    if (!map || !L || !e) return;
+
+    lastCoordsRef.current = e.coords;
+    lastToolRef.current   = e.tool;
+    if (canvasRef.current) {
+      clearCanvas(canvasRef.current);
+      redrawCurrent(canvasRef.current, map, L);
+    }
+
+    // الـ popup القديم كان ماسك المساحة القديمة → أعد ربطه بالقيم الجديدة
+    const icon = e.kind === "circle" ? "🟢" : e.kind === "rectangle" ? "📐" : "🔵";
+    const radiusTxt =
+      e.kind === "circle" && e.coords.length === 2
+        ? ` · R: ${map.distance([e.coords[0].lat, e.coords[0].lng], [e.coords[1].lat, e.coords[1].lng]).toFixed(0)} m`
+        : "";
+    try { e.layer.unbindPopup(); } catch (_) {}
+    e.layer.bindPopup(() => {
+      const div = document.createElement("div");
+      const label = document.createElement("div");
+      label.innerHTML = `${icon} ${e.name}${radiusTxt} · ≈ ${e.areaHa} ${t.ha}`;
+      div.appendChild(label);
+      div.appendChild(buildShapePopupActions(e.layer, e.kind));
+      return div;
+    });
+
+    if (editSessionRef.current) editSessionRef.current.dirty = true;
+    onAreaSelected(e.name, e.areaHa, e.feature);
+    onFeatureClick?.(e.feature);
+  };
+
+  const commitPolygonEdit = (id: string, pts: [number, number][]) => {
+    const reg = aoiRegistryRef.current;
+    const e   = reg?.get(id);
+    if (!reg || !e) return;
+    const ringXY = [...pts, pts[0]].map(([lat, lng]) => [lng, lat]);
+    const area   = parseFloat((turfArea(turfPolygon([ringXY])) / 10000).toFixed(1));
+    const feature = makePolygonFeature(e.name, pts, area, { id, kind: "polygon" });
+    feature.properties = { ...(e.feature.properties ?? {}), ...feature.properties };
+    // لو كان Rectangle وبقى شكل حر → يبقى Polygon عادي
+    reg.update(id, {
+      kind: "polygon", tool: "polygon", areaHa: area, feature,
+      coords: pts.map(([lat, lng]) => ({ lat, lng })),
+    });
+    applyEditedAoi(id);
+  };
+
+  const buildPolygonEditor = (entry: AOIEntry) => {
+    const map = mapInstanceRef.current;
+    const L   = LRef.current;
+    const layer = entry.layer;
+
+    const raw: any[] = layer.getLatLngs()?.[0] ?? [];
+    let pts: [number, number][] = raw.map((p) => [p.lat, p.lng] as [number, number]);
+    if (pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
+    if (pts.length < 3) return;
+
+    const clone = (a: [number, number][]) => a.map((p) => [p[0], p[1]] as [number, number]);
+    let committed = clone(pts);
+
+    const session = { id: entry.id, handles: [] as any[], dirty: false };
+    editSessionRef.current = session;
+
+    let vMarkers: any[] = [];
+    let mMarkers: any[] = [];
+    const mid = (a: [number, number], b: [number, number]): [number, number] =>
+      [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const redrawShape = () => layer.setLatLngs([pts]);
+
+    const tryCommit = (): boolean => {
+      const v = validateAOI(makePolygonFeature("tmp", pts, 0));
+      if (!v.valid) {
+        toast.error(v.errors?.[0] ?? (isRTL ? "الشكل بعد التعديل غير صالح — تم التراجع" : "Invalid shape after edit — reverted"));
+        pts = clone(committed);
+        redrawShape();
+        return false;
+      }
+      if (v.warnings?.length) toast.warning(v.warnings[0]);
+      committed = clone(pts);
+      commitPolygonEdit(entry.id, pts);
+      return true;
+    };
+
+    const rebuild = () => {
+      if (editSessionRef.current !== session) return; // التعديل خلص
+      session.handles.forEach((h) => { try { map.removeLayer(h); } catch (_) {} });
+      vMarkers = []; mMarkers = [];
+      const n = pts.length;
+
+      // ── vertices ──
+      pts.forEach((p, i) => {
+        const m = L.marker(p, {
+          draggable: true, icon: makeEditIcon(L, 14, true), zIndexOffset: 1000, keyboard: false,
+        }).addTo(map);
+        m.on("drag", (ev: any) => {
+          const ll = ev.target.getLatLng();
+          pts[i] = [ll.lat, ll.lng];
+          redrawShape();
+          mMarkers[i]?.setLatLng(mid(pts[i], pts[(i + 1) % n]));
+          mMarkers[(i - 1 + n) % n]?.setLatLng(mid(pts[(i - 1 + n) % n], pts[i]));
+        });
+        m.on("dragend", () => { tryCommit(); setTimeout(rebuild, 0); });
+        const removeVertex = (ev: any) => {
+          try { L.DomEvent.stop(ev.originalEvent); } catch (_) {}
+          if (pts.length <= 3) {
+            toast.error(isRTL ? "لازم يفضل 3 نقاط على الأقل" : "A polygon needs at least 3 vertices");
+            return;
+          }
+          pts.splice(i, 1);
+          redrawShape();
+          tryCommit();
+          setTimeout(rebuild, 0);
+        };
+        m.on("contextmenu", removeVertex);
+        m.on("dblclick", removeVertex);
+        vMarkers.push(m);
+      });
+
+      // ── edge midpoints: اسحبها = ضيف نقطة جديدة ──
+      pts.forEach((p, i) => {
+        const m = L.marker(mid(p, pts[(i + 1) % n]), {
+          draggable: true, icon: makeEditIcon(L, 10, false), zIndexOffset: 900, keyboard: false,
+        }).addTo(map);
+        m.on("dragstart", (ev: any) => {
+          const ll = ev.target.getLatLng();
+          pts.splice(i + 1, 0, [ll.lat, ll.lng]);
+        });
+        m.on("drag", (ev: any) => {
+          const ll = ev.target.getLatLng();
+          pts[i + 1] = [ll.lat, ll.lng];
+          redrawShape();
+        });
+        m.on("dragend", () => { tryCommit(); setTimeout(rebuild, 0); });
+        mMarkers.push(m);
+      });
+
+      session.handles = [...vMarkers, ...mMarkers];
+    };
+
+    rebuild();
+  };
+
+  const buildCircleEditor = (entry: AOIEntry) => {
+    const map = mapInstanceRef.current;
+    const L   = LRef.current;
+    const layer = entry.layer;
+
+    let center: [number, number] = [layer.getLatLng().lat, layer.getLatLng().lng];
+    let radius: number = layer.getRadius();
+    let committed = { center: [...center] as [number, number], radius };
+    const edgeOf = (c: [number, number], r: number): [number, number] =>
+      circleToPolygonLatLng(c[0], c[1], r, 4)[1]; // نقطة الشرق
+
+    const cMarker = L.marker(center, {
+      draggable: true, icon: makeEditIcon(L, 14, true), zIndexOffset: 1000, keyboard: false,
+    }).addTo(map);
+    const eMarker = L.marker(edgeOf(center, radius), {
+      draggable: true, icon: makeEditIcon(L, 14, true), zIndexOffset: 1000, keyboard: false,
+    }).addTo(map);
+    editSessionRef.current = { id: entry.id, handles: [cMarker, eMarker], dirty: false };
+
+    const commit = () => {
+      const ring = circleToPolygonLatLng(center[0], center[1], radius, 64);
+      const v = validateAOI(makePolygonFeature("tmp", ring, 0));
+      if (!v.valid) {
+        toast.error(v.errors?.[0] ?? (isRTL ? "الشكل بعد التعديل غير صالح — تم التراجع" : "Invalid shape after edit — reverted"));
+        center = [...committed.center] as [number, number];
+        radius = committed.radius;
+        layer.setLatLng(center); layer.setRadius(radius);
+        cMarker.setLatLng(center); eMarker.setLatLng(edgeOf(center, radius));
+        return;
+      }
+      if (v.warnings?.length) toast.warning(v.warnings[0]);
+      committed = { center: [...center] as [number, number], radius };
+
+      const reg = aoiRegistryRef.current;
+      const e   = reg?.get(entry.id);
+      if (!reg || !e) return;
+      const area = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
+      const edge = eMarker.getLatLng();
+      const feature = makePolygonFeature(e.name, ring, area, { id: entry.id, kind: "circle" });
+      feature.properties = { ...(e.feature.properties ?? {}), ...feature.properties };
+      reg.update(entry.id, {
+        areaHa: area, feature,
+        coords: [{ lat: center[0], lng: center[1] }, { lat: edge.lat, lng: edge.lng }],
+      });
+      applyEditedAoi(entry.id);
+    };
+
+    cMarker.on("drag", (ev: any) => {
+      const ll = ev.target.getLatLng();
+      center = [ll.lat, ll.lng];
+      layer.setLatLng(ll);
+      eMarker.setLatLng(edgeOf(center, radius));
+    });
+    eMarker.on("drag", (ev: any) => {
+      const ll = ev.target.getLatLng();
+      radius = Math.max(map.distance(center, [ll.lat, ll.lng]), 1);
+      layer.setRadius(radius);
+    });
+    cMarker.on("dragend", commit);
+    eMarker.on("dragend", commit);
+  };
+
+  const startEditAoi = (id: string) => {
+    const map = mapInstanceRef.current;
+    const L   = LRef.current;
+    const reg = aoiRegistryRef.current;
+    if (!map || !L || !reg || !reg.get(id)) return;
+
+    if (reg.getActiveId() !== id) reg.activate(id); // بس النشط هو اللي يتعدّل
+    teardownEditHandles();
+    reg.setEditing(id);
+    try { map.closePopup(); } catch (_) {}
+
+    const entry = reg.get(id)!;
+    try {
+      const b = entry.layer.getBounds();
+      if (!map.getBounds().contains(b)) map.flyToBounds(b, { padding: [60, 60], maxZoom: 16, duration: 0.8 });
+    } catch (_) {}
+
+    if (entry.kind === "circle") buildCircleEditor(entry);
+    else buildPolygonEditor(entry);
+  };
+
+  /** "تم": شيل الـ handles، ولو الشكل اتغيّر اعمل capture جديد زي ما بيحصل بعد الرسم */
+  const stopEditAoi = async () => {
+    const map = mapInstanceRef.current;
+    const L   = LRef.current;
+    const reg = aoiRegistryRef.current;
+    const dirty = !!editSessionRef.current?.dirty;
+    reg?.setEditing(null);
+    teardownEditHandles();
+    if (!dirty || !map || !L || !reg || !canvasRef.current) return;
+
+    const id = reg.getActiveId();
+    const e  = id ? reg.get(id) : null;
+    if (!e || e.kind === "circle") return; // الدايرة: الـ panels بتعمل capture عند الطلب
+    try {
+      const coordinates: LatLngPoint[] = e.coords;
+      const metadata: CaptureMetadata = {
+        areaName: e.name, areaSizeHa: e.areaHa,
+        zoom: map.getZoom(), capturedAt: new Date().toISOString(),
+      };
+      await handleCapture(canvasRef.current, map, L, coordinates, metadata);
+    } catch (err) {
+      console.warn("Re-capture after edit failed:", err);
+    }
   };
 
   /** يمسح شكل واحد بس من على الماب (مش كل الرسومات زي زرار Delete All) */
@@ -514,7 +819,12 @@ useEffect(() => {
         clearAllAnalysisOverlaysRef.current();
         return;
       }
-      if (!config.dataUrl && !config.tileUrl) return;
+      const hasTemplate = !!config.tileUrl && config.tileUrl.includes("{z}");
+      if (!config.dataUrl && !hasTemplate) {
+        console.warn("Raster overlay skipped: no dataUrl and tileUrl is not an XYZ template", config);
+        toast.error(isRTL ? "مفيش صورة صالحة للعرض على الخريطة" : "No displayable raster image for the map");
+        return;
+      }
 
       // كل analysis ليه key فريد — name + date عشان نعرض نفس الـ analysis مع update
       const overlayKey = `${config.indexKey}_${config.date}`;
@@ -532,6 +842,9 @@ useEffect(() => {
       // مش صالح كـ tile source خالص (المتصفح مش بيقدر يعرض TIFF كـ tile)،
       // فبنرجع لـ imageOverlay اللي شغال أصلًا بالـ PNG + bounds الحقيقية.
       const hasTileTemplate = !!config.tileUrl && config.tileUrl.includes("{z}");
+      const isSceneImage =
+        config.colorRamp === "Scene preview" ||
+        String(config.indexKey).toUpperCase() === "RGB";
       const layer = hasTileTemplate
         ? L.tileLayer(config.tileUrl!, {
             opacity: config.opacity,
@@ -554,9 +867,33 @@ useEffect(() => {
         // والخضرا الصغيرة بتتمسح وتتحول لبقعة ضبابية (زي اللي كان بيبان أخضر
         // "شايل" فوق الخريطة). pixelated بيخلي كل بكسل مصنّف يبان بحدوده
         // واضحة زي في صورة السايد بار بالظبط.
-            className: "change-detection-raster-overlay",
+            // ⚠️ pixelated بس للكلاسات المصنّفة (Change Detection). صور المشاهد
+            // (RGB / Scene preview) لازم تتعرض smooth وإلا بتطلع مكعبات ومشوّهة.
+            className: isSceneImage ? "scene-preview-raster-overlay" : "change-detection-raster-overlay",
           }).addTo(map);
       rasterOverlayRef.current.set(overlayKey, layer);
+
+      // تشخيص: لو نسبة أبعاد الصورة غير نسبة أبعاد الـ bounds على الخريطة يبقى
+      // الصورة هتتمط (ودي بالظبط اللي بتعمل خطوط أفقية مشوّهة).
+      if (!hasTileTemplate && config.dataUrl) {
+        const probe = new Image();
+        probe.onload = () => {
+          try {
+            const nw = map.project(bounds.getNorthWest(), 0);
+            const se = map.project(bounds.getSouthEast(), 0);
+            const boundsAspect = Math.abs(se.x - nw.x) / Math.max(1e-9, Math.abs(se.y - nw.y));
+            const imgAspect = probe.naturalWidth / Math.max(1, probe.naturalHeight);
+            const ratio = imgAspect / boundsAspect;
+            if (ratio < 0.85 || ratio > 1.15) {
+              console.warn(
+                `⚠️ Raster preview aspect mismatch: image ${probe.naturalWidth}x${probe.naturalHeight} (${imgAspect.toFixed(2)}) vs bounds (${boundsAspect.toFixed(2)}) → الصورة هتتمط. لازم البانل تجيب الـ preview بنفس الـ bbox.`,
+                { bounds: config.bounds }
+              );
+            }
+          } catch (_) {}
+        };
+        probe.src = config.dataUrl;
+      }
 
       // map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 14, duration: 0.8 });
       // ❌ اتشالت نقطة الـ sceneMarker (الدائرة السماوي جوه الإطار الأصفر) خالص
@@ -582,9 +919,9 @@ useEffect(() => {
       // امسحي أي تحليل قديم أيًا كان نوعه قبل ما ترسمي الجديد — تحليل واحد
       // بس ظاهر فوق الخريطة في نفس اللحظة (نفس الدالة اللي زرار Delete
       // Analysis بيستخدمها).
+      if (!config) { clearPointsOnlyRef.current(); return; }
       clearAllAnalysisOverlaysRef.current();
-
-      if (!config || !config.points?.length) return;
+      if (!config.points?.length) return;
 
       const overlayKey = `${config.indexKey}_${config.date}`;
       const group = L.layerGroup(
@@ -618,8 +955,9 @@ useEffect(() => {
 
       // امسحي أي تحليل قديم أيًا كان نوعه قبل ما تحطي الجديد (أو لو config
       // جايه null) — نفس الدالة اللي زرار Delete Analysis بيستخدمها.
+      if (!config) { clearSuperResOnlyRef.current(); return; }
       clearAllAnalysisOverlaysRef.current();
-      if (!config || !config.dataUrl) return;
+      if (!config.dataUrl) return;
 
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
       const layer = L.imageOverlay(config.dataUrl, bounds, {
@@ -656,8 +994,9 @@ useEffect(() => {
 
       // امسحي أي تحليل قديم أيًا كان نوعه الأول (update أو teardown) — نفس
       // الدالة اللي زرار Delete Analysis بيستخدمها.
+      if (!config) { clearSwipeOnlyRef.current(); return; }
       clearAllAnalysisOverlaysRef.current();
-      if (!config || !map || !L) return;
+      if (!map || !L) return;
 
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
       const beforeLayer = L.imageOverlay(config.beforeUrl, bounds, { pane: "imagePane", opacity: 1 }).addTo(map);
@@ -1819,6 +2158,7 @@ if (!restoredRef.current) {
       aoiRegistryRef.current = new AOIRegistry({
         onListChange: (items, activeId) => onAOIListChange?.(items, activeId),
         onRemove: (e) => onAOIRemove?.(e.id),
+        onEditingChange: (id) => { if (!id) teardownEditHandles(); },
         onActivate: (e) => {
           if (!e) {
             lastCoordsRef.current = []; lastToolRef.current = "pointer";
@@ -1852,6 +2192,8 @@ if (!restoredRef.current) {
             const e = aoiRegistryRef.current?.get(id);
             if (e) deleteSingleShape(e.layer);
           },
+          startEdit: (id) => startEditAoi(id),
+          stopEdit: () => { stopEditAoi(); },
         };
       }
 
@@ -2302,6 +2644,7 @@ console.log("Area m²:", turfArea(polygon));
         .leaflet-popup-close-button{color:#64748b!important}
         .leaflet-control-attribution{background:rgba(4,13,26,.8)!important;color:#475569!important;font-size:.55rem!important}
         .aoi-vertex-handle{cursor:grab!important}
+        .scene-preview-raster-overlay{image-rendering:auto}
         .change-detection-raster-overlay{image-rendering:pixelated;image-rendering:crisp-edges;image-rendering:-moz-crisp-edges}
         @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         .animate-fadeUp{animation:fadeUp .25s ease both}

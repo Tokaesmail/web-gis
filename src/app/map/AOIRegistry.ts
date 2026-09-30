@@ -33,6 +33,8 @@ export interface AOIListItem {
   name: string;
   kind: AOIKind;
   areaHa: number;
+  /** true while this AOI's shape is being edited */
+  editing?: boolean;
 }
 
 /** Imperative API exposed from LeafletMap to MapClient / the list panel. */
@@ -43,6 +45,10 @@ export interface AOIControl {
   focus: (id: string) => void;
   /** delete it from the map + list */
   remove: (id: string) => void;
+  /** show vertex handles on this AOI so its shape can be reshaped */
+  startEdit: (id: string) => void;
+  /** hide the handles (and re-capture if the shape changed) */
+  stopEdit: () => void;
 }
 
 interface Options {
@@ -51,6 +57,9 @@ interface Options {
    *  `null` means no AOIs are left. */
   onActivate: (entry: AOIEntry | null) => void;
   onRemove?: (entry: AOIEntry) => void;
+  /** Fired whenever the edited AOI changes. `null` = editing ended
+   *  (also fired internally when another AOI becomes active / it is deleted). */
+  onEditingChange?: (id: string | null) => void;
 }
 
 const INACTIVE_STYLE = {
@@ -71,6 +80,7 @@ export function newAoiId(): string {
 export class AOIRegistry {
   private entries = new Map<string, AOIEntry>();
   private activeId: string | null = null;
+  private editingId: string | null = null;
   private counters: Record<string, number> = {};
   private opts: Options;
 
@@ -86,6 +96,27 @@ export class AOIRegistry {
 
   get(id: string) { return this.entries.get(id); }
   getActiveId() { return this.activeId; }
+  getEditingId() { return this.editingId; }
+
+  /** Turn shape-editing on for one AOI (or off with null). */
+  setEditing(id: string | null) {
+    if (id && !this.entries.has(id)) return;
+    if (this.editingId === id) return;
+    this.editingId = id;
+    this.emit();
+    this.opts.onEditingChange?.(id);
+  }
+
+  /** Patch an entry after its geometry was edited (layer itself is untouched). */
+  update(
+    id: string,
+    patch: Partial<Pick<AOIEntry, "kind" | "tool" | "feature" | "areaHa" | "coords">>
+  ) {
+    const e = this.entries.get(id);
+    if (!e) return;
+    Object.assign(e, patch);
+    this.emit();
+  }
   list(): AOIEntry[] { return Array.from(this.entries.values()); }
 
   /**
@@ -119,6 +150,7 @@ export class AOIRegistry {
     const entry = this.entries.get(id);
     if (!entry) return;
     this.entries.delete(id);
+    if (this.editingId === id) { this.editingId = null; this.opts.onEditingChange?.(null); }
     this.opts.onRemove?.(entry);
 
     if (this.activeId === id) {
@@ -140,11 +172,17 @@ export class AOIRegistry {
   clear() {
     this.entries.clear();
     this.activeId = null;
+    if (this.editingId) { this.editingId = null; this.opts.onEditingChange?.(null); }
     this.emit();
   }
 
   // ───────────────────────────────────────────────────────────────────────────
   private setActive(id: string, silent: boolean) {
+    // editing only ever applies to the active AOI
+    if (this.editingId && this.editingId !== id) {
+      this.editingId = null;
+      this.opts.onEditingChange?.(null);
+    }
     this.activeId = id;
     this.applyStyles();
     this.emit();
@@ -170,7 +208,9 @@ export class AOIRegistry {
   }
 
   private emit() {
-    const items: AOIListItem[] = this.list().map(({ id, name, kind, areaHa }) => ({ id, name, kind, areaHa }));
+    const items: AOIListItem[] = this.list().map(({ id, name, kind, areaHa }) => ({
+      id, name, kind, areaHa, editing: id === this.editingId,
+    }));
     this.opts.onListChange(items, this.activeId);
   }
 }

@@ -19,6 +19,10 @@ interface Props {
   activeId: string | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  /** start reshaping this AOI (drag its vertices on the map) */
+  onEdit?: (id: string) => void;
+  /** finish reshaping */
+  onStopEdit?: () => void;
   isRTL?: boolean;
   areaUnit?: AreaUnit;
   /** extra tailwind classes, e.g. to move the panel */
@@ -26,12 +30,13 @@ interface Props {
 }
 
 export default function AOIListPanel({
-  items, activeId, onSelect, onDelete, isRTL = false, areaUnit, className = "",
+  items, activeId, onSelect, onDelete, onEdit, onStopEdit, isRTL = false, areaUnit, className = "",
 }: Props) {
   const [open, setOpen] = useState(true);
   if (!items.length) return null;
 
   const locale = isRTL ? "ar" : "en";
+  const editingItem = items.find((it) => it.editing);
 
   return (
     <div
@@ -47,7 +52,7 @@ export default function AOIListPanel({
       >
         <span>
           {isRTL ? "المناطق المرسومة" : "Drawn AOIs"}{" "}
-          <span className="ml-1 rounded-full bg-cyan-400/15 px-10.5 py-0.5 text-cyan-300">{items.length}</span>
+          <span className="ml-1 rounded-full bg-cyan-400/15 px-1.5 py-0.5 text-cyan-300">{items.length}</span>
         </span>
         <span>{open ? "▾" : "▸"}</span>
       </button>
@@ -77,10 +82,33 @@ export default function AOIListPanel({
                       {formatArea(it.areaHa, locale, areaUnit)}
                       {" · "}
                       <span className={active ? "text-cyan-300" : "text-slate-500"}>
-                        {active ? (isRTL ? "نشطة" : "active") : isRTL ? "معطّلة" : "disabled"}
+                        {it.editing
+                          ? (isRTL ? "قيد التعديل" : "editing")
+                          : active ? (isRTL ? "نشطة" : "active") : isRTL ? "معطّلة" : "disabled"}
                       </span>
                     </div>
                   </div>
+                  {onEdit && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (it.editing) onStopEdit?.();
+                        else onEdit(it.id);
+                      }}
+                      title={
+                        it.editing
+                          ? (isRTL ? "تم" : "Done")
+                          : (isRTL ? "تعديل الشكل" : "Edit shape")
+                      }
+                      className={`rounded-md px-1.5 py-1 ${
+                        it.editing
+                          ? "bg-cyan-400/20 text-cyan-300"
+                          : "text-slate-300 hover:bg-cyan-400/15"
+                      }`}
+                    >
+                      {it.editing ? "✔️" : "✏️"}
+                    </button>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -96,6 +124,18 @@ export default function AOIListPanel({
             );
           })}
         </ul>
+      )}
+
+      {open && editingItem && (
+        <div className="border-t border-white/10 px-3 py-2 text-[10px] leading-relaxed text-cyan-200/80">
+          {editingItem.kind === "circle"
+            ? (isRTL
+                ? "اسحب النقطة الوسطى لتحريك الدائرة، واسحب نقطة الحافة لتكبيرها أو تصغيرها."
+                : "Drag the centre handle to move the circle, the edge handle to resize it.")
+            : (isRTL
+                ? "اسحب أي نقطة لتعديل الشكل. اسحب النقطة الباهتة على الحد لإضافة نقطة جديدة. كليك يمين أو دبل كليك على نقطة لحذفها."
+                : "Drag any vertex to reshape. Drag a faint midpoint on an edge to add a vertex. Right-click or double-click a vertex to delete it.")}
+        </div>
       )}
     </div>
   );
