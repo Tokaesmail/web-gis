@@ -846,6 +846,8 @@ useEffect(() => {
       savedAt: new Date().toISOString(),
     }]);
 
+    const analysisId = crypto.randomUUID();
+
     setLayers((prev) => {
       const resultLayer: MapLayer = {
         id: "raster-result",

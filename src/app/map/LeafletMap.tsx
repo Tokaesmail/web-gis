@@ -7,18 +7,23 @@
 // ③ Double-click zoom متوقف تماماً
 // ④ الألوان للعرض بس — مش بتتبعت للباك
 // ⑤ AOI Editor: تعديل الرؤوس (move vertices) + Validation (self-intersection + max size)
-
+import { saveAOI, getAllAOIs, deleteAOI, clearAllAOIs } from "./indexeddB";
 import { useEffect, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
 import { toast } from "sonner";
-import { useMapCanvas }      from "./useMapCanvas";
-import { useLang }           from "../_components/translations";
+import { useMapCanvas } from "./useMapCanvas";
+import { useLang } from "../_components/translations";
 import turfBbox from "@turf/bbox";
 import turfArea from "@turf/area";
 import { polygon as turfPolygon } from "@turf/helpers";
 import {
-  DrawTool, SAT_LAYERS,
-  SatKey, LatLngPoint, CaptureMetadata, CaptureResult, CaptureTarget,
+  DrawTool,
+  SAT_LAYERS,
+  SatKey,
+  LatLngPoint,
+  CaptureMetadata,
+  CaptureResult,
+  CaptureTarget,
 } from "./mapTypes_proxy";
 import { validateAOI, MAX_AOI_SIZE_HA } from "./aoiValidation";
 
@@ -33,21 +38,25 @@ type ExtrusionConfig = {
 };
 
 interface GeoJSONStyle {
-  color?:       string;
-  weight?:      number;
-  opacity?:     number;
-  fillColor?:   string;
+  color?: string;
+  weight?: number;
+  opacity?: number;
+  fillColor?: string;
   fillOpacity?: number;
-  dashArray?:   string;
+  dashArray?: string;
 }
 
 interface Props {
-  activeTool:     DrawTool;
-  captureTarget:  CaptureTarget;
-  onAreaSelected: (name: string, area: number, feature?: GeoJSON.Feature) => void;
+  activeTool: DrawTool;
+  captureTarget: CaptureTarget;
+  onAreaSelected: (
+    name: string,
+    area: number,
+    feature?: GeoJSON.Feature,
+  ) => void;
   onCoordsUpdate: (lat: number, lng: number) => void;
-  flyToRef:       React.MutableRefObject<((lat: number, lng: number) => void) | null>;
-  clearRef:       React.MutableRefObject<(() => void) | null>;
+  flyToRef: React.MutableRefObject<((lat: number, lng: number) => void) | null>;
+  clearRef: React.MutableRefObject<(() => void) | null>;
   /** clears ONLY the analysis layers (raster overlays + super-resolution
    * overlay) — leaves the drawn AOI shape/marker untouched. Used by the
    * dedicated "Delete Analysis" button in the toolbar. */
@@ -58,58 +67,74 @@ interface Props {
    * forcing a redraw. Returns true if a capture was attempted, false if
    * there was nothing drawn to capture. */
   captureCurrentRef?: React.MutableRefObject<(() => Promise<boolean>) | null>;
-  onSatChange:    (handler: (sat: SatKey) => void) => void;
+  onSatChange: (handler: (sat: SatKey) => void) => void;
   onOpacityChangeRegister?: (handler: (o: number) => void) => void;
   /** register an image placement workflow (2 clicks to place image) */
   onImagePlacerRegister?: (handler: (file: File) => void) => void;
   /** Call the registered handler with `null` to remove whatever analysis overlay is
    *  currently on the map (same cleanup "Delete Analysis" uses) — added for panels
    *  like Temporal Interpolation that need a real "Remove from map" action. */
-  onRasterOverlayRegister?: (handler: (config: {
-    name: string;
-    indexKey: string;
-    expression: string;
-    date: string;
-    dataUrl: string;
-    tileUrl?: string;
-    bounds: [[number, number], [number, number]];
-    opacity: number;
-    colorRamp: string;
-    coords: { lat: number; lng: number };
-  } | null) => void) => void;
+  onRasterOverlayRegister?: (
+    handler: (
+      config: {
+        name: string;
+        indexKey: string;
+        expression: string;
+        date: string;
+        dataUrl: string;
+        tileUrl?: string;
+        bounds: [[number, number], [number, number]];
+        opacity: number;
+        colorRamp: string;
+        coords: { lat: number; lng: number };
+      } | null,
+    ) => void,
+  ) => void;
   /** register a real, georeferenced Before/After swipe overlay directly on the map
    *  (Change Detection panel only). Call the registered handler with `null` to remove it. */
-  onSwipeOverlayRegister?: (handler: (config: {
-    beforeUrl: string;
-    afterUrl: string;
-    bounds: [[number, number], [number, number]];
-    beforeLabel?: string;
-    afterLabel?: string;
-  } | null) => void) => void;
+  onSwipeOverlayRegister?: (
+    handler: (
+      config: {
+        beforeUrl: string;
+        afterUrl: string;
+        bounds: [[number, number], [number, number]];
+        beforeLabel?: string;
+        afterLabel?: string;
+      } | null,
+    ) => void,
+  ) => void;
   /** register a georeferenced Super Resolution result overlay directly on the map
    *  (upscaled image placed exactly over its AOI, on top of the base tiles).
    *  Call the registered handler with `null` to remove it. */
-  onSuperResOverlayRegister?: (handler: (config: {
-    dataUrl: string;
-    bounds: [[number, number], [number, number]];
-    coords: { lat: number; lng: number };
-  } | null) => void) => void;
+  onSuperResOverlayRegister?: (
+    handler: (
+      config: {
+        dataUrl: string;
+        bounds: [[number, number], [number, number]];
+        coords: { lat: number; lng: number };
+      } | null,
+    ) => void,
+  ) => void;
   /** register a real, georeferenced points overlay directly on the map — used for
    *  "points" render style (e.g. Palm Trees: one CircleMarker per detected palm,
    *  colored by density/value) as the exclusive alternative to a raster heatmap.
    *  Call the registered handler with `null` to clear it. */
-  onPointsOverlayRegister?: (handler: (config: {
-    name: string;
-    indexKey: string;
-    date: string;
-    points: { lat: number; lng: number; value: number; color: string }[];
-    opacity: number;
-  } | null) => void) => void;
-  onCapture?:     (capture: CaptureResult) => void;
+  onPointsOverlayRegister?: (
+    handler: (
+      config: {
+        name: string;
+        indexKey: string;
+        date: string;
+        points: { lat: number; lng: number; value: number; color: string }[];
+        opacity: number;
+      } | null,
+    ) => void,
+  ) => void;
+  onCapture?: (capture: CaptureResult) => void;
   /** callback لما يضغط على GeoJSON feature */
   onFeatureClick?: (feature: GeoJSON.Feature) => void;
   /** GeoJSON data لعرضها على الخريطة */
-  geoJsonData?:   GeoJSON.FeatureCollection | GeoJSON.Feature | null;
+  geoJsonData?: GeoJSON.FeatureCollection | GeoJSON.Feature | null;
   /** GeoJSON إضافي (مثلاً شيكات الجامعات) يُعرض فوق الـ layer الأول */
   extraGeoJsonData?: GeoJSON.FeatureCollection | GeoJSON.Feature | null;
   /** Newly added GeoJSON to fly to */
@@ -118,7 +143,7 @@ interface Props {
   extrusionGeoJson?: GeoJSON.FeatureCollection | null;
   extrusionConfig?: ExtrusionConfig;
   /** تنسيق مخصص للـ GeoJSON layer */
-  geoJsonStyle?:  GeoJSONStyle;
+  geoJsonStyle?: GeoJSONStyle;
   /** هل نزوم على الـ GeoJSON بعد التحميل؟ */
   geoJsonFitBounds?: boolean;
   /** features محفوظة في البروجيكت — بترسمهم تاني لما نفتح البروجيكت */
@@ -127,28 +152,36 @@ interface Props {
 
 // ── ألوان كل أداة — للعرض فقط، مش بتتبعت للباك ──────────────────────────────
 const TOOL_COLORS = {
-  polygon:   { stroke: "#00c8ff", fill: "transparent" },
+  polygon: { stroke: "#00c8ff", fill: "transparent" },
   rectangle: { stroke: "#a78bfa", fill: "transparent" },
-  circle:    { stroke: "#34d399", fill: "transparent" },
-  measure:   { stroke: "#fbbf24", fill: "rgba(251,191,36,0.1)" },
-  marker:    { stroke: "#f97316", fill: "rgba(249,115,22,0.85)" },
+  circle: { stroke: "#34d399", fill: "transparent" },
+  measure: { stroke: "#fbbf24", fill: "rgba(251,191,36,0.1)" },
+  marker: { stroke: "#f97316", fill: "rgba(249,115,22,0.85)" },
 };
 
 // ── ألوان نطاقات الجامعات (service area breaks) ──────────────────────────────
 // أخضر = 0-5 دق (الأقرب) | برتقالي = 5-10 | أحمر = 10-15 (الأبعد)
-function getUniversityColor(from: number, to: number): { fill: string; stroke: string } {
-  if (to <= 5)  return { fill: "#22c55e", stroke: "#16a34a" };
+function getUniversityColor(
+  from: number,
+  to: number,
+): { fill: string; stroke: string } {
+  if (to <= 5) return { fill: "#22c55e", stroke: "#16a34a" };
   if (to <= 10) return { fill: "#f59e0b", stroke: "#d97706" };
-  return           { fill: "#ef4444", stroke: "#dc2626" };
+  return { fill: "#ef4444", stroke: "#dc2626" };
 }
 
-function makePolygonFeature(name: string, points: [number, number][], area: number): GeoJSON.Feature {
+function makePolygonFeature(
+  name: string,
+  points: [number, number][],
+  area: number,
+): GeoJSON.Feature {
   const ring = points.map(([lat, lng]) => [lng, lat]);
   const first = ring[0];
   const last = ring[ring.length - 1];
-  const closedRing = first && last && (first[0] !== last[0] || first[1] !== last[1])
-    ? [...ring, first]
-    : ring;
+  const closedRing =
+    first && last && (first[0] !== last[0] || first[1] !== last[1])
+      ? [...ring, first]
+      : ring;
 
   return {
     type: "Feature",
@@ -158,26 +191,46 @@ function makePolygonFeature(name: string, points: [number, number][], area: numb
 }
 
 // دالة تحويل الدائرة لـ Polygon حقيقي
-function circleToPolygonLatLng(centerLat: number, centerLng: number, radiusMeters: number, points = 64): [number, number][] {
+function circleToPolygonLatLng(
+  centerLat: number,
+  centerLng: number,
+  radiusMeters: number,
+  points = 64,
+): [number, number][] {
   const EARTH_RADIUS = 6371008.8;
   const latRad = (centerLat * Math.PI) / 180;
   const ring: [number, number][] = [];
   for (let i = 0; i <= points; i++) {
     const bearing = (i / points) * 2 * Math.PI;
     const dLat = (radiusMeters * Math.cos(bearing)) / EARTH_RADIUS;
-    const dLng = (radiusMeters * Math.sin(bearing)) / (EARTH_RADIUS * Math.cos(latRad));
+    const dLng =
+      (radiusMeters * Math.sin(bearing)) / (EARTH_RADIUS * Math.cos(latRad));
     ring.push([
-      centerLat + (dLat * 180) / Math.PI,   // lat
-      centerLng + (dLng * 180) / Math.PI,   // lng
+      centerLat + (dLat * 180) / Math.PI, // lat
+      centerLng + (dLng * 180) / Math.PI, // lng
     ]);
   }
   return ring;
 }
 
 export default function LeafletMap({
-  activeTool, captureTarget, onAreaSelected, onCoordsUpdate,
-  flyToRef, clearRef, clearAnalysisRef, captureCurrentRef, onSatChange, onOpacityChangeRegister, onCapture,
-  geoJsonData, extraGeoJsonData, latestGeoJson, geoJsonStyle, geoJsonFitBounds = true, onFeatureClick,
+  activeTool,
+  captureTarget,
+  onAreaSelected,
+  onCoordsUpdate,
+  flyToRef,
+  clearRef,
+  clearAnalysisRef,
+  captureCurrentRef,
+  onSatChange,
+  onOpacityChangeRegister,
+  onCapture,
+  geoJsonData,
+  extraGeoJsonData,
+  latestGeoJson,
+  geoJsonStyle,
+  geoJsonFitBounds = true,
+  onFeatureClick,
   onImagePlacerRegister,
   onRasterOverlayRegister,
   onSwipeOverlayRegister,
@@ -192,45 +245,57 @@ export default function LeafletMap({
   const IMAGE_OVERLAYS_STORAGE_KEY = "leaflet_image_overlays_v1";
 
   const projectStateRef = useRef<any>({
-  aoi_polygons: [],
-  analyses: [],
-});
-  const mapRef         = useRef<HTMLDivElement>(null);
+    aoi_polygons: [],
+    analyses: [],
+  });
+  const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const restoredRef = useRef(false);
-  const activeToolRef  = useRef<DrawTool>(activeTool);
-  const drawLayersRef  = useRef<any[]>([]);
+  const activeToolRef = useRef<DrawTool>(activeTool);
+  const drawLayersRef = useRef<any[]>([]);
   const draftLayersRef = useRef<any[]>([]);
-  const tempLayerRef   = useRef<any>(null);
-  const drawPointsRef  = useRef<[number, number][]>([]);
-  const baseTileRef    = useRef<any>(null);
+  const tempLayerRef = useRef<any>(null);
+  const drawPointsRef = useRef<[number, number][]>([]);
+  const baseTileRef = useRef<any>(null);
   const labelsLayerRef = useRef<any>(null);
   // بيتبع دلوقتي أي طبقة قمر شغالة، عشان نطبّق حد الـ 30 متر على Default بس
   const currentSatKeyRef = useRef<SatKey>("Default");
   const applyResolutionCapRef = useRef<(() => void) | null>(null);
   // ── Zoom guard: يرجع زوم واحد أوتوماتيك لو التايلز مش متوفرة في المكان ده ──
   const tileErrorAtCurrentZoomRef = useRef(false);
-  const zoomRevertTimeoutRef      = useRef<any>(null);
-  const lastStableZoomRef         = useRef<number>(11);
-  const canvasRef      = useRef<HTMLCanvasElement | null>(null);
+  const zoomRevertTimeoutRef = useRef<any>(null);
+  const lastStableZoomRef = useRef<number>(11);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const extrudeCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const lastCoordsRef  = useRef<LatLngPoint[]>([]);
-  const lastToolRef    = useRef<DrawTool>("pointer");
-  const closeBtnRef    = useRef<HTMLButtonElement | null>(null);
+  const lastCoordsRef = useRef<LatLngPoint[]>([]);
+  const lastToolRef = useRef<DrawTool>("pointer");
+  const closeBtnRef = useRef<HTMLButtonElement | null>(null);
   // نحتاج refs للـ map و L عشان نستخدمهم في finishPolygon من الـ button
-  const mapObjRef      = useRef<any>(null);
-  const LRef           = useRef<any>(null);
-  const geoJsonLayerRef     = useRef<any>(null);
+  const mapObjRef = useRef<any>(null);
+  const LRef = useRef<any>(null);
+  const geoJsonLayerRef = useRef<any>(null);
   const searchMarkerRef = useRef<any>(null);
   const extraGeoJsonLayerRef = useRef<any>(null);
   const initialFeaturesLayerRef = useRef<any[]>([]);
-  const rafRef              = useRef<number | null>(null);
-  const lastMoveRef         = useRef<any>(null);
+  const rafRef = useRef<number | null>(null);
+  const lastMoveRef = useRef<any>(null);
   // ── throttle للـ virtual feature clicks (pointer tool) عشان منبعتش طلبات NDVI/Weather كتير على الفاضي ──
-  const lastVirtualClickRef = useRef<{ lat: number; lng: number; time: number } | null>(null);
+  const lastVirtualClickRef = useRef<{
+    lat: number;
+    lng: number;
+    time: number;
+  } | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const imagePaneReadyRef = useRef(false);
-  const imageOverlaysRef = useRef<{ id: string; name: string; src: string; bounds: [[number, number], [number, number]]; layer: any }[]>([]);
+  const imageOverlaysRef = useRef<
+    {
+      id: string;
+      name: string;
+      src: string;
+      bounds: [[number, number], [number, number]];
+      layer: any;
+    }[]
+  >([]);
   const rasterOverlayRef = useRef<Map<string, any>>(new Map());
   const pointsOverlayRef = useRef<Map<string, any>>(new Map());
   const superResOverlayRef = useRef<{ layer: any; marker: any } | null>(null);
@@ -247,20 +312,30 @@ export default function LeafletMap({
     const map = mapInstanceRef.current;
     if (!map) return;
     rasterOverlayRef.current.forEach((layer) => {
-      try { map.removeLayer(layer); } catch (_) {}
+      try {
+        map.removeLayer(layer);
+      } catch (_) {}
     });
     rasterOverlayRef.current.clear();
     pointsOverlayRef.current.forEach((layer) => {
-      try { map.removeLayer(layer); } catch (_) {}
+      try {
+        map.removeLayer(layer);
+      } catch (_) {}
     });
     pointsOverlayRef.current.clear();
     if (superResOverlayRef.current) {
-      try { map.removeLayer(superResOverlayRef.current.layer); } catch (_) {}
-      try { map.removeLayer(superResOverlayRef.current.marker); } catch (_) {}
+      try {
+        map.removeLayer(superResOverlayRef.current.layer);
+      } catch (_) {}
+      try {
+        map.removeLayer(superResOverlayRef.current.marker);
+      } catch (_) {}
       superResOverlayRef.current = null;
     }
     if (swipeOverlayRef.current) {
-      try { swipeOverlayRef.current.cleanup(); } catch (_) {}
+      try {
+        swipeOverlayRef.current.cleanup();
+      } catch (_) {}
       swipeOverlayRef.current = null;
     }
   };
@@ -274,8 +349,15 @@ export default function LeafletMap({
   const overlaysUiRef = useRef<HTMLDivElement | null>(null);
 
   const {
-    drawPolygon, drawRect, drawCircle, drawMeasure, drawMarker,
-    clearCanvas, capture, captureCircle, sendToBackend,
+    drawPolygon,
+    drawRect,
+    drawCircle,
+    drawMeasure,
+    drawMarker,
+    clearCanvas,
+    capture,
+    captureCircle,
+    sendToBackend,
   } = useMapCanvas();
 
   // ⚠️ لو المستخدم بادئ يرسم شكل ولسه مخلصوش (نقطة أو أكتر) وبدّل الأداة من التولبار
@@ -309,13 +391,19 @@ export default function LeafletMap({
     if (!map) return;
 
     draftLayersRef.current.forEach((layer) => {
-      try { map.removeLayer(layer); } catch (_) {}
+      try {
+        map.removeLayer(layer);
+      } catch (_) {}
     });
-    drawLayersRef.current = drawLayersRef.current.filter((layer) => !draftLayersRef.current.includes(layer));
+    drawLayersRef.current = drawLayersRef.current.filter(
+      (layer) => !draftLayersRef.current.includes(layer),
+    );
     draftLayersRef.current = [];
 
     if (tempLayerRef.current) {
-      try { map.removeLayer(tempLayerRef.current); } catch (_) {}
+      try {
+        map.removeLayer(tempLayerRef.current);
+      } catch (_) {}
       tempLayerRef.current = null;
     }
     drawPointsRef.current = [];
@@ -324,23 +412,51 @@ export default function LeafletMap({
 
   /** يمسح شكل واحد بس من على الماب (مش كل الرسومات زي زرار Delete All) */
   const deleteSingleShape = (layer: any) => {
+    const aoiId = layer._aoiId;
+
+    // مسح من الـ IndexedDB
+    if (aoiId) {
+      deleteAOI(aoiId)
+        .then(() => console.log(`Deleted AOI ${aoiId} from IndexedDB`))
+        .catch((err) =>
+          console.error("Failed to delete AOI from IndexedDB:", err),
+        );
+    }
+
+    // مسح الطبقة من الخريطة
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.removeLayer(layer);
+    }
+
+    // إزالة الطبقة من المصفوفة المرجعية drawLayersRef
+    drawLayersRef.current = drawLayersRef.current.filter((l) => l !== layer);
     const map = mapInstanceRef.current;
     if (!map) return;
-    try { map.closePopup(); } catch (_) {}
-    try { map.removeLayer(layer); } catch (_) {}
+    try {
+      map.closePopup();
+    } catch (_) {}
+    try {
+      map.removeLayer(layer);
+    } catch (_) {}
     drawLayersRef.current = drawLayersRef.current.filter((l) => l !== layer);
     draftLayersRef.current = draftLayersRef.current.filter((l) => l !== layer);
-    initialFeaturesLayerRef.current = initialFeaturesLayerRef.current.filter((l) => l !== layer);
+    initialFeaturesLayerRef.current = initialFeaturesLayerRef.current.filter(
+      (l) => l !== layer,
+    );
   };
 
   /** صف الأزرار اللي بتتحط جوه popup أي شكل مرسوم — Delete بس (Edit AOI اتشالت لأنها كانت مش شغالة). */
-  const buildShapePopupActions = (layer: any, kind: "polygon" | "rectangle" | "circle" | "marker" | "measure") => {
+  const buildShapePopupActions = (
+    layer: any,
+    kind: "polygon" | "rectangle" | "circle" | "marker" | "measure",
+  ) => {
     const row = document.createElement("div");
     row.style.cssText = "display:flex;gap:6px;margin-top:6px;";
 
     const delBtn = document.createElement("button");
     delBtn.textContent = isRTL ? "🗑️ حذف" : "🗑️ Delete";
-    delBtn.style.cssText = "background:#ef444422;border:1px solid #ef444455;color:#f87171;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
+    delBtn.style.cssText =
+      "background:#ef444422;border:1px solid #ef444455;color:#f87171;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
     delBtn.onclick = () => deleteSingleShape(layer);
     row.appendChild(delBtn);
 
@@ -373,9 +489,14 @@ export default function LeafletMap({
         if (!it?.src || !it?.bounds) continue;
         const b = it.bounds as [[number, number], [number, number]];
         const bounds = L.latLngBounds([b[0][0], b[0][1]], [b[1][0], b[1][1]]);
-        const layer = L.imageOverlay(it.src, bounds, { opacity: 0.85, pane: "imagePane" }).addTo(map);
+        const layer = L.imageOverlay(it.src, bounds, {
+          opacity: 0.85,
+          pane: "imagePane",
+        }).addTo(map);
         imageOverlaysRef.current.push({
-          id: String(it.id ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+          id: String(
+            it.id ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          ),
           name: String(it.name ?? "overlay"),
           src: it.src,
           bounds: b,
@@ -399,20 +520,26 @@ export default function LeafletMap({
 
     root.style.display = "block";
     const title = document.createElement("div");
-    title.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;";
+    title.style.cssText =
+      "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;";
     title.innerHTML = `<span style="color:#94a3b8;font-size:11px;letter-spacing:.12em;text-transform:uppercase">Image overlays</span>`;
 
     const clearBtn = document.createElement("button");
     clearBtn.textContent = "Clear";
-    clearBtn.style.cssText = "background:transparent;border:1px solid rgba(255,255,255,0.12);color:#e2e8f0;font-size:11px;padding:4px 8px;border-radius:10px;cursor:pointer";
+    clearBtn.style.cssText =
+      "background:transparent;border:1px solid rgba(255,255,255,0.12);color:#e2e8f0;font-size:11px;padding:4px 8px;border-radius:10px;cursor:pointer";
     clearBtn.onclick = () => {
       const map = mapInstanceRef.current;
       if (!map) return;
       imageOverlaysRef.current.forEach((ov) => {
-        try { map.removeLayer(ov.layer); } catch (_) {}
+        try {
+          map.removeLayer(ov.layer);
+        } catch (_) {}
       });
       imageOverlaysRef.current = [];
-      try { localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY); } catch (_) {}
+      try {
+        localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY);
+      } catch (_) {}
       refreshOverlaysUi();
     };
     title.appendChild(clearBtn);
@@ -420,18 +547,25 @@ export default function LeafletMap({
 
     for (const ov of list) {
       const row = document.createElement("div");
-      row.style.cssText = "display:flex;align-items:center;gap:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);padding:8px 10px;border-radius:12px;margin-bottom:6px;";
+      row.style.cssText =
+        "display:flex;align-items:center;gap:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);padding:8px 10px;border-radius:12px;margin-bottom:6px;";
       const name = document.createElement("div");
       name.textContent = ov.name;
-      name.style.cssText = "flex:1;min-width:0;color:#e2e8f0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+      name.style.cssText =
+        "flex:1;min-width:0;color:#e2e8f0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
       const del = document.createElement("button");
       del.textContent = "Delete";
-      del.style.cssText = "background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.22);color:#f87171;font-size:11px;padding:5px 8px;border-radius:10px;cursor:pointer";
+      del.style.cssText =
+        "background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.22);color:#f87171;font-size:11px;padding:5px 8px;border-radius:10px;cursor:pointer";
       del.onclick = () => {
         const map = mapInstanceRef.current;
         if (!map) return;
-        try { map.removeLayer(ov.layer); } catch (_) {}
-        imageOverlaysRef.current = imageOverlaysRef.current.filter((x) => x.id !== ov.id);
+        try {
+          map.removeLayer(ov.layer);
+        } catch (_) {}
+        imageOverlaysRef.current = imageOverlaysRef.current.filter(
+          (x) => x.id !== ov.id,
+        );
         persistImageOverlays();
         refreshOverlaysUi();
       };
@@ -462,7 +596,13 @@ export default function LeafletMap({
     mapRef.current?.appendChild(hint);
 
     // set placement state immediately so clicks are captured (but blocked until ready)
-    placingImageRef.current = { file, src: "", ready: false, clicks: [], hintEl: hint };
+    placingImageRef.current = {
+      file,
+      src: "",
+      ready: false,
+      clicks: [],
+      hintEl: hint,
+    };
 
     const reader = new FileReader();
     reader.onload = () => {
@@ -472,7 +612,8 @@ export default function LeafletMap({
       if (!st) return;
       st.src = src;
       st.ready = true;
-      if (st.hintEl) st.hintEl.textContent = `Place image: click TOP-LEFT corner ثم click BOTTOM-RIGHT (Esc لإلغاء)`;
+      if (st.hintEl)
+        st.hintEl.textContent = `Place image: click TOP-LEFT corner ثم click BOTTOM-RIGHT (Esc لإلغاء)`;
     };
     reader.readAsDataURL(file);
   };
@@ -484,7 +625,7 @@ export default function LeafletMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onImagePlacerRegister, mapReady]);
 
-useEffect(() => {
+  useEffect(() => {
     if (!onRasterOverlayRegister) return;
     onRasterOverlayRegister((config) => {
       const map = mapInstanceRef.current;
@@ -515,7 +656,8 @@ useEffect(() => {
       // لو هو مجرد رابط ملف GeoTIFF واحد (زي اللي راجع من raster-calc)، بيبقى
       // مش صالح كـ tile source خالص (المتصفح مش بيقدر يعرض TIFF كـ tile)،
       // فبنرجع لـ imageOverlay اللي شغال أصلًا بالـ PNG + bounds الحقيقية.
-      const hasTileTemplate = !!config.tileUrl && config.tileUrl.includes("{z}");
+      const hasTileTemplate =
+        !!config.tileUrl && config.tileUrl.includes("{z}");
       const layer = hasTileTemplate
         ? L.tileLayer(config.tileUrl!, {
             opacity: config.opacity,
@@ -533,11 +675,11 @@ useEffect(() => {
         : L.imageOverlay(config.dataUrl, bounds, {
             opacity: config.opacity,
             pane: "imagePane",
-        // الصورة الأصلية low-res (كلاسات مصنّفة، مش صورة عادية)، فلو المتصفح
-        // كبّرها بـ smooth/bilinear scaling الافتراضي، البقع/النقط الحمرا
-        // والخضرا الصغيرة بتتمسح وتتحول لبقعة ضبابية (زي اللي كان بيبان أخضر
-        // "شايل" فوق الخريطة). pixelated بيخلي كل بكسل مصنّف يبان بحدوده
-        // واضحة زي في صورة السايد بار بالظبط.
+            // الصورة الأصلية low-res (كلاسات مصنّفة، مش صورة عادية)، فلو المتصفح
+            // كبّرها بـ smooth/bilinear scaling الافتراضي، البقع/النقط الحمرا
+            // والخضرا الصغيرة بتتمسح وتتحول لبقعة ضبابية (زي اللي كان بيبان أخضر
+            // "شايل" فوق الخريطة). pixelated بيخلي كل بكسل مصنّف يبان بحدوده
+            // واضحة زي في صورة السايد بار بالظبط.
             className: "change-detection-raster-overlay",
           }).addTo(map);
       rasterOverlayRef.current.set(overlayKey, layer);
@@ -581,9 +723,9 @@ useEffect(() => {
             opacity: config.opacity,
             weight: 1,
           }).bindPopup(
-            `<b>${config.name}</b><br/>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<br/>value: ${p.value.toFixed(3)}`
-          )
-        )
+            `<b>${config.name}</b><br/>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<br/>value: ${p.value.toFixed(3)}`,
+          ),
+        ),
       ).addTo(map);
 
       pointsOverlayRef.current.set(overlayKey, group);
@@ -618,10 +760,16 @@ useEffect(() => {
         fillColor: "#f97316",
         fillOpacity: 0.75,
         weight: 2,
-      }).addTo(map).bindPopup("Super Resolution result");
+      })
+        .addTo(map)
+        .bindPopup("Super Resolution result");
 
       superResOverlayRef.current = { layer, marker };
-      map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 16, duration: 0.8 });
+      map.flyToBounds(bounds, {
+        padding: [42, 42],
+        maxZoom: 16,
+        duration: 0.8,
+      });
     });
   }, [onSuperResOverlayRegister, mapReady]);
 
@@ -644,21 +792,34 @@ useEffect(() => {
       if (!config || !map || !L) return;
 
       const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
-      const beforeLayer = L.imageOverlay(config.beforeUrl, bounds, { pane: "imagePane", opacity: 1 }).addTo(map);
-      const afterLayer  = L.imageOverlay(config.afterUrl,  bounds, { pane: "imagePane", opacity: 1 }).addTo(map);
+      const beforeLayer = L.imageOverlay(config.beforeUrl, bounds, {
+        pane: "imagePane",
+        opacity: 1,
+      }).addTo(map);
+      const afterLayer = L.imageOverlay(config.afterUrl, bounds, {
+        pane: "imagePane",
+        opacity: 1,
+      }).addTo(map);
 
       // UI: divider line + drag handle + before/after labels, as a plain DOM
       // overlay sitting above the imagePane (350) but positioned/sized manually
       // since it isn't a leaflet layer itself (needs free pixel-space dragging).
-      const ui = L.DomUtil.create("div", "swipe-compare-ui", map.getContainer()) as HTMLDivElement;
-      ui.style.cssText = "position:absolute; inset:0; z-index:610; pointer-events:none; overflow:hidden;";
+      const ui = L.DomUtil.create(
+        "div",
+        "swipe-compare-ui",
+        map.getContainer(),
+      ) as HTMLDivElement;
+      ui.style.cssText =
+        "position:absolute; inset:0; z-index:610; pointer-events:none; overflow:hidden;";
 
       const line = document.createElement("div");
-      line.style.cssText = "position:absolute; width:2px; background:#22d3ee; box-shadow:0 0 10px rgba(34,211,238,.8); pointer-events:none;";
+      line.style.cssText =
+        "position:absolute; width:2px; background:#22d3ee; box-shadow:0 0 10px rgba(34,211,238,.8); pointer-events:none;";
       ui.appendChild(line);
 
       const handle = document.createElement("div");
-      handle.style.cssText = "position:absolute; width:34px; height:34px; margin-left:-17px; margin-top:-17px; border-radius:9999px; background:#020817ee; border:2px solid #22d3ee; color:#22d3ee; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; cursor:ew-resize; pointer-events:all; box-shadow:0 4px 16px rgba(0,0,0,.55);";
+      handle.style.cssText =
+        "position:absolute; width:34px; height:34px; margin-left:-17px; margin-top:-17px; border-radius:9999px; background:#020817ee; border:2px solid #22d3ee; color:#22d3ee; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; cursor:ew-resize; pointer-events:all; box-shadow:0 4px 16px rgba(0,0,0,.55);";
       handle.textContent = "↔";
       ui.appendChild(handle);
 
@@ -674,26 +835,32 @@ useEffect(() => {
 
       const beforeLabel = document.createElement("div");
       beforeLabel.textContent = config.beforeLabel ?? "Before";
-      beforeLabel.style.cssText = "position:absolute; background:rgba(0,0,0,.7); color:#7dd3fc; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
+      beforeLabel.style.cssText =
+        "position:absolute; background:rgba(0,0,0,.7); color:#7dd3fc; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
       ui.appendChild(beforeLabel);
 
       const afterLabel = document.createElement("div");
       afterLabel.textContent = config.afterLabel ?? "After";
-      afterLabel.style.cssText = "position:absolute; background:rgba(0,0,0,.7); color:#fdba74; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
+      afterLabel.style.cssText =
+        "position:absolute; background:rgba(0,0,0,.7); color:#fdba74; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
       ui.appendChild(afterLabel);
 
       let position = 0.5; // fraction 0..1 across the AOI width — before on the left, after on the right
 
       const applyClip = () => {
-        const afterEl = (afterLayer as any).getElement?.() as HTMLElement | undefined;
+        const afterEl = (afterLayer as any).getElement?.() as
+          | HTMLElement
+          | undefined;
         if (afterEl) afterEl.style.clipPath = `inset(0 0 0 ${position * 100}%)`;
       };
 
       const reposition = () => {
         const nw = map.latLngToContainerPoint(bounds.getNorthWest());
         const se = map.latLngToContainerPoint(bounds.getSouthEast());
-        const left = Math.min(nw.x, se.x), right = Math.max(nw.x, se.x);
-        const top = Math.min(nw.y, se.y), bottom = Math.max(nw.y, se.y);
+        const left = Math.min(nw.x, se.x),
+          right = Math.max(nw.x, se.x);
+        const top = Math.min(nw.y, se.y),
+          bottom = Math.max(nw.y, se.y);
         const x = left + (right - left) * position;
         line.style.left = `${x}px`;
         line.style.top = `${top}px`;
@@ -706,7 +873,10 @@ useEffect(() => {
         afterLabel.style.top = `${top + 10}px`;
       };
 
-      afterLayer.on("load", () => { applyClip(); reposition(); });
+      afterLayer.on("load", () => {
+        applyClip();
+        reposition();
+      });
       beforeLayer.on("load", reposition);
       applyClip();
       reposition();
@@ -728,7 +898,8 @@ useEffect(() => {
         if (!dragging) return;
         const nw = map.latLngToContainerPoint(bounds.getNorthWest());
         const se = map.latLngToContainerPoint(bounds.getSouthEast());
-        const left = Math.min(nw.x, se.x), right = Math.max(nw.x, se.x);
+        const left = Math.min(nw.x, se.x),
+          right = Math.max(nw.x, se.x);
         const rect = map.getContainer().getBoundingClientRect();
         const clientX = e.clientX - rect.left;
         const frac = (clientX - left) / Math.max(1, right - left);
@@ -752,10 +923,18 @@ useEffect(() => {
           handle.removeEventListener("pointerdown", onPointerDown);
           window.removeEventListener("pointermove", onPointerMove);
           window.removeEventListener("pointerup", onPointerUp);
-          try { map.dragging.enable(); } catch {}
-          try { map.removeLayer(beforeLayer); } catch {}
-          try { map.removeLayer(afterLayer); } catch {}
-          try { ui.remove(); } catch {}
+          try {
+            map.dragging.enable();
+          } catch {}
+          try {
+            map.removeLayer(beforeLayer);
+          } catch {}
+          try {
+            map.removeLayer(afterLayer);
+          } catch {}
+          try {
+            ui.remove();
+          } catch {}
         },
       };
     });
@@ -803,18 +982,30 @@ useEffect(() => {
     const center = map.getCenter();
     const lat = center?.lat ?? 0;
     const zoom = map.getZoom();
-    const mpp = 156543.03392 * Math.cos((lat * Math.PI) / 180) / Math.pow(2, zoom);
+    const mpp =
+      (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, zoom);
 
     const toPx = (latlng: any) => map.latLngToContainerPoint(latlng);
-    const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
+    const clamp = (n: number, a: number, b: number) =>
+      Math.max(a, Math.min(b, n));
 
     const walkRings = (coords: any): any[] => {
       // returns array of rings (each ring is array of [lng,lat])
       if (!coords) return [];
       // Polygon: [ring[]]
-      if (Array.isArray(coords) && Array.isArray(coords[0]) && typeof coords[0][0] === "number") return [coords];
+      if (
+        Array.isArray(coords) &&
+        Array.isArray(coords[0]) &&
+        typeof coords[0][0] === "number"
+      )
+        return [coords];
       // MultiPolygon: [[ring[]], ...]
-      if (Array.isArray(coords) && Array.isArray(coords[0]) && Array.isArray(coords[0][0])) return coords.flatMap((poly: any) => poly);
+      if (
+        Array.isArray(coords) &&
+        Array.isArray(coords[0]) &&
+        Array.isArray(coords[0][0])
+      )
+        return coords.flatMap((poly: any) => poly);
       return [];
     };
 
@@ -843,7 +1034,8 @@ useEffect(() => {
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(pts[0].x - dx, pts[0].y - dy);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x - dx, pts[i].y - dy);
+        for (let i = 1; i < pts.length; i++)
+          ctx.lineTo(pts[i].x - dx, pts[i].y - dy);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
@@ -852,7 +1044,8 @@ useEffect(() => {
         ctx.globalAlpha = Math.max(0.18, opacity - 0.18);
         ctx.fillStyle = "rgba(0,0,0,0.22)";
         for (let i = 0; i < pts.length - 1; i++) {
-          const a = pts[i], b = pts[i + 1];
+          const a = pts[i],
+            b = pts[i + 1];
           ctx.beginPath();
           ctx.moveTo(a.x, a.y);
           ctx.lineTo(b.x, b.y);
@@ -869,7 +1062,7 @@ useEffect(() => {
   // ── GeoJSON layer useEffect ───────────────────────────────────────────────
   useEffect(() => {
     const map = mapInstanceRef.current;
-    const L   = LRef.current;
+    const L = LRef.current;
     if (!map || !L || !geoJsonData) return;
 
     if (geoJsonLayerRef.current) {
@@ -886,30 +1079,33 @@ useEffect(() => {
           ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
           : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
         return {
-          color:       geoJsonStyle?.color       ?? uc.stroke,
-          weight:      geoJsonStyle?.weight      ?? 1.5,
-          opacity:     geoJsonStyle?.opacity     ?? 0.9,
-          fillColor:   geoJsonStyle?.fillColor   ?? uc.fill,
+          color: geoJsonStyle?.color ?? uc.stroke,
+          weight: geoJsonStyle?.weight ?? 1.5,
+          opacity: geoJsonStyle?.opacity ?? 0.9,
+          fillColor: geoJsonStyle?.fillColor ?? uc.fill,
           fillOpacity: geoJsonStyle?.fillOpacity ?? 0.25,
-          dashArray:   geoJsonStyle?.dashArray,
+          dashArray: geoJsonStyle?.dashArray,
         };
       }
 
       // ── الافتراضي العام (غير الجامعات) ─────────────────────────────────────
       return {
-        color:       geoJsonStyle?.color       ?? "#00c8ff",
-        weight:      geoJsonStyle?.weight      ?? 1.5,
-        opacity:     geoJsonStyle?.opacity     ?? 0.85,
-        fillColor:   geoJsonStyle?.fillColor   ?? "#00c8ff",
+        color: geoJsonStyle?.color ?? "#00c8ff",
+        weight: geoJsonStyle?.weight ?? 1.5,
+        opacity: geoJsonStyle?.opacity ?? 0.85,
+        fillColor: geoJsonStyle?.fillColor ?? "#00c8ff",
         fillOpacity: geoJsonStyle?.fillOpacity ?? 0.08,
-        dashArray:   geoJsonStyle?.dashArray,
+        dashArray: geoJsonStyle?.dashArray,
       };
     };
 
     const pointToLayerFn = (_: any, latlng: any) =>
       L.circleMarker(latlng, {
-        radius: 4, color: "#22d3ee",
-        fillColor: "#22d3ee", fillOpacity: 0.8, weight: 2,
+        radius: 4,
+        color: "#22d3ee",
+        fillColor: "#22d3ee",
+        fillOpacity: 0.8,
+        weight: 2,
       });
 
     const onEachFeatureFn = (feature: any, lyr: any) => {
@@ -922,15 +1118,17 @@ useEffect(() => {
           ? { fill: p._fillColor }
           : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
         const rangeLabel =
-          p.ToBreak <= 5  ? "0 – 5 دقائق  (الأقرب)" :
-          p.ToBreak <= 10 ? "5 – 10 دقائق" :
-                            "10 – 15 دقيقة (الأبعد)";
+          p.ToBreak <= 5
+            ? "0 – 5 دقائق  (الأقرب)"
+            : p.ToBreak <= 10
+              ? "5 – 10 دقائق"
+              : "10 – 15 دقيقة (الأبعد)";
         lyr.bindTooltip(
           `<div style="font-size:.75rem;line-height:1.5;direction:rtl">
             <span style="color:${uc.fill};font-weight:700">${p.Name?.split(" : ")[0] ?? ""}</span><br/>
             <span style="color:#cbd5e1">${rangeLabel}</span>
           </div>`,
-          { sticky: true, className: "ndvi-tooltip" }
+          { sticky: true, className: "ndvi-tooltip" },
         );
         lyr.on("click", (e: any) => {
           L.DomEvent.stopPropagation(e);
@@ -946,7 +1144,12 @@ useEffect(() => {
         L.DomEvent.stopPropagation(e);
         if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
         if (geoJsonLayerRef.current) geoJsonLayerRef.current.resetStyle();
-        lyr.setStyle({ weight: 3, opacity: 1, color: "#22d3ee", fillOpacity: 0.25 });
+        lyr.setStyle({
+          weight: 3,
+          opacity: 1,
+          color: "#22d3ee",
+          fillOpacity: 0.25,
+        });
       });
     };
 
@@ -972,8 +1175,11 @@ useEffect(() => {
     geoJsonLayerRef.current = layer;
 
     const allFeatures: any[] =
-      geoJsonData.type === "FeatureCollection" ? (geoJsonData.features ?? []) :
-      geoJsonData.type === "Feature" ? [geoJsonData] : [];
+      geoJsonData.type === "FeatureCollection"
+        ? (geoJsonData.features ?? [])
+        : geoJsonData.type === "Feature"
+          ? [geoJsonData]
+          : [];
 
     // Fly to the full extent right away — computed from the raw GeoJSON via
     // turf (pure math, no DOM/layer cost), so the map doesn't have to wait
@@ -983,7 +1189,11 @@ useEffect(() => {
         const [minX, minY, maxX, maxY] = turfBbox(geoJsonData as any);
         const bounds = L.latLngBounds([minY, minX], [maxY, maxX]);
         if (bounds.isValid()) {
-          map.flyToBounds(bounds, { padding: [40, 40], maxZoom: 16, duration: 1.2 });
+          map.flyToBounds(bounds, {
+            padding: [40, 40],
+            maxZoom: 16,
+            duration: 1.2,
+          });
         }
       } catch (_) {}
     }
@@ -997,7 +1207,10 @@ useEffect(() => {
     const processBatches = () => {
       if (cancelled) return;
       const frameStart = performance.now();
-      while (cursor < allFeatures.length && performance.now() - frameStart < FRAME_BUDGET_MS) {
+      while (
+        cursor < allFeatures.length &&
+        performance.now() - frameStart < FRAME_BUDGET_MS
+      ) {
         const batch = allFeatures.slice(cursor, cursor + BATCH_SIZE);
         layer.addData({ type: "FeatureCollection", features: batch } as any);
         cursor += BATCH_SIZE;
@@ -1026,7 +1239,7 @@ useEffect(() => {
   // ── Extra GeoJSON layer (شيكات الجامعات) ─────────────────────────────────
   useEffect(() => {
     const map = mapInstanceRef.current;
-    const L   = LRef.current;
+    const L = LRef.current;
     if (!map || !L) return;
 
     // امسح القديمة
@@ -1040,25 +1253,34 @@ useEffect(() => {
       // Canvas renderer avoids one DOM <path> per feature (was the main-thread bottleneck for large GeoJSON layers)
       renderer: L.canvas({ padding: 0.5 }),
       style: (feature: any) => {
-        const p   = feature?.properties ?? {};
-        const layerOpacity = typeof p._opacity === "number" ? Math.max(0, Math.min(1, p._opacity)) : 1;
+        const p = feature?.properties ?? {};
+        const layerOpacity =
+          typeof p._opacity === "number"
+            ? Math.max(0, Math.min(1, p._opacity))
+            : 1;
 
         // ── University service areas ───────────────────────────────────────────
         if (p._layerType === "university" || p.FromBreak !== undefined) {
-          const uc  = p._fillColor
+          const uc = p._fillColor
             ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
             : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
-          return { color: uc.stroke, weight: 1.8, opacity: 0.9 * layerOpacity, fillColor: uc.fill, fillOpacity: 0.22 * layerOpacity };
+          return {
+            color: uc.stroke,
+            weight: 1.8,
+            opacity: 0.9 * layerOpacity,
+            fillColor: uc.fill,
+            fillOpacity: 0.22 * layerOpacity,
+          };
         }
 
         // ── GeoJSON مرفوع من اليوزر — لون افتراضي سيان ────────────────────────
         const customColor = p._color ?? p.color ?? p.stroke ?? "#00c8ff";
-        const customFill  = p._fillColor ?? p.fillColor ?? p.fill ?? "#00c8ff";
+        const customFill = p._fillColor ?? p.fillColor ?? p.fill ?? "#00c8ff";
         return {
-          color:       customColor,
-          weight:      2,
-          opacity:     0.9 * layerOpacity,
-          fillColor:   customFill,
+          color: customColor,
+          weight: 2,
+          opacity: 0.9 * layerOpacity,
+          fillColor: customFill,
           fillOpacity: 0.2 * layerOpacity,
         };
       },
@@ -1070,51 +1292,62 @@ useEffect(() => {
           const uc = p._fillColor
             ? { fill: p._fillColor }
             : getUniversityColor(p.FromBreak ?? 0, p.ToBreak ?? 15);
-          const uniName   = (p.Name ?? "").split(" : ")[0];
+          const uniName = (p.Name ?? "").split(" : ")[0];
           const rangeLabel =
-            p.ToBreak <= 5  ? "0 – 5 دقائق  🟢" :
-            p.ToBreak <= 10 ? "5 – 10 دقائق 🟡" :
-                              "10 – 15 دقيقة 🔴";
+            p.ToBreak <= 5
+              ? "0 – 5 دقائق  🟢"
+              : p.ToBreak <= 10
+                ? "5 – 10 دقائق 🟡"
+                : "10 – 15 دقيقة 🔴";
           lyr.bindTooltip(
             `<div style="font-size:.75rem;line-height:1.6;direction:rtl;padding:2px 4px">
               <strong style="color:${uc.fill}">${uniName}</strong><br/>
               <span style="color:#cbd5e1">${rangeLabel}</span>
             </div>`,
-            { sticky: true, className: "ndvi-tooltip" }
+            { sticky: true, className: "ndvi-tooltip" },
           );
           lyr.on("click", (e: any) => {
             L.DomEvent.stopPropagation(e);
             if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
-            if (extraGeoJsonLayerRef.current) extraGeoJsonLayerRef.current.resetStyle();
+            if (extraGeoJsonLayerRef.current)
+              extraGeoJsonLayerRef.current.resetStyle();
             lyr.setStyle({ weight: 3, fillOpacity: 0.45 });
           });
           return;
         }
 
         // ── داتا مرفوعة (GeoJSON عادي) — اعرض كل الـ properties ───────────────
-        const propKeys = Object.keys(p).filter(k => !k.startsWith("_"));
+        const propKeys = Object.keys(p).filter((k) => !k.startsWith("_"));
         if (propKeys.length > 0) {
           // Tooltip: أول 3 fields بس
-          const preview = propKeys.slice(0, 3)
-            .map(k => `<span style="color:#94a3b8">${k}:</span> <span style="color:#e2e8f0">${p[k]}</span>`)
+          const preview = propKeys
+            .slice(0, 3)
+            .map(
+              (k) =>
+                `<span style="color:#94a3b8">${k}:</span> <span style="color:#e2e8f0">${p[k]}</span>`,
+            )
             .join("<br/>");
           lyr.bindTooltip(
             `<div style="font-size:.72rem;line-height:1.6;padding:2px 4px">${preview}</div>`,
-            { sticky: true, className: "ndvi-tooltip" }
+            { sticky: true, className: "ndvi-tooltip" },
           );
           // Popup: كل الـ properties عند الكليك
           const allProps = propKeys
-            .map(k => `<tr><td style="color:#64748b;padding:2px 6px 2px 0;font-size:.68rem">${k}</td><td style="color:#e2e8f0;font-size:.68rem">${p[k] ?? "—"}</td></tr>`)
+            .map(
+              (k) =>
+                `<tr><td style="color:#64748b;padding:2px 6px 2px 0;font-size:.68rem">${k}</td><td style="color:#e2e8f0;font-size:.68rem">${p[k] ?? "—"}</td></tr>`,
+            )
             .join("");
           lyr.bindPopup(
             `<div style="min-width:180px"><table style="border-collapse:collapse;width:100%">${allProps}</table></div>`,
-            { maxWidth: 280 }
+            { maxWidth: 280 },
           );
         }
         lyr.on("click", (e: any) => {
           L.DomEvent.stopPropagation(e);
           if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
-          if (extraGeoJsonLayerRef.current) extraGeoJsonLayerRef.current.resetStyle();
+          if (extraGeoJsonLayerRef.current)
+            extraGeoJsonLayerRef.current.resetStyle();
           lyr.setStyle({ weight: 3, fillOpacity: 0.45 });
         });
       },
@@ -1138,14 +1371,18 @@ useEffect(() => {
   // ── 🆕 Fly to latestGeoJson when it's uploaded ──────────────────────────
   useEffect(() => {
     const map = mapInstanceRef.current;
-    const L   = LRef.current;
+    const L = LRef.current;
     if (!map || !L || !latestGeoJson) return;
 
     try {
       const tempLayer = L.geoJSON(latestGeoJson);
       const bounds = tempLayer.getBounds();
       if (bounds.isValid()) {
-        map.flyToBounds(bounds, { padding: [50, 50], maxZoom: 16, duration: 1.2 });
+        map.flyToBounds(bounds, {
+          padding: [50, 50],
+          maxZoom: 16,
+          duration: 1.2,
+        });
       }
     } catch (err) {
       console.error("Fly to latestGeoJson failed:", err);
@@ -1155,12 +1392,14 @@ useEffect(() => {
   // ── Restore drawn features from project snapshot ─────────────────────────
   useEffect(() => {
     const map = mapInstanceRef.current;
-    const L   = LRef.current;
+    const L = LRef.current;
     if (!map || !L || !initialFeatures?.length) return;
 
     // امسح أي layers قديمة من load سابق
     initialFeaturesLayerRef.current.forEach((layer) => {
-      try { map.removeLayer(layer); } catch (_) {}
+      try {
+        map.removeLayer(layer);
+      } catch (_) {}
     });
     initialFeaturesLayerRef.current = [];
 
@@ -1171,16 +1410,21 @@ useEffect(() => {
       try {
         const geom = feature.geometry;
         const props = feature.properties ?? {};
-        const name  = String(props.name ?? "Restored Shape");
-        const area  = Number(props.areaHa ?? 0);
+        const name = String(props.name ?? "Restored Shape");
+        const area = Number(props.areaHa ?? 0);
 
         // ── Polygon / Rectangle ───────────────────────────────────────────────
         if (geom.type === "Polygon") {
           // GeoJSON coords: [[[lng, lat], ...]]  → Leaflet: [[lat, lng], ...]
-          const ring = geom.coordinates[0].map(([lng, lat]: number[]) => [lat, lng]);
+          const ring = geom.coordinates[0].map(([lng, lat]: number[]) => [
+            lat,
+            lng,
+          ]);
           const poly = L.polygon(ring, {
-            color: c.stroke, weight: 2,
-            fillColor: c.fill, fillOpacity: 0,
+            color: c.stroke,
+            weight: 2,
+            fillColor: c.fill,
+            fillOpacity: 0,
           }).addTo(map);
 
           poly.bindPopup(() => {
@@ -1193,7 +1437,9 @@ useEffect(() => {
           drawLayersRef.current.push(poly);
           initialFeaturesLayerRef.current.push(poly);
 
-          try { bounds.push(poly.getBounds()); } catch (_) {}
+          try {
+            bounds.push(poly.getBounds());
+          } catch (_) {}
         }
 
         // ── Circle (bounds approximation) ─────────────────────────────────────
@@ -1218,9 +1464,13 @@ useEffect(() => {
 
         // ── LineString (measure) ──────────────────────────────────────────────
         if (geom.type === "LineString") {
-          const latlngs = geom.coordinates.map(([lng, lat]: number[]) => [lat, lng]);
+          const latlngs = geom.coordinates.map(([lng, lat]: number[]) => [
+            lat,
+            lng,
+          ]);
           const line = L.polyline(latlngs, {
-            color: TOOL_COLORS.measure.stroke, weight: 2.5,
+            color: TOOL_COLORS.measure.stroke,
+            weight: 2.5,
           }).addTo(map);
           line.bindPopup(() => {
             const div = document.createElement("div");
@@ -1230,7 +1480,9 @@ useEffect(() => {
           });
           drawLayersRef.current.push(line);
           initialFeaturesLayerRef.current.push(line);
-          try { bounds.push(line.getBounds()); } catch (_) {}
+          try {
+            bounds.push(line.getBounds());
+          } catch (_) {}
         }
       } catch (err) {
         console.warn("Failed to restore feature:", err);
@@ -1240,9 +1492,16 @@ useEffect(() => {
     // Fly to الـ bounds بتاعت كل الـ features المرسومة
     if (bounds.length) {
       try {
-        const combined = bounds.reduce((acc, b) => acc.extend(b), L.latLngBounds(bounds[0]));
+        const combined = bounds.reduce(
+          (acc, b) => acc.extend(b),
+          L.latLngBounds(bounds[0]),
+        );
         if (combined.isValid()) {
-          map.flyToBounds(combined, { padding: [60, 60], maxZoom: 15, duration: 1.2 });
+          map.flyToBounds(combined, {
+            padding: [60, 60],
+            maxZoom: 15,
+            duration: 1.2,
+          });
         }
       } catch (_) {}
     }
@@ -1265,44 +1524,58 @@ useEffect(() => {
     return () => {
       map.off("moveend zoomend viewreset resize", redraw);
     };
-  }, [mapReady, extrusionGeoJson, extrusionConfig?.enabled, extrusionConfig?.heightProperty, extrusionConfig?.defaultHeightM, extrusionConfig?.color, extrusionConfig?.opacity]);
+  }, [
+    mapReady,
+    extrusionGeoJson,
+    extrusionConfig?.enabled,
+    extrusionConfig?.heightProperty,
+    extrusionConfig?.defaultHeightM,
+    extrusionConfig?.color,
+    extrusionConfig?.opacity,
+  ]);
 
   const redrawCurrent = (canvas: HTMLCanvasElement, map: any, L: any) => {
     const coords = lastCoordsRef.current;
-    const tool   = lastToolRef.current;
+    const tool = lastToolRef.current;
     if (!coords.length) return;
-    const px = coords.map((p) => map.latLngToContainerPoint(L.latLng(p.lat, p.lng)));
-    if (tool === "polygon")  drawPolygon(canvas, px);
-    if (tool === "measure")  drawMeasure(canvas, px);
+    const px = coords.map((p) =>
+      map.latLngToContainerPoint(L.latLng(p.lat, p.lng)),
+    );
+    if (tool === "polygon") drawPolygon(canvas, px);
+    if (tool === "measure") drawMeasure(canvas, px);
     if (tool === "rectangle" && px.length === 2) drawRect(canvas, px[0], px[1]);
-    if (tool === "circle"    && px.length === 2) {
-      const rPx = Math.sqrt((px[1].x - px[0].x) ** 2 + (px[1].y - px[0].y) ** 2);
+    if (tool === "circle" && px.length === 2) {
+      const rPx = Math.sqrt(
+        (px[1].x - px[0].x) ** 2 + (px[1].y - px[0].y) ** 2,
+      );
       drawCircle(canvas, px[0], rPx);
     }
-    if (tool === "marker") { clearCanvas(canvas); px.forEach((p) => drawMarker(canvas, p)); }
+    if (tool === "marker") {
+      clearCanvas(canvas);
+      px.forEach((p) => drawMarker(canvas, p));
+    }
   };
 
   const validatePolygonBeforeSave = (pts: [number, number][]) => {
-  if (pts.length < 3) return { ok: false, msg: "Not enough points" };
+    if (pts.length < 3) return { ok: false, msg: "Not enough points" };
 
-  const feature = makePolygonFeature(
-    "temp",
-    pts,
-    0
-  );
+    const feature = makePolygonFeature("temp", pts, 0);
 
-  const result = validateAOI(feature);
+    const result = validateAOI(feature);
 
-  if (!result.valid) {
-    return { ok: false, msg: result.errors?.[0] || "Invalid polygon" };
-  }
+    if (!result.valid) {
+      return { ok: false, msg: result.errors?.[0] || "Invalid polygon" };
+    }
 
-  return { ok: true, msg: "" };
-};
+    return { ok: true, msg: "" };
+  };
 
   const handleCapture = async (
-    canvas: HTMLCanvasElement, map: any, L: any,
-    coordinates: LatLngPoint[], metadata: CaptureMetadata
+    canvas: HTMLCanvasElement,
+    map: any,
+    L: any,
+    coordinates: LatLngPoint[],
+    metadata: CaptureMetadata,
   ) => {
     // ── AOI validation: no self-intersection + within max size ────────────────
     // Only meaningful for polygon-like shapes with >= 3 points; markers/measure
@@ -1311,11 +1584,14 @@ useEffect(() => {
       const feature = makePolygonFeature(
         metadata.areaName,
         coordinates.map((p) => [p.lat, p.lng]),
-        metadata.areaSizeHa
+        metadata.areaSizeHa,
       );
       const validation = validateAOI(feature);
       if (!validation.valid) {
-        toast.error(validation.errors[0] ?? (isRTL ? "شكل المنطقة غير صالح" : "Invalid AOI geometry"));
+        toast.error(
+          validation.errors[0] ??
+            (isRTL ? "شكل المنطقة غير صالح" : "Invalid AOI geometry"),
+        );
         return;
       }
       if (validation.warnings.length) {
@@ -1324,8 +1600,21 @@ useEffect(() => {
     }
 
     try {
-      const captureResult = await capture(canvas, map, L, coordinates, metadata, captureTarget);
-      const { smallBlob, largeBlob, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
+      const captureResult = await capture(
+        canvas,
+        map,
+        L,
+        coordinates,
+        metadata,
+        captureTarget,
+      );
+      const {
+        smallBlob,
+        largeBlob,
+        viewportCoordinates,
+        selectedBounds,
+        viewportBounds,
+      } = captureResult;
       onCapture?.(captureResult);
       // ⚠️ largeBlob بيتحسب دايمًا محليًا عشان الـ preview في الواجهة (MapClient
       // بيخزن largeUrl حتى مع captureTarget === "small")، بس ده مش معناه إنه
@@ -1338,7 +1627,7 @@ useEffect(() => {
         coordinates,
         metadata,
         { viewportCoordinates, selectedBounds, viewportBounds },
-        captureTarget
+        captureTarget,
       );
       if (res.ok) console.log("✅ Backend:", await res.json());
     } catch (err) {
@@ -1350,86 +1639,142 @@ useEffect(() => {
   const finishPolygon = async (map: any, L: any) => {
     const pts = drawPointsRef.current;
 
-const check = validatePolygonBeforeSave(pts);
-if (!check.ok) {
-  toast.error(check.msg);
-  return;
-}
-    if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
-    if (closeBtnRef.current)  closeBtnRef.current.style.display = "none";
+    const check = validatePolygonBeforeSave(pts);
+    if (!check.ok) {
+      toast.error(check.msg);
+      return;
+    }
+    if (tempLayerRef.current) {
+      map.removeLayer(tempLayerRef.current);
+      tempLayerRef.current = null;
+    }
+    if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
 
-    const c    = TOOL_COLORS.polygon;
-    const poly = L.polygon(pts, { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
+    const c = TOOL_COLORS.polygon;
+    const poly = L.polygon(pts, {
+      color: c.stroke,
+      weight: 2,
+      fillColor: c.fill,
+      fillOpacity: 0,
+    }).addTo(map);
     drawLayersRef.current.push(poly);
     const coords = [...pts, pts[0]].map(([lat, lng]) => [lng, lat]);
 
-const polygon = turfPolygon([coords]);
+    const polygon = turfPolygon([coords]);
+    const area = parseFloat((turfArea(polygon) / 10000).toFixed(1));
 
-const area = parseFloat(
-  (turfArea(polygon) / 10000).toFixed(1)
-);
-    poly.bindPopup(() => {
-      const div = document.createElement("div");
-      const label = document.createElement("div");
-      label.innerHTML = `🔵 ${t.polygon} · ≈ ${area} ${t.ha}`;
-      div.appendChild(label);
-      div.appendChild(buildShapePopupActions(poly, "polygon"));
-      return div;
-    }).openPopup();
+    poly
+      .bindPopup(() => {
+        const div = document.createElement("div");
+        const label = document.createElement("div");
+        label.innerHTML = `🔵 ${t.polygon} · ≈ ${area} ${t.ha}`;
+        div.appendChild(label);
+        div.appendChild(buildShapePopupActions(poly, "polygon"));
+        return div;
+      })
+      .openPopup();
 
     const feature = makePolygonFeature("Drawn Polygon", pts, area);
+
+    // ⬇️⬇️ الكود الجديد هنا ⬇️⬇️
+    const aoiId = crypto.randomUUID();
+    (poly as any)._aoiId = aoiId;
+    feature.properties = { ...feature.properties, aoiId };
+
+    saveAOI({
+      id: aoiId,
+      name: "Drawn Polygon",
+      tool: "polygon",
+      coords: [...pts], // نسخة، لأن pts هتتفرّغ تحت
+      areaHa: area,
+      createdAt: new Date().toISOString(),
+    }).catch((e) => console.error("AOI save failed", e));
+    // ⬆️⬆️ نهاية الكود الجديد ⬆️⬆️
+
     onAreaSelected("Drawn Polygon", area, feature);
     onFeatureClick?.(feature);
+    // ... باقي الدالة زي ما هو
 
-    const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
+    const coordinates: LatLngPoint[] = pts.map(
+      ([lat, lng]: [number, number]) => ({ lat, lng }),
+    );
     lastCoordsRef.current = coordinates;
-    lastToolRef.current   = "polygon";
+    lastToolRef.current = "polygon";
 
     if (canvasRef.current) {
-      drawPolygon(canvasRef.current, coordinates.map((p) =>
-        map.latLngToContainerPoint(L.latLng(p.lat, p.lng))
-      ));
+      drawPolygon(
+        canvasRef.current,
+        coordinates.map((p) =>
+          map.latLngToContainerPoint(L.latLng(p.lat, p.lng)),
+        ),
+      );
       const metadata: CaptureMetadata = {
-        areaName: "Drawn Polygon", areaSizeHa: area,
-        zoom: map.getZoom(), capturedAt: new Date().toISOString(),
+        areaName: "Drawn Polygon",
+        areaSizeHa: area,
+        zoom: map.getZoom(),
+        capturedAt: new Date().toISOString(),
       };
       await handleCapture(canvasRef.current, map, L, coordinates, metadata);
     }
     draftLayersRef.current = [];
     drawPointsRef.current = [];
   };
-
-  const finishMeasure = async (map: any, L: any) => {
+  const finishMeasure = (map: any, L: any) => {
     const pts = drawPointsRef.current;
     if (pts.length < 2) return;
-    if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
-    if (closeBtnRef.current)  closeBtnRef.current.style.display = "none";
 
-    const line = L.polyline(pts, { color: TOOL_COLORS.measure.stroke, weight: 2.5 }).addTo(map);
-    drawLayersRef.current.push(line);
-    let dist = 0;
-    for (let i = 1; i < pts.length; i++) dist += map.distance(pts[i - 1], pts[i]);
-    line.bindPopup(() => {
-      const div = document.createElement("div");
-      div.innerHTML = `📏 ${(dist / 1000).toFixed(3)} ${t.km}`;
-      div.appendChild(buildShapePopupActions(line, "measure"));
-      return div;
-    }).openPopup();
-
-    const coordinates: LatLngPoint[] = pts.map(([lat, lng]: [number, number]) => ({ lat, lng }));
-    lastCoordsRef.current = coordinates;
-    lastToolRef.current   = "measure";
-
-    if (canvasRef.current) {
-      drawMeasure(canvasRef.current, coordinates.map((p) =>
-        map.latLngToContainerPoint(L.latLng(p.lat, p.lng))
-      ));
-      const metadata: CaptureMetadata = {
-        areaName: "Measure Line", areaSizeHa: 0,
-        zoom: map.getZoom(), capturedAt: new Date().toISOString(),
-      };
-      await handleCapture(canvasRef.current, map, L, coordinates, metadata);
+    // إزالة الطبقات المؤقتة وزر الإنهاء
+    if (tempLayerRef.current) {
+      map.removeLayer(tempLayerRef.current);
+      tempLayerRef.current = null;
     }
+    if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
+
+    const c = TOOL_COLORS.measure;
+    // رسم المسار على الخريطة
+    const line = L.polyline(pts, {
+      color: c.stroke,
+      weight: 3,
+      dashArray: "5, 5",
+    }).addTo(map);
+    drawLayersRef.current.push(line);
+
+    // حساب المسافة الإجمالية بالمتر/الكيلومتر
+    let totalMeters = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      totalMeters += L.latLng(pts[i]).distanceTo(L.latLng(pts[i + 1]));
+    }
+    const distanceFormatted =
+      totalMeters >= 1000
+        ? `${(totalMeters / 1000).toFixed(2)} km`
+        : `${Math.round(totalMeters)} m`;
+
+    // ربط النافذة المنبثقة (Popup) بالخط
+    line
+      .bindPopup(() => {
+        const div = document.createElement("div");
+        const label = document.createElement("div");
+        label.innerHTML = `📏 ${isRTL ? "المسافة" : "Distance"}: <b>${distanceFormatted}</b>`;
+        div.appendChild(label);
+        div.appendChild(buildShapePopupActions(line, "measure"));
+        return div;
+      })
+      .openPopup();
+
+    // ⬇️ التخزين في IndexedDB ⬇️
+    const aoiId = crypto.randomUUID();
+    (line as any)._aoiId = aoiId;
+
+    saveAOI({
+      id: aoiId,
+      name: `Measurement (${distanceFormatted})`,
+      tool: "polygon", // يتم تخزين المسار كقائمة نقاط
+      coords: [...pts],
+      areaHa: 0,
+      createdAt: new Date().toISOString(),
+    }).catch((e) => console.error("Measure save failed", e));
+
+    // تنظيف المصفوفات المؤقتة
     draftLayersRef.current = [];
     drawPointsRef.current = [];
   };
@@ -1443,9 +1788,11 @@ const area = parseFloat(
 
       delete (L.Icon.Default.prototype as any)._getIconUrl;
       L.Icon.Default.mergeOptions({
-        iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-        iconUrl:       "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-        shadowUrl:     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+        iconRetinaUrl:
+          "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+        iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+        shadowUrl:
+          "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
       });
 
       // ── استرجاع آخر مكان/زوم كان فاتحهم اليوزر بدل ما نرجع للسعودية كل مرة ──
@@ -1467,13 +1814,21 @@ const area = parseFloat(
       } catch (_) {}
 
       const map = L.map(mapRef.current!, {
-        center: [initialView.lat, initialView.lng], zoom: initialView.zoom, zoomControl: false,
-        minZoom: 2, maxZoom: 22, worldCopyJump: false,
-        maxBounds: [[-90, -180], [90, 180]], maxBoundsViscosity: 1.0,
-        doubleClickZoom: false,   // ← وقف dblclick zoom
+        center: [initialView.lat, initialView.lng],
+        zoom: initialView.zoom,
+        zoomControl: false,
+        minZoom: 2,
+        maxZoom: 22,
+        worldCopyJump: false,
+        maxBounds: [
+          [-90, -180],
+          [90, 180],
+        ],
+        maxBoundsViscosity: 1.0,
+        doubleClickZoom: false, // ← وقف dblclick zoom
       });
       mapInstanceRef.current = map;
-      mapObjRef.current      = map;
+      mapObjRef.current = map;
 
       // بعد أي تحريك/زوم بنحفظ آخر مكان عشان لو عمل ريفريش يرجعله تاني
       map.on("moveend zoomend", () => {
@@ -1481,7 +1836,7 @@ const area = parseFloat(
           const c = map.getCenter();
           localStorage.setItem(
             LAST_VIEW_STORAGE_KEY,
-            JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() })
+            JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }),
           );
         } catch (_) {}
       });
@@ -1501,11 +1856,13 @@ const area = parseFloat(
 
       map.on("zoomstart", () => {
         tileErrorAtCurrentZoomRef.current = false;
-        if (zoomRevertTimeoutRef.current) clearTimeout(zoomRevertTimeoutRef.current);
+        if (zoomRevertTimeoutRef.current)
+          clearTimeout(zoomRevertTimeoutRef.current);
       });
 
       map.on("zoomend", () => {
-        if (zoomRevertTimeoutRef.current) clearTimeout(zoomRevertTimeoutRef.current);
+        if (zoomRevertTimeoutRef.current)
+          clearTimeout(zoomRevertTimeoutRef.current);
         // استنى شوية عشان التايلز تاخد فرصتها تحاول تحمل
         zoomRevertTimeoutRef.current = setTimeout(() => {
           const cz = map.getZoom();
@@ -1517,7 +1874,7 @@ const area = parseFloat(
               toast.error(
                 isRTL
                   ? "وصلت لأقصى دقة متاحة في المكان ده"
-                  : "Max available resolution reached for this area"
+                  : "Max available resolution reached for this area",
               );
             }
           } else {
@@ -1525,86 +1882,114 @@ const area = parseFloat(
           }
         }, 450);
       });
-// ── Scale Bar ─────────────────────────────────────────────────
-L.control.scale({
-  position: "bottomleft",
-  metric: true,
-  imperial: false,
-  maxWidth: 150,
-  updateWhenIdle: false,
-}).addTo(map);
+      // ── Scale Bar ─────────────────────────────────────────────────
+      L.control
+        .scale({
+          position: "bottomleft",
+          metric: true,
+          imperial: false,
+          maxWidth: 150,
+          updateWhenIdle: false,
+        })
+        .addTo(map);
 
-      map.createPane("satellitePane"); map.getPane("satellitePane")!.style.zIndex = "201";
+      map.createPane("satellitePane");
+      map.getPane("satellitePane")!.style.zIndex = "201";
       map.createPane("labelsPane");
-      Object.assign(map.getPane("labelsPane")!.style, { zIndex: "203", pointerEvents: "none" });
+      Object.assign(map.getPane("labelsPane")!.style, {
+        zIndex: "203",
+        pointerEvents: "none",
+      });
       map.createPane("imagePane");
       Object.assign(map.getPane("imagePane")!.style, { zIndex: "350" });
       imagePaneReadyRef.current = true;
 
       // ── 🆕 RESTORE AOI AFTER REFRESH ─────────────────────────
-if (!restoredRef.current) {
-  const saved = JSON.parse(localStorage.getItem("aoi_polygons") || "[]");
-
-  saved.forEach((item: any) => {
-    const c = TOOL_COLORS.polygon;
-
-    const poly = L.polygon(item.coords, {
-      color: c.stroke,
-      weight: 2,
-      fillColor: c.fill,
-      fillOpacity: 0,
-    }).addTo(map);
-
-    drawLayersRef.current.push(poly);
-
-    poly.bindPopup(() => {
-      const div = document.createElement("div");
-      div.innerHTML = `🔵 ${isRTL ? "منطقة محفوظة" : "Saved AOI"}`;
-      div.appendChild(buildShapePopupActions(poly, "polygon"));
-      return div;
-    });
-  });
-
-  restoredRef.current = true;
-}
+      if (!restoredRef.current) {
+        restoredRef.current = true;
+        getAllAOIs()
+          .then((saved) => {
+            if (!mapInstanceRef.current) return;
+            const c = TOOL_COLORS.polygon;
+            saved.forEach((item) => {
+              const poly = L.polygon(item.coords, {
+                color: c.stroke,
+                weight: 2,
+                fillColor: c.fill,
+                fillOpacity: 0,
+              }).addTo(map);
+              (poly as any)._aoiId = item.id;
+              drawLayersRef.current.push(poly);
+              poly.bindPopup(() => {
+                const div = document.createElement("div");
+                div.innerHTML = `🔵 ${item.name} · ≈ ${item.areaHa} ha`;
+                div.appendChild(buildShapePopupActions(poly, "polygon"));
+                return div;
+              });
+            });
+          })
+          .catch((e) => console.error("AOI restore failed", e));
+      } // ← ده قوس الـ if، لازم يكون موجود
 
       // ① Esri WorldImagery — مباشر بدون proxy (Esri بيبعت CORS headers أصلًا،
       // فمفيش داعي إننا نمرر كل تايل عبر السيرفر بتاعنا ونستهلك Fast Origin Transfer)
       baseTileRef.current = L.tileLayer(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-        attribution: "Tiles © Esri",
-        maxZoom: 18,
-        maxNativeZoom: 18,
-        pane: "satellitePane", crossOrigin: "anonymous",
-      }).addTo(map);
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        {
+          attribution: "Tiles © Esri",
+          maxZoom: 18,
+          maxNativeZoom: 18,
+          pane: "satellitePane",
+          crossOrigin: "anonymous",
+        },
+      ).addTo(map);
 
       labelsLayerRef.current = L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        { attribution: "", maxZoom: 19, maxNativeZoom: 19, opacity: 0.7, pane: "labelsPane", crossOrigin: "anonymous" }
+        {
+          attribution: "",
+          maxZoom: 19,
+          maxNativeZoom: 19,
+          opacity: 0.7,
+          pane: "labelsPane",
+          crossOrigin: "anonymous",
+        },
       );
-
 
       // ── Canvas Layer ──────────────────────────────────────────────────────
       const CanvasLayer = (L.Layer as any).extend({
         onAdd(this: any, lmap: any) {
           const canvas = document.createElement("canvas");
-          Object.assign(canvas.style, { position: "absolute", top: "0", left: "0", pointerEvents: "none", zIndex: "400" });
+          Object.assign(canvas.style, {
+            position: "absolute",
+            top: "0",
+            left: "0",
+            pointerEvents: "none",
+            zIndex: "400",
+          });
           lmap.getPane("overlayPane")!.appendChild(canvas);
-          this._canvas = canvas; canvasRef.current = canvas;
+          this._canvas = canvas;
+          canvasRef.current = canvas;
           lmap.on("moveend zoomend viewreset resize", this._update, this);
           this._update();
         },
         onRemove(this: any, lmap: any) {
-          this._canvas?.remove(); canvasRef.current = null;
+          this._canvas?.remove();
+          canvasRef.current = null;
           lmap.off("moveend zoomend viewreset resize", this._update, this);
         },
         _update(this: any) {
-          const lmap = this._map, size = lmap.getSize();
-          L.DomUtil.setPosition(this._canvas, lmap.containerPointToLayerPoint([0, 0]));
+          const lmap = this._map,
+            size = lmap.getSize();
+          L.DomUtil.setPosition(
+            this._canvas,
+            lmap.containerPointToLayerPoint([0, 0]),
+          );
           // نغيّر width/height بس لو فعلاً اتغيّر الحجم — إعادة تخصيص الـ pixel
           // buffer وهو بنفس القيمة بتعمل clear + realloc كامل من غير داعي
           if (this._canvas.width !== size.x || this._canvas.height !== size.y) {
-            this._canvas.width = size.x; this._canvas.height = size.y;
+            this._canvas.width = size.x;
+            this._canvas.height = size.y;
           }
           redrawCurrent(this._canvas, lmap, L);
         },
@@ -1615,21 +2000,34 @@ if (!restoredRef.current) {
       const ExtrudeCanvasLayer = (L.Layer as any).extend({
         onAdd(this: any, lmap: any) {
           const canvas = document.createElement("canvas");
-          Object.assign(canvas.style, { position: "absolute", top: "0", left: "0", pointerEvents: "none", zIndex: "345" });
+          Object.assign(canvas.style, {
+            position: "absolute",
+            top: "0",
+            left: "0",
+            pointerEvents: "none",
+            zIndex: "345",
+          });
           lmap.getPane("overlayPane")!.appendChild(canvas);
-          this._canvas = canvas; extrudeCanvasRef.current = canvas;
+          this._canvas = canvas;
+          extrudeCanvasRef.current = canvas;
           lmap.on("moveend zoomend viewreset resize", this._update, this);
           this._update();
         },
         onRemove(this: any, lmap: any) {
-          this._canvas?.remove(); extrudeCanvasRef.current = null;
+          this._canvas?.remove();
+          extrudeCanvasRef.current = null;
           lmap.off("moveend zoomend viewreset resize", this._update, this);
         },
         _update(this: any) {
-          const lmap = this._map, size = lmap.getSize();
-          L.DomUtil.setPosition(this._canvas, lmap.containerPointToLayerPoint([0, 0]));
+          const lmap = this._map,
+            size = lmap.getSize();
+          L.DomUtil.setPosition(
+            this._canvas,
+            lmap.containerPointToLayerPoint([0, 0]),
+          );
           if (this._canvas.width !== size.x || this._canvas.height !== size.y) {
-            this._canvas.width = size.x; this._canvas.height = size.y;
+            this._canvas.width = size.x;
+            this._canvas.height = size.y;
           }
           // draw extrusions after resizing
           drawExtrusions();
@@ -1641,17 +2039,34 @@ if (!restoredRef.current) {
       const closeBtn = document.createElement("button");
       closeBtnRef.current = closeBtn;
       Object.assign(closeBtn.style, {
-        display: "none", position: "absolute", bottom: "80px", left: "50%",
-        transform: "translateX(-50%)", zIndex: "1000",
-        background: "#0a1628cc", border: "1px solid rgba(0,200,255,0.5)",
-        color: "#00c8ff", padding: "7px 20px", borderRadius: "20px",
-        fontSize: "12px", cursor: "pointer", pointerEvents: "auto",
-        backdropFilter: "blur(10px)", boxShadow: "0 4px 20px rgba(0,212,255,0.25)",
-        fontFamily: "DM Sans, sans-serif", letterSpacing: "0.3px",
+        display: "none",
+        position: "absolute",
+        bottom: "80px",
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: "1000",
+        background: "#0a1628cc",
+        border: "1px solid rgba(0,200,255,0.5)",
+        color: "#00c8ff",
+        padding: "7px 20px",
+        borderRadius: "20px",
+        fontSize: "12px",
+        cursor: "pointer",
+        pointerEvents: "auto",
+        backdropFilter: "blur(10px)",
+        boxShadow: "0 4px 20px rgba(0,212,255,0.25)",
+        fontFamily: "DM Sans, sans-serif",
+        letterSpacing: "0.3px",
       });
       closeBtn.textContent = "✓ Close Shape";
-      closeBtn.addEventListener("mouseenter", () => closeBtn.style.background = "#0a1628");
-      closeBtn.addEventListener("mouseleave", () => closeBtn.style.background = "#0a1628cc");
+      closeBtn.addEventListener(
+        "mouseenter",
+        () => (closeBtn.style.background = "#0a1628"),
+      );
+      closeBtn.addEventListener(
+        "mouseleave",
+        () => (closeBtn.style.background = "#0a1628cc"),
+      );
       closeBtn.addEventListener("click", () => {
         const tool = activeToolRef.current;
         if (tool === "polygon") finishPolygon(map, L);
@@ -1660,7 +2075,7 @@ if (!restoredRef.current) {
       mapRef.current!.appendChild(closeBtn);
       const coordPanel = document.createElement("div");
 
-    // ── Image overlays manager UI ─────────────────────────────────────────
+      // ── Image overlays manager UI ─────────────────────────────────────────
       const overlaysUi = document.createElement("div");
       overlaysUiRef.current = overlaysUi;
       overlaysUi.style.cssText = `
@@ -1683,12 +2098,12 @@ if (!restoredRef.current) {
         if (!def?.url) return;
         currentSatKeyRef.current = satKey;
         baseTileRef.current = L.tileLayer(def.url, {
-          attribution:   def.attribution,
-          maxZoom:       def.maxZoom,
+          attribution: def.attribution,
+          maxZoom: def.maxZoom,
           maxNativeZoom: def.maxNativeZoom,
-          tileSize:      256,
-          pane:          "satellitePane",
-          crossOrigin:   "anonymous",
+          tileSize: 256,
+          pane: "satellitePane",
+          crossOrigin: "anonymous",
         }).addTo(map);
         attachTileErrorGuard(baseTileRef.current);
         // إعادة ضبط حالة الزوم عند تبديل المصدر (كل مصدر له تغطية مختلفة)
@@ -1704,7 +2119,8 @@ if (!restoredRef.current) {
       });
 
       onOpacityChangeRegister?.((o: number) => {
-        if (labelsLayerRef.current) labelsLayerRef.current.setOpacity(o * 0.8 + 0.1);
+        if (labelsLayerRef.current)
+          labelsLayerRef.current.setOpacity(o * 0.8 + 0.1);
       });
 
       // ── Scale-bar zoom cap (يوقف لما شريط المقياس يوصل ~30 م) ──────────────
@@ -1717,11 +2133,18 @@ if (!restoredRef.current) {
       const SCALE_BAR_MAX_WIDTH_PX = 150; // لازم يطابق maxWidth بتاع L.control.scale فوق
       const resolutionCapNotifiedRef = { current: false };
 
-      const computeMaxZoomForResolution = (lat: number, targetScaleLabelM: number) => {
+      const computeMaxZoomForResolution = (
+        lat: number,
+        targetScaleLabelM: number,
+      ) => {
         const targetMpp = targetScaleLabelM / SCALE_BAR_MAX_WIDTH_PX;
-        const raw =
-          Math.log2((156543.03392 * Math.cos((lat * Math.PI) / 180)) / targetMpp);
-        return Math.min(map.options.maxZoom ?? 22, Math.max(map.getMinZoom(), Math.round(raw)));
+        const raw = Math.log2(
+          (156543.03392 * Math.cos((lat * Math.PI) / 180)) / targetMpp,
+        );
+        return Math.min(
+          map.options.maxZoom ?? 22,
+          Math.max(map.getMinZoom(), Math.round(raw)),
+        );
       };
 
       const notifyResolutionCap = () => {
@@ -1747,47 +2170,86 @@ if (!restoredRef.current) {
         if (map.getZoom() >= map.getMaxZoom()) notifyResolutionCap();
       });
 
-      document.getElementById("map-zoom-in")?.addEventListener("click",  () => {
-        if (map.getZoom() >= map.getMaxZoom()) { notifyResolutionCap(); return; }
+      document.getElementById("map-zoom-in")?.addEventListener("click", () => {
+        if (map.getZoom() >= map.getMaxZoom()) {
+          notifyResolutionCap();
+          return;
+        }
         map.zoomIn();
       });
-      document.getElementById("map-zoom-out")?.addEventListener("click", () => map.zoomOut());
+      document
+        .getElementById("map-zoom-out")
+        ?.addEventListener("click", () => map.zoomOut());
 
       flyToRef.current = (lat, lng) => {
-  const safeLat = Number(lat);
-  const safeLng = Number(lng);
-  if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return;
+        const safeLat = Number(lat);
+        const safeLng = Number(lng);
+        if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return;
 
-  map.flyTo([safeLat, safeLng], 13, { duration: 1.6 });
-  setTimeout(() => {
-    const searchMarker = L.circleMarker([safeLat, safeLng], {
-      radius: 9, color: "#00d4ff", fillColor: "#00d4ff", fillOpacity: 0.7, weight: 2,
-    })
-      .addTo(map)
-      .bindPopup(`<b>📍 Location</b><br/>${safeLat.toFixed(5)}°N, ${safeLng.toFixed(5)}°E`)
-      .openPopup();
-    // ✅ سجّليه هنا عشان زرار الـ Clear/Delete يقدر يمسحه زي أي شكل تاني
-    drawLayersRef.current.push(searchMarker);
-  }, 1700);
-};
+        map.flyTo([safeLat, safeLng], 13, { duration: 1.6 });
+        setTimeout(() => {
+          const searchMarker = L.circleMarker([safeLat, safeLng], {
+            radius: 9,
+            color: "#00d4ff",
+            fillColor: "#00d4ff",
+            fillOpacity: 0.7,
+            weight: 2,
+          })
+            .addTo(map)
+            .bindPopup(
+              `<b>📍 Location</b><br/>${safeLat.toFixed(5)}°N, ${safeLng.toFixed(5)}°E`,
+            )
+            .openPopup();
+          // ✅ سجّليه هنا عشان زرار الـ Clear/Delete يقدر يمسحه زي أي شكل تاني
+          drawLayersRef.current.push(searchMarker);
+        }, 1700);
+      };
 
       clearRef.current = () => {
         drawLayersRef.current.forEach((l) => map.removeLayer(l));
-        drawLayersRef.current = []; draftLayersRef.current = []; drawPointsRef.current = [];
-        lastCoordsRef.current = []; lastToolRef.current = "pointer";
-        if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
+        drawLayersRef.current = [];
+        draftLayersRef.current = [];
+        drawPointsRef.current = [];
+        lastCoordsRef.current = [];
+        lastToolRef.current = "pointer";
+        if (tempLayerRef.current) {
+          map.removeLayer(tempLayerRef.current);
+          tempLayerRef.current = null;
+        }
         if (canvasRef.current) clearCanvas(canvasRef.current);
         if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
 
         // clear image overlays
         imageOverlaysRef.current.forEach((ov) => {
-          try { map.removeLayer(ov.layer); } catch (_) {}
+          try {
+            map.removeLayer(ov.layer);
+          } catch (_) {}
         });
         imageOverlaysRef.current = [];
+
+        clearAllAOIs()
+          .then(() => {
+            toast.success(
+              isRTL
+                ? "تم مسح جميع الرسومات بنجاح"
+                : "All shapes cleared successfully",
+            );
+          })
+          .catch((err) => {
+            console.error("Failed to clear IndexedDB:", err);
+            toast.error(
+              isRTL
+                ? "حدث خطأ أثناء مسح قاعدة البيانات"
+                : "Failed to clear database",
+            );
+          });
+
         // امسح كل أنواع overlays التحليل (raster / palm points / super
         // resolution / change-detection swipe) بنفس الدالة الموحّدة.
         clearAllAnalysisOverlaysRef.current();
-        try { localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY); } catch (_) {}
+        try {
+          localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY);
+        } catch (_) {}
         refreshOverlaysUi();
         stopImagePlacement();
       };
@@ -1823,9 +2285,17 @@ if (!restoredRef.current) {
               const center = coords[0];
               const radiusMeters = map.distance(
                 L.latLng(center.lat, center.lng),
-                L.latLng(coords[1].lat, coords[1].lng)
+                L.latLng(coords[1].lat, coords[1].lng),
               );
-              const captureResult = await captureCircle(canvasRef.current, map, L, center, radiusMeters, metadata, captureTarget);
+              const captureResult = await captureCircle(
+                canvasRef.current,
+                map,
+                L,
+                center,
+                radiusMeters,
+                metadata,
+                captureTarget,
+              );
               onCapture?.(captureResult);
             } else if (tool === "rectangle" && coords.length === 2) {
               // ⚠️ lastCoordsRef only stores the 2 diagonal corners (that's all
@@ -1840,7 +2310,13 @@ if (!restoredRef.current) {
                 { lat: p2.lat, lng: p2.lng },
                 { lat: p1.lat, lng: p2.lng },
               ];
-              await handleCapture(canvasRef.current, map, L, rectCoords, metadata);
+              await handleCapture(
+                canvasRef.current,
+                map,
+                L,
+                rectCoords,
+                metadata,
+              );
             } else {
               await handleCapture(canvasRef.current, map, L, coords, metadata);
             }
@@ -1863,7 +2339,7 @@ if (!restoredRef.current) {
         // ── Threshold: نتجاهل الكليكات اللي قريبة جداً (مكان) أو سريعة جداً (وقت) من آخر كليك ──
         // ده بيمنع طلبات NDVI/Weather المتكررة لو المستخدم بس بيتصفح الخريطة بكليكات متقاربة
         if (tool === "pointer") {
-          const MIN_DISTANCE_M = 15;   // أقل مسافة (متر) عشان نعتبره كليك جديد فعلاً
+          const MIN_DISTANCE_M = 15; // أقل مسافة (متر) عشان نعتبره كليك جديد فعلاً
           const MIN_INTERVAL_MS = 250; // أقل فاصل زمني بين كليكين متتاليين
           const now = Date.now();
           const last = lastVirtualClickRef.current;
@@ -1877,7 +2353,7 @@ if (!restoredRef.current) {
             onFeatureClick?.({
               type: "Feature",
               geometry: { type: "Point", coordinates: [lng, lat] },
-              properties: { _virtual: true }
+              properties: { _virtual: true },
             });
           }
         }
@@ -1887,7 +2363,8 @@ if (!restoredRef.current) {
           const st = placingImageRef.current;
           if (!st.ready) {
             // image still preparing
-            if (st.hintEl) st.hintEl.textContent = `Preparing image… please wait`;
+            if (st.hintEl)
+              st.hintEl.textContent = `Preparing image… please wait`;
             return;
           }
           st.clicks.push({ lat, lng });
@@ -1923,17 +2400,27 @@ if (!restoredRef.current) {
             const w2 = east === west ? west - minDelta : west;
             try {
               const bounds = L.latLngBounds([s2, w2], [n2, e2]);
-              const ov = L.imageOverlay(st.src, bounds, { opacity: 0.85, pane: "imagePane" }).addTo(map);
+              const ov = L.imageOverlay(st.src, bounds, {
+                opacity: 0.85,
+                pane: "imagePane",
+              }).addTo(map);
               imageOverlaysRef.current.push({
                 id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
                 name: st.file.name,
                 src: st.src,
-                bounds: [[s2, w2], [n2, e2]],
+                bounds: [
+                  [s2, w2],
+                  [n2, e2],
+                ],
                 layer: ov,
               });
               persistImageOverlays();
               refreshOverlaysUi();
-              map.flyToBounds(bounds, { padding: [40, 40], maxZoom: 16, duration: 0.8 });
+              map.flyToBounds(bounds, {
+                padding: [40, 40],
+                maxZoom: 16,
+                duration: 0.8,
+              });
               clearImagePlacementHint();
               placingImageRef.current = null;
             } catch (err) {
@@ -1948,8 +2435,26 @@ if (!restoredRef.current) {
 
         // ── Marker ──────────────────────────────────────────────────────────
         if (tool === "marker") {
-          const c  = TOOL_COLORS.marker;
-          const mk = L.circleMarker([lat, lng], { radius: 7, color: c.stroke, fillColor: c.stroke, fillOpacity: 0.85, weight: 2 }).addTo(map);
+          const c = TOOL_COLORS.marker;
+          const mk = L.circleMarker([lat, lng], {
+            radius: 7,
+            color: c.stroke,
+            fillColor: c.stroke,
+            fillOpacity: 0.85,
+            weight: 2,
+          }).addTo(map);
+          const aoiId = crypto.randomUUID();
+          (mk as any)._aoiId = aoiId;
+
+          saveAOI({
+            id: aoiId,
+            name: "Marker",
+            tool: "polygon", // أو تخصيص نوع الحفظ
+            coords: [[lat, lng]],
+            areaHa: 0,
+            createdAt: new Date().toISOString(),
+          }).catch((e) => console.error("Marker save failed", e));
+
           mk.bindPopup(() => {
             const div = document.createElement("div");
             div.innerHTML = `📍 ${lat.toFixed(6)}°N<br/>${lng.toFixed(6)}°E`;
@@ -1961,9 +2466,20 @@ if (!restoredRef.current) {
             const px = map.latLngToContainerPoint(L.latLng(lat, lng));
             drawMarker(canvasRef.current, px);
             lastCoordsRef.current = [...lastCoordsRef.current, { lat, lng }];
-            lastToolRef.current   = "marker";
-            const metadata: CaptureMetadata = { areaName: "Marker", areaSizeHa: 0, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
-            await handleCapture(canvasRef.current, map, L, [{ lat, lng }], metadata);
+            lastToolRef.current = "marker";
+            const metadata: CaptureMetadata = {
+              areaName: "Marker",
+              areaSizeHa: 0,
+              zoom: map.getZoom(),
+              capturedAt: new Date().toISOString(),
+            };
+            await handleCapture(
+              canvasRef.current,
+              map,
+              L,
+              [{ lat, lng }],
+              metadata,
+            );
           }
           return;
         }
@@ -1971,32 +2487,46 @@ if (!restoredRef.current) {
         // ── Polygon: كليك واحد للإضافة، كليك على الأولى أو زر Close للإنهاء ─
         if (tool === "polygon") {
           const pts = drawPointsRef.current;
-          const c   = TOOL_COLORS.polygon;
+          const c = TOOL_COLORS.polygon;
 
           if (pts.length === 0) {
-            toast(isRTL ? "اضغط Esc لإلغاء الرسم الحالي" : "Press Esc to cancel the current drawing", {
-              icon: "⌨️",
-              duration: 5000,
-            });
+            toast(
+              isRTL
+                ? "اضغط Esc لإلغاء الرسم الحالي"
+                : "Press Esc to cancel the current drawing",
+              {
+                icon: "⌨️",
+                duration: 5000,
+              },
+            );
           }
 
           // لو في 3 نقاط وكليك قريب من النقطة الأولى → أقفل
           if (pts.length >= 3) {
-            const firstPx = map.latLngToContainerPoint(L.latLng(pts[0][0], pts[0][1]));
+            const firstPx = map.latLngToContainerPoint(
+              L.latLng(pts[0][0], pts[0][1]),
+            );
             const clickPx = map.latLngToContainerPoint(L.latLng(lat, lng));
-            const dist    = Math.sqrt((clickPx.x - firstPx.x) ** 2 + (clickPx.y - firstPx.y) ** 2);
-            if (dist < 15) { finishPolygon(map, L); return; }
+            const dist = Math.sqrt(
+              (clickPx.x - firstPx.x) ** 2 + (clickPx.y - firstPx.y) ** 2,
+            );
+            if (dist < 15) {
+              finishPolygon(map, L);
+              return;
+            }
           }
           pts.push([lat, lng]);
           const marker = L.circleMarker([lat, lng], {
-              radius: pts.length === 1 ? 6 : 4,
-              color: c.stroke,
-              fillColor: pts.length === 1 ? c.stroke : "#fff",
-              fillOpacity: 1, weight: 2,
-            }).addTo(map);
+            radius: pts.length === 1 ? 6 : 4,
+            color: c.stroke,
+            fillColor: pts.length === 1 ? c.stroke : "#fff",
+            fillOpacity: 1,
+            weight: 2,
+          }).addTo(map);
           drawLayersRef.current.push(marker);
           draftLayersRef.current.push(marker);
-          if (pts.length >= 3 && closeBtnRef.current) closeBtnRef.current.style.display = "block";
+          if (pts.length >= 3 && closeBtnRef.current)
+            closeBtnRef.current.style.display = "block";
           return;
         }
 
@@ -2004,16 +2534,28 @@ if (!restoredRef.current) {
         if (tool === "measure") {
           const pts = drawPointsRef.current;
           if (pts.length === 0) {
-            toast(isRTL ? "اضغط Esc لإلغاء القياس الحالي" : "Press Esc to cancel the current measurement", {
-              icon: "📏",
-              duration: 5000,
-            });
+            toast(
+              isRTL
+                ? "اضغط Esc لإلغاء القياس الحالي"
+                : "Press Esc to cancel the current measurement",
+              {
+                icon: "📏",
+                duration: 5000,
+              },
+            );
           }
           pts.push([lat, lng]);
-          const marker = L.circleMarker([lat, lng], { radius: 4, color: TOOL_COLORS.measure.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map);
+          const marker = L.circleMarker([lat, lng], {
+            radius: 4,
+            color: TOOL_COLORS.measure.stroke,
+            fillColor: "#fff",
+            fillOpacity: 1,
+            weight: 2,
+          }).addTo(map);
           drawLayersRef.current.push(marker);
           draftLayersRef.current.push(marker);
-          if (pts.length >= 2 && closeBtnRef.current) closeBtnRef.current.style.display = "block";
+          if (pts.length >= 2 && closeBtnRef.current)
+            closeBtnRef.current.style.display = "block";
           return;
         }
 
@@ -2021,62 +2563,122 @@ if (!restoredRef.current) {
         if (tool === "rectangle") {
           const c = TOOL_COLORS.rectangle;
           if (!drawPointsRef.current.length) {
-            toast(isRTL ? "اضغط Esc لإلغاء الرسم الحالي" : "Press Esc to cancel the current drawing", {
-              icon: "⌨️",
-              duration: 5000,
-            });
+            toast(
+              isRTL
+                ? "اضغط Esc لإلغاء الرسم الحالي"
+                : "Press Esc to cancel the current drawing",
+              {
+                icon: "⌨️",
+                duration: 5000,
+              },
+            );
             drawPointsRef.current.push([lat, lng]);
-            const marker = L.circleMarker([lat, lng], { radius: 4, color: c.stroke, fillColor: "#fff", fillOpacity: 1, weight: 2 }).addTo(map);
+            const marker = L.circleMarker([lat, lng], {
+              radius: 4,
+              color: c.stroke,
+              fillColor: "#fff",
+              fillOpacity: 1,
+              weight: 2,
+            }).addTo(map);
             drawLayersRef.current.push(marker);
             draftLayersRef.current.push(marker);
           } else {
-            const p1   = drawPointsRef.current[0];
-            const rect = L.rectangle([p1, [lat, lng]], { color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
-const rectCoords = [
-  [p1[1], p1[0]],
-  [lng, p1[0]],
-  [lng, lat],
-  [p1[1], lat],
-  [p1[1], p1[0]],
-];
+            const p1 = drawPointsRef.current[0];
+            const rect = L.rectangle([p1, [lat, lng]], {
+              color: c.stroke,
+              weight: 2,
+              fillColor: c.fill,
+              fillOpacity: 0,
+            }).addTo(map);
+            const rectCoords = [
+              [p1[1], p1[0]],
+              [lng, p1[0]],
+              [lng, lat],
+              [p1[1], lat],
+              [p1[1], p1[0]],
+            ];
 
-const polygon = turfPolygon([rectCoords]);
+            const polygon = turfPolygon([rectCoords]);
 
-const area = parseFloat(
-  (turfArea(polygon) / 10000).toFixed(1)
-);
-console.log("Area ha:", area);
-console.log("Area m²:", turfArea(polygon));
+            const area = parseFloat((turfArea(polygon) / 10000).toFixed(1));
 
+            const aoiId = crypto.randomUUID();
+            (rect as any)._aoiId = aoiId;
 
+            // تحويل الزوايا إلى تنسيق [lat, lng] للحفظ
+            const rectPoints: [number, number][] = [
+              [p1[0], p1[1]],
+              [lat, p1[1]],
+              [lat, lng],
+              [p1[0], lng],
+            ];
+
+            saveAOI({
+              id: aoiId,
+              name: "Drawn Rectangle",
+              tool: "rectangle",
+              coords: rectPoints,
+              areaHa: area,
+              createdAt: new Date().toISOString(),
+            }).catch((e) => console.error("Rectangle save failed", e));
+            console.log("Area ha:", area);
+            console.log("Area m²:", turfArea(polygon));
 
             // ── Popup with "Edit" + "Delete" buttons ─────────────────────────
-            rect.bindPopup(() => {
-              const div = document.createElement("div");
-              const label = document.createElement("div");
-              label.innerHTML = `📐 ${t.rectangle} · ≈ ${area} ${t.ha}`;
-              div.appendChild(label);
-              div.appendChild(buildShapePopupActions(rect, "rectangle"));
-              return div;
-            }).openPopup();
+            rect
+              .bindPopup(() => {
+                const div = document.createElement("div");
+                const label = document.createElement("div");
+                label.innerHTML = `📐 ${t.rectangle} · ≈ ${area} ${t.ha}`;
+                div.appendChild(label);
+                div.appendChild(buildShapePopupActions(rect, "rectangle"));
+                return div;
+              })
+              .openPopup();
 
             drawLayersRef.current.push(rect);
-            const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
-            const feature = makePolygonFeature("Drawn Rectangle", coordinates.map((point) => [point.lat, point.lng]), area);
+            const coordinates: LatLngPoint[] = [
+              { lat: p1[0], lng: p1[1] },
+              { lat, lng: p1[1] },
+              { lat, lng },
+              { lat: p1[0], lng },
+            ];
+            const feature = makePolygonFeature(
+              "Drawn Rectangle",
+              coordinates.map((point) => [point.lat, point.lng]),
+              area,
+            );
             onAreaSelected("Drawn Rectangle", area, feature);
             onFeatureClick?.(feature);
             if (canvasRef.current) {
               const px1 = map.latLngToContainerPoint(L.latLng(p1[0], p1[1]));
               const px2 = map.latLngToContainerPoint(L.latLng(lat, lng));
               drawRect(canvasRef.current, px1, px2);
-              lastCoordsRef.current = [{ lat: p1[0], lng: p1[1] }, { lat, lng }];
-              lastToolRef.current   = "rectangle";
-              const metadata: CaptureMetadata = { areaName: "Drawn Rectangle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
-              await handleCapture(canvasRef.current, map, L, coordinates, metadata);
+              lastCoordsRef.current = [
+                { lat: p1[0], lng: p1[1] },
+                { lat, lng },
+              ];
+              lastToolRef.current = "rectangle";
+              const metadata: CaptureMetadata = {
+                areaName: "Drawn Rectangle",
+                areaSizeHa: area,
+                zoom: map.getZoom(),
+                capturedAt: new Date().toISOString(),
+              };
+              await handleCapture(
+                canvasRef.current,
+                map,
+                L,
+                coordinates,
+                metadata,
+              );
             }
             draftLayersRef.current = [];
             drawPointsRef.current = [];
-            if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
+            if (tempLayerRef.current) {
+              map.removeLayer(tempLayerRef.current);
+              tempLayerRef.current = null;
+            }
           }
           return;
         }
@@ -2085,44 +2687,106 @@ console.log("Area m²:", turfArea(polygon));
         if (tool === "circle") {
           const c = TOOL_COLORS.circle;
           if (!drawPointsRef.current.length) {
-            toast(isRTL ? "اضغط Esc لإلغاء الرسم الحالي" : "Press Esc to cancel the current drawing", {
-              icon: "⌨️",
-              duration: 5000,
-            });
+            toast(
+              isRTL
+                ? "اضغط Esc لإلغاء الرسم الحالي"
+                : "Press Esc to cancel the current drawing",
+              {
+                icon: "⌨️",
+                duration: 5000,
+              },
+            );
             drawPointsRef.current.push([lat, lng]);
           } else {
             const center = drawPointsRef.current[0];
             const radius = map.distance(center, [lat, lng]);
-            const circ   = L.circle(center, { radius, color: c.stroke, weight: 2, fillColor: c.fill, fillOpacity: 0 }).addTo(map);
-            const area   = parseFloat((Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1));
-            circ.bindPopup(() => {
-              const div = document.createElement("div");
-              const label = document.createElement("div");
-              label.innerHTML = `🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`;
-              div.appendChild(label);
-              div.appendChild(buildShapePopupActions(circ, "circle"));
-              return div;
-            }).openPopup();
+            const circ = L.circle(center, {
+              radius,
+              color: c.stroke,
+              weight: 2,
+              fillColor: c.fill,
+              fillOpacity: 0,
+            }).addTo(map);
+            const area = parseFloat(
+              (Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1),
+            );
+            circ
+              .bindPopup(() => {
+                const div = document.createElement("div");
+                const label = document.createElement("div");
+                label.innerHTML = `🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`;
+                div.appendChild(label);
+                div.appendChild(buildShapePopupActions(circ, "circle"));
+                return div;
+              })
+              .openPopup();
             drawLayersRef.current.push(circ);
-            
+
             // التعديل الجديد باستخدام الدالة الحقيقية بدل المربع
-            const circleRing = circleToPolygonLatLng(center[0], center[1], radius, 64);
-            const feature = makePolygonFeature("Drawn Circle", circleRing, area);
-            
+            const circleRing = circleToPolygonLatLng(
+              center[0],
+              center[1],
+              radius,
+              64,
+            );
+            const aoiId = crypto.randomUUID();
+            (circ as any)._aoiId = aoiId;
+
+            saveAOI({
+              id: aoiId,
+              name: "Drawn Circle",
+              tool: "circle",
+              coords: circleRing, // إرسال النقاط المحيطة بالدائرة
+              areaHa: area,
+              createdAt: new Date().toISOString(),
+            }).catch((e) => console.error("Circle save failed", e));
+            const feature = makePolygonFeature(
+              "Drawn Circle",
+              circleRing,
+              area,
+            );
+
             onAreaSelected("Drawn Circle", area, feature);
             onFeatureClick?.(feature);
-            
+
             if (canvasRef.current) {
-              const cPx = map.latLngToContainerPoint(L.latLng(center[0], center[1]));
+              const cPx = map.latLngToContainerPoint(
+                L.latLng(center[0], center[1]),
+              );
               const ePx = map.latLngToContainerPoint(L.latLng(lat, lng));
-              const rPx = Math.sqrt((ePx.x - cPx.x) ** 2 + (ePx.y - cPx.y) ** 2);
+              const rPx = Math.sqrt(
+                (ePx.x - cPx.x) ** 2 + (ePx.y - cPx.y) ** 2,
+              );
               drawCircle(canvasRef.current, cPx, rPx);
-              const centerCoord: LatLngPoint = { lat: center[0], lng: center[1] };
+              const centerCoord: LatLngPoint = {
+                lat: center[0],
+                lng: center[1],
+              };
               lastCoordsRef.current = [centerCoord, { lat, lng }];
-              lastToolRef.current   = "circle";
-              const metadata: CaptureMetadata = { areaName: "Drawn Circle", areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
-            const captureResult = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata, captureTarget);
-              const { smallBlob, largeBlob, selectedCoordinates, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
+              lastToolRef.current = "circle";
+              const metadata: CaptureMetadata = {
+                areaName: "Drawn Circle",
+                areaSizeHa: area,
+                zoom: map.getZoom(),
+                capturedAt: new Date().toISOString(),
+              };
+              const captureResult = await captureCircle(
+                canvasRef.current,
+                map,
+                L,
+                centerCoord,
+                radius,
+                metadata,
+                captureTarget,
+              );
+              const {
+                smallBlob,
+                largeBlob,
+                selectedCoordinates,
+                viewportCoordinates,
+                selectedBounds,
+                viewportBounds,
+              } = captureResult;
               onCapture?.(captureResult);
               // نفس التعديل: مبنرفعش largeBlob للباك إلا لو captureTarget فعلاً "large"
               const res = await sendToBackend(
@@ -2131,12 +2795,15 @@ console.log("Area m²:", turfArea(polygon));
                 selectedCoordinates,
                 metadata,
                 { viewportCoordinates, selectedBounds, viewportBounds },
-                captureTarget
+                captureTarget,
               );
               if (res.ok) console.log("✅ Backend:", await res.json());
             }
             drawPointsRef.current = [];
-            if (tempLayerRef.current) { map.removeLayer(tempLayerRef.current); tempLayerRef.current = null; }
+            if (tempLayerRef.current) {
+              map.removeLayer(tempLayerRef.current);
+              tempLayerRef.current = null;
+            }
           }
         }
       });
@@ -2147,20 +2814,39 @@ console.log("Area m²:", turfArea(polygon));
         if (rafRef.current !== null) return;
         rafRef.current = requestAnimationFrame(() => {
           rafRef.current = null;
-          const ev   = lastMoveRef.current;
+          const ev = lastMoveRef.current;
           if (!ev) return;
-          const tool = activeToolRef.current, pts = drawPointsRef.current;
+          const tool = activeToolRef.current,
+            pts = drawPointsRef.current;
           if (tool === "pointer" || !pts.length) return;
           if (tempLayerRef.current) map.removeLayer(tempLayerRef.current);
           const cur: [number, number] = [ev.latlng.lat, ev.latlng.lng];
           const cp = TOOL_COLORS;
           if (tool === "polygon" || tool === "measure")
-            tempLayerRef.current = L.polyline([...pts, cur], { color: cp[tool].stroke, weight: 1.5, dashArray: "4 4", opacity: 0.7 }).addTo(map);
+            tempLayerRef.current = L.polyline([...pts, cur], {
+              color: cp[tool].stroke,
+              weight: 1.5,
+              dashArray: "4 4",
+              opacity: 0.7,
+            }).addTo(map);
           if (tool === "rectangle")
-            tempLayerRef.current = L.rectangle([pts[0], cur], { color: cp.rectangle.stroke, weight: 1.5, dashArray: "4 4", fillColor: cp.rectangle.fill, fillOpacity: 0 }).addTo(map);
+            tempLayerRef.current = L.rectangle([pts[0], cur], {
+              color: cp.rectangle.stroke,
+              weight: 1.5,
+              dashArray: "4 4",
+              fillColor: cp.rectangle.fill,
+              fillOpacity: 0,
+            }).addTo(map);
           if (tool === "circle") {
             const r = map.distance(pts[0], cur);
-            tempLayerRef.current = L.circle(pts[0], { radius: r, color: cp.circle.stroke, weight: 1.5, dashArray: "4 4", fillColor: cp.circle.fill, fillOpacity: 0 }).addTo(map);
+            tempLayerRef.current = L.circle(pts[0], {
+              radius: r,
+              color: cp.circle.stroke,
+              weight: 1.5,
+              dashArray: "4 4",
+              fillColor: cp.circle.fill,
+              fillOpacity: 0,
+            }).addTo(map);
           }
         });
       });
@@ -2176,14 +2862,21 @@ console.log("Area m²:", turfArea(polygon));
         swipeOverlayRef.current.cleanup();
         swipeOverlayRef.current = null;
       }
-      if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; }
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
     };
   }, []);
 
   useEffect(() => {
     const c = mapInstanceRef.current?.getContainer();
     if (c) c.style.cursor = activeTool === "pointer" ? "grab" : "crosshair";
-    if (closeBtnRef.current && activeTool !== "polygon" && activeTool !== "measure") {
+    if (
+      closeBtnRef.current &&
+      activeTool !== "polygon" &&
+      activeTool !== "measure"
+    ) {
       closeBtnRef.current.style.display = "none";
     }
   }, [activeTool]);
@@ -2207,7 +2900,11 @@ console.log("Area m²:", turfArea(polygon));
         @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         .animate-fadeUp{animation:fadeUp .25s ease both}
       `}</style>
-      <div ref={mapRef} className="absolute inset-0 w-full h-full" style={{ zIndex: 0 }} />
+      <div
+        ref={mapRef}
+        className="absolute inset-0 w-full h-full"
+        style={{ zIndex: 0 }}
+      />
     </>
   );
 }

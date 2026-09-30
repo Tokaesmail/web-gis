@@ -1,0 +1,6 @@
+BETTER_AUTH_SECRET="39eaa41a6628a5a4186bfad95c29bbf190efbb3851b01474ed8723d1b22c6c1f"
+DATABASE_URL="https://gis-back-chi.vercel.app/health"
+NEXT_PUBLIC_MAPTILER_KEY=qA0PjTDQygCUJbg8s5KT
+NEXTAUTH_SECRET="39eaa41a6628a5a4186bfad95c29bbf190efbb3851b01474ed8723d1b22c6c1f"
+NEXTAUTH_URL="http://localhost:3000"
+NEXT_PUBLIC_API_URL="https://webgiss.duckdns.org"
