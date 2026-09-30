@@ -30,7 +30,7 @@ export default function RootLayout({
 }) {
   return (
     <html suppressHydrationWarning className={`${dmSans.variable} ${notoSansArabic.variable}`}>
-      <body>
+      <body suppressHydrationWarning>
         <LangProvider>
           <Providers>
             {children}
