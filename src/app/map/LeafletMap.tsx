@@ -2819,7 +2819,7 @@ export default function LeafletMap({
 
         if (tool === "pointer") return;
 
-        // ── Marker ──────────────────────────────────────────────────────────
+       // ── Marker ──────────────────────────────────────────────────────────
         if (tool === "marker") {
           const c = TOOL_COLORS.marker;
           const mk = L.circleMarker([lat, lng], {
@@ -2835,8 +2835,8 @@ export default function LeafletMap({
           saveAOI({
             id: aoiId,
             name: "Marker",
-            tool: "polygon", // أو تخصيص نوع الحفظ
-            coords: [[lat, lng]],
+            tool: "marker",
+            coords: [{ lat, lng }],
             areaHa: 0,
             createdAt: new Date().toISOString(),
           }).catch((e) => console.error("Marker save failed", e));
@@ -2870,7 +2870,7 @@ export default function LeafletMap({
           return;
         }
 
-        // ── Polygon: كليك واحد للإضافة، كليك على الأولى أو زر Close للإنهاء ─
+        // ── Polygon ──────────────────────────────────────────────────────────
         if (tool === "polygon") {
           const pts = drawPointsRef.current;
           const c = TOOL_COLORS.polygon;
@@ -2887,7 +2887,6 @@ export default function LeafletMap({
             );
           }
 
-          // لو في 3 نقاط وكليك قريب من النقطة الأولى → أقفل
           if (pts.length >= 3) {
             const firstPx = map.latLngToContainerPoint(
               L.latLng(pts[0][0], pts[0][1]),
@@ -2976,6 +2975,7 @@ export default function LeafletMap({
               fillColor: c.fill,
               fillOpacity: 0,
             }).addTo(map);
+
             const rectCoords = [
               [p1[1], p1[0]],
               [lng, p1[0]],
@@ -2985,32 +2985,28 @@ export default function LeafletMap({
             ];
 
             const polygon = turfPolygon([rectCoords]);
-
             const area = parseFloat((turfArea(polygon) / 10000).toFixed(1));
 
-            const aoiId = crypto.randomUUID();
-            (rect as any)._aoiId = aoiId;
+            const aoiiId = newAoiId();
+            (rect as any)._aoiId = aoiiId;
 
-            // تحويل الزوايا إلى تنسيق [lat, lng] للحفظ
-            const rectPoints: [number, number][] = [
-              [p1[0], p1[1]],
-              [lat, p1[1]],
-              [lat, lng],
-              [p1[0], lng],
+            const rectPoints = [
+              { lat: p1[0], lng: p1[1] },
+              { lat: p1[0], lng },
+              { lat, lng },
+              { lat, lng: p1[1] },
             ];
 
+            // حفظ المربع في IndexedDB
             saveAOI({
-              id: aoiId,
+              id: aoiiId,
               name: "Drawn Rectangle",
               tool: "rectangle",
               coords: rectPoints,
               areaHa: area,
               createdAt: new Date().toISOString(),
             }).catch((e) => console.error("Rectangle save failed", e));
-            console.log("Area ha:", area);
-            console.log("Area m²:", turfArea(polygon));
 
-            // ── Popup with "Edit" + "Delete" buttons ─────────────────────────
             rect
               .bindPopup(() => {
                 const div = document.createElement("div");
@@ -3023,14 +3019,30 @@ export default function LeafletMap({
               .openPopup();
 
             drawLayersRef.current.push(rect);
-            const coordinates: LatLngPoint[] = [{ lat: p1[0], lng: p1[1] }, { lat, lng: p1[1] }, { lat, lng }, { lat: p1[0], lng }];
+            const coordinates: LatLngPoint[] = [
+              { lat: p1[0], lng: p1[1] },
+              { lat, lng: p1[1] },
+              { lat, lng },
+              { lat: p1[0], lng },
+            ];
             const reg = aoiRegistryRef.current;
-            const aoiiId = newAoiId();
             const aoiName = reg?.nextName("Drawn Rectangle") ?? "Drawn Rectangle";
-            const feature = makePolygonFeature(aoiName, coordinates.map((point) => [point.lat, point.lng]), area, { id: aoiiId, kind: "rectangle" });
+            const feature = makePolygonFeature(
+              aoiName,
+              coordinates.map((point) => [point.lat, point.lng]),
+              area,
+              { id: aoiiId, kind: "rectangle" },
+            );
             reg?.add({
-              id: aoiiId, name: aoiName, kind: "rectangle", tool: "rectangle", layer: rect, feature, areaHa: area,
-              coords: [{ lat: p1[0], lng: p1[1] }, { lat, lng }], stroke: c.stroke,
+              id: aoiiId,
+              name: aoiName,
+              kind: "rectangle",
+              tool: "rectangle",
+              layer: rect,
+              feature,
+              areaHa: area,
+              coords: [{ lat: p1[0], lng: p1[1] }, { lat, lng }],
+              stroke: c.stroke,
             });
             onAreaSelected(aoiName, area, feature);
             onFeatureClick?.(feature);
@@ -3039,8 +3051,13 @@ export default function LeafletMap({
               const px2 = map.latLngToContainerPoint(L.latLng(lat, lng));
               drawRect(canvasRef.current, px1, px2);
               lastCoordsRef.current = [{ lat: p1[0], lng: p1[1] }, { lat, lng }];
-              lastToolRef.current   = "rectangle";
-              const metadata: CaptureMetadata = { areaName: aoiName, areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
+              lastToolRef.current = "rectangle";
+              const metadata: CaptureMetadata = {
+                areaName: aoiName,
+                areaSizeHa: area,
+                zoom: map.getZoom(),
+                capturedAt: new Date().toISOString(),
+              };
               await handleCapture(canvasRef.current, map, L, coordinates, metadata);
             }
             draftLayersRef.current = [];
@@ -3077,9 +3094,24 @@ export default function LeafletMap({
               fillColor: c.fill,
               fillOpacity: 0,
             }).addTo(map);
+
             const area = parseFloat(
               (Math.PI * Math.pow(radius / 1000, 2) * 100).toFixed(1),
             );
+
+            const aoiId = newAoiId();
+            (circ as any)._aoiId = aoiId;
+
+            // حفظ الدائرة في IndexedDB
+            saveAOI({
+              id: aoiId,
+              name: "Drawn Circle",
+              tool: "circle",
+              coords: [{ lat: center[0], lng: center[1] }, { lat, lng }],
+              areaHa: area,
+              createdAt: new Date().toISOString(),
+            }).catch((e) => console.error("Circle save failed", e));
+
             circ
               .bindPopup(() => {
                 const div = document.createElement("div");
@@ -3090,42 +3122,68 @@ export default function LeafletMap({
                 return div;
               })
               .openPopup();
+
             drawLayersRef.current.push(circ);
 
-            // التعديل الجديد باستخدام الدالة الحقيقية بدل المربع
             const circleRing = circleToPolygonLatLng(center[0], center[1], radius, 64);
             const reg = aoiRegistryRef.current;
-            const aoiiId = newAoiId();
             const aoiName = reg?.nextName("Drawn Circle") ?? "Drawn Circle";
-            const feature = makePolygonFeature(aoiName, circleRing, area, { id: aoiiId, kind: "circle" });
-            reg?.add({
-              id: aoiiId, name: aoiName, kind: "circle", tool: "circle", layer: circ, feature, areaHa: area,
-              coords: [{ lat: center[0], lng: center[1] }, { lat, lng }], stroke: c.stroke,
+            const feature = makePolygonFeature(aoiName, circleRing, area, {
+              id: aoiId,
+              kind: "circle",
             });
-            
+
+            reg?.add({
+              id: aoiId,
+              name: aoiName,
+              kind: "circle",
+              tool: "circle",
+              layer: circ,
+              feature,
+              areaHa: area,
+              coords: [{ lat: center[0], lng: center[1] }, { lat, lng }],
+              stroke: c.stroke,
+            });
+
             onAreaSelected(aoiName, area, feature);
             onFeatureClick?.(feature);
 
             if (canvasRef.current) {
-              const cPx = map.latLngToContainerPoint(
-                L.latLng(center[0], center[1]),
-              );
+              const cPx = map.latLngToContainerPoint(L.latLng(center[0], center[1]));
               const ePx = map.latLngToContainerPoint(L.latLng(lat, lng));
-              const rPx = Math.sqrt(
-                (ePx.x - cPx.x) ** 2 + (ePx.y - cPx.y) ** 2,
-              );
+              const rPx = Math.sqrt((ePx.x - cPx.x) ** 2 + (ePx.y - cPx.y) ** 2);
               drawCircle(canvasRef.current, cPx, rPx);
               const centerCoord: LatLngPoint = {
                 lat: center[0],
                 lng: center[1],
               };
               lastCoordsRef.current = [centerCoord, { lat, lng }];
-              lastToolRef.current   = "circle";
-              const metadata: CaptureMetadata = { areaName: aoiName, areaSizeHa: area, zoom: map.getZoom(), capturedAt: new Date().toISOString() };
-            const captureResult = await captureCircle(canvasRef.current, map, L, centerCoord, radius, metadata, captureTarget);
-              const { smallBlob, largeBlob, selectedCoordinates, viewportCoordinates, selectedBounds, viewportBounds } = captureResult;
+              lastToolRef.current = "circle";
+              const metadata: CaptureMetadata = {
+                areaName: aoiName,
+                areaSizeHa: area,
+                zoom: map.getZoom(),
+                capturedAt: new Date().toISOString(),
+              };
+              const captureResult = await captureCircle(
+                canvasRef.current,
+                map,
+                L,
+                centerCoord,
+                radius,
+                metadata,
+                captureTarget,
+              );
+              const {
+                smallBlob,
+                largeBlob,
+                selectedCoordinates,
+                viewportCoordinates,
+                selectedBounds,
+                viewportBounds,
+              } = captureResult;
               onCapture?.(captureResult);
-              // نفس التعديل: مبنرفعش largeBlob للباك إلا لو captureTarget فعلاً "large"
+
               const res = await sendToBackend(
                 smallBlob,
                 captureTarget === "large" ? largeBlob : undefined,
@@ -3136,12 +3194,14 @@ export default function LeafletMap({
               );
               if (res.ok) console.log("✅ Backend:", await res.json());
             }
+
             drawPointsRef.current = [];
             if (tempLayerRef.current) {
               map.removeLayer(tempLayerRef.current);
               tempLayerRef.current = null;
             }
           }
+          return;
         }
       });
 
