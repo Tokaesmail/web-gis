@@ -316,6 +316,10 @@ export type InterpolationMeta = {
    */
   meanExtrapolationDistanceDays: number | null;
   perScene: { id: string; date: string; validPercent: number }[];
+  /** تغطية كل tile لوحدها قبل دمج tiles التاريخ الواحد (للتشخيص). */
+  perTile?: { id: string; date: string; validPercent: number }[];
+  /** مشاهد/tiles فشلت قراءتها (شبكة) واتخطّت — النتيجة اتحسبت من الباقي. */
+  skippedScenes?: { id: string; date: string; reason: string }[];
 };
 
 /** نفس شكل RasterPreviewConfig في SatelliteDataPanel — عشان نفس مسار الـ overlay على الخريطة. */

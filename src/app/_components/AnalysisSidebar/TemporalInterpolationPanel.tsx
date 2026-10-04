@@ -33,17 +33,27 @@ import {
   type InterpolationPreviewConfig,
 } from "./temporalInterpolation";
 
-type InterpScene = {
+// One STAC item = one MGRS tile on one date.
+type InterpTile = {
   id: string;
-  date: string;
   cloud: number;
-  thumbnail?: string;
   assets: Record<string, string>;
+};
+
+// One row in the list = one DATE. If the AOI straddles a tile boundary, a single date
+// has several tiles and each of them covers only part of the AOI — they must all be sent
+// (the backend mosaics them), otherwise only a fraction of the shape gets data.
+type InterpScene = {
+  id: string; // = date
+  date: string;
+  cloud: number; // mean over the tiles of this date
+  thumbnail?: string;
+  tiles: InterpTile[];
 };
 
 type StacFeature = {
   id?: string;
-  properties?: { datetime?: string; "eo:cloud_cover"?: number };
+  properties?: { datetime?: string; "eo:cloud_cover"?: number; "s2:mgrs_tile"?: string };
   assets?: Record<string, { href?: string } | undefined>;
 };
 
@@ -265,8 +275,8 @@ export default function TemporalInterpolationPanel({
         if (!pageFeatures.length) break;
       }
 
-      const mapped = features
-        .map((f): InterpScene => {
+      const tileItems = features
+        .map((f) => {
           const props = f.properties ?? {};
           const assets = Object.entries(f.assets ?? {}).reduce<Record<string, string>>((acc, [key, asset]) => {
             if (!asset?.href) return acc;
@@ -279,16 +289,41 @@ export default function TemporalInterpolationPanel({
             id: String(f.id ?? "scene"),
             date: String(props.datetime ?? "").slice(0, 10) || dateTo,
             cloud: Math.round(Number(props["eo:cloud_cover"] ?? 0)),
+            mgrs: props["s2:mgrs_tile"] ? String(props["s2:mgrs_tile"]) : null,
             thumbnail: f.assets?.rendered_preview?.href ?? f.assets?.thumbnail?.href,
             assets,
           };
         })
-        .filter((s) => s.cloud <= cloudCover)
-        // The scene must contain every band this index needs, otherwise it is unusable.
-        .filter((s) => Boolean(resolveSceneBandUrls(s.assets, analysis)))
-        // One scene per date is enough (a date can return several tiles) — keep the clearest.
-        .sort((a, b) => (a.date === b.date ? a.cloud - b.cloud : a.date.localeCompare(b.date)))
-        .filter((s, i, arr) => i === 0 || arr[i - 1].date !== s.date);
+        .filter((t) => t.cloud <= cloudCover)
+        // The tile must contain every band this index needs, otherwise it is unusable.
+        .filter((t) => Boolean(resolveSceneBandUrls(t.assets, analysis)));
+
+      // Same date + same MGRS tile can appear twice (reprocessed duplicates) — keep the clearest.
+      const bestPerTile = new Map<string, (typeof tileItems)[number]>();
+      for (const t of tileItems) {
+        const key = `${t.date}|${t.mgrs ?? t.id}`;
+        const prev = bestPerTile.get(key);
+        if (!prev || t.cloud < prev.cloud) bestPerTile.set(key, t);
+      }
+
+      // Group by date: DIFFERENT tiles of one date are all kept (they cover different parts of the AOI).
+      const byDate = new Map<string, InterpScene>();
+      for (const t of bestPerTile.values()) {
+        const tile: InterpTile = { id: t.id, cloud: t.cloud, assets: t.assets };
+        const group = byDate.get(t.date);
+        if (group) {
+          group.tiles.push(tile);
+          group.thumbnail ??= t.thumbnail;
+        } else {
+          byDate.set(t.date, { id: t.date, date: t.date, cloud: t.cloud, thumbnail: t.thumbnail, tiles: [tile] });
+        }
+      }
+      const mapped: InterpScene[] = [...byDate.values()]
+        .map((g) => ({
+          ...g,
+          cloud: Math.round(g.tiles.reduce((a, t) => a + t.cloud, 0) / g.tiles.length),
+        }))
+        .sort((a, b) => a.date.localeCompare(b.date));
 
       setScenes(mapped);
       setSearchStatus("success");
@@ -327,12 +362,15 @@ export default function TemporalInterpolationPanel({
         min: style.min,
         max: style.max,
         token,
-        scenes: selectedScenes.map((s) => ({
-          id: s.id,
-          date: s.date,
-          urls: resolveSceneBandUrls(s.assets, analysis) ?? [],
-          sclUrl: useScl ? resolveSclUrl(s.assets) : null,
-        })),
+        // One entry per TILE (several entries can share a date) — the backend mosaics them.
+        scenes: selectedScenes.flatMap((s) =>
+          s.tiles.map((t) => ({
+            id: t.id,
+            date: s.date,
+            urls: resolveSceneBandUrls(t.assets, analysis) ?? [],
+            sclUrl: useScl ? resolveSclUrl(t.assets) : null,
+          }))
+        ),
       };
 
       const res = await fetch("/api/raster-proxy/interpolate", {
@@ -528,6 +566,7 @@ It removes cloud, shadow, and cirrus pixels from each image prior to interpolati
                     <span className="block font-mono text-[0.78rem] text-slate-200">{scene.date}</span>
                     <span className="block text-[0.72rem] text-slate-500">
                       {delta === 0 ? "Same as target date" : delta < 0 ? `${Math.abs(delta)} d before target` : `${delta} d after target`}
+                      {scene.tiles.length > 1 ? ` · ${scene.tiles.length} tiles (mosaic)` : ""}
                     </span>
                   </span>
                   <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[0.68rem] ${
@@ -617,6 +656,13 @@ It removes cloud, shadow, and cirrus pixels from each image prior to interpolati
             />
           </label>
 
+          {result.meta?.skippedScenes?.length ? (
+            <p className="rounded-lg border border-amber-400/20 bg-amber-400/[0.07] px-2.5 py-1.5 text-[0.75rem] leading-relaxed text-amber-300">
+              {result.meta.skippedScenes.length} tile(s) could not be downloaded (network) and were skipped:{" "}
+              {[...new Set(result.meta.skippedScenes.map((x) => x.date))].join(", ")}. Run again to retry them.
+            </p>
+          ) : null}
+
           {result.meta && (
             <dl className="grid grid-cols-2 gap-1.5 text-[0.75rem]">
               <div className="rounded-lg bg-white/[0.03] px-2 py-1.5">
@@ -660,13 +706,13 @@ It removes cloud, shadow, and cirrus pixels from each image prior to interpolati
             </p>
           )}
 
-          {result.meta?.perScene?.length ? (
+          {(result.meta?.perTile?.length || result.meta?.perScene?.length) ? (
             <details className="text-[0.72rem] text-slate-500">
-              <summary className="cursor-pointer text-slate-400">Valid pixels per scene</summary>
+              <summary className="cursor-pointer text-slate-400">Valid pixels per tile</summary>
               <ul className="mt-1 space-y-0.5 font-mono">
-                {result.meta.perScene.map((s) => (
-                  <li key={s.id} className="flex justify-between">
-                    <span>{s.date}</span>
+                {(result.meta.perTile ?? result.meta.perScene).map((s) => (
+                  <li key={s.id} className="flex justify-between gap-2">
+                    <span>{s.date} · {s.id.match(/_T(\w{5})_/)?.[1] ?? s.id.slice(-8)}</span>
                     <span>{s.validPercent}%</span>
                   </li>
                 ))}
