@@ -1296,6 +1296,8 @@ setInitialFeaturesToRestore(restoredFeatures);
       }
       return feature;
     });
+    // الأشكال المرسومة (AOI) بنحددها بس من غير ما نفتح السايد بار — اليوزر هو اللي يفتحه بنفسه.
+    if (feature?.properties?._drawn) return;
     setActivePanel((current) => current ?? lastActivePanelRef.current ?? "overview");
   }, []);
 

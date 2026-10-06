@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
+import { Agent, setGlobalDispatcher } from "undici";
 import { fromUrl } from "geotiff";
 import proj4 from "proj4";
 import { toProj4 } from "geotiff-geokeys-to-proj4";
@@ -14,6 +15,27 @@ import {
 } from "@/src/app/_components/AnalysisSidebar/temporalInterpolation";
 
 export const runtime = "nodejs";
+
+// ⚠️ الـ connect timeout الافتراضي في undici (اللي وراه fetch في Node) = 10 ثواني، وده قليل
+// على الاتصال بـ Azure Blob من بعيد (UND_ERR_CONNECT_TIMEOUT). بنرفعه ونحدّ عدد الاتصالات
+// المتزامنة ونعيد استخدامها (keep-alive) بدل ما كل باند يفتح اتصال جديد.
+// الـ guard عشان الـ hot reload بتاع الـ dev server ما يعملش Agent جديد في كل تعديل.
+const dispatcherFlag = globalThis as typeof globalThis & { __interpDispatcherSet?: boolean };
+if (!dispatcherFlag.__interpDispatcherSet) {
+  setGlobalDispatcher(
+    new Agent({
+      connect: { timeout: 60_000 },
+      connections: 8,
+      keepAliveTimeout: 30_000,
+      keepAliveMaxTimeout: 120_000,
+      headersTimeout: 60_000,
+      bodyTimeout: 120_000,
+    })
+  );
+  dispatcherFlag.__interpDispatcherSet = true;
+}
+// علامة نسخة: لو السطر ده مش ظاهر في terminal الـ dev server يبقى الملف ده مش اللي شغال.
+console.log("[interp] route loaded: tiles-v3 (connect timeout 60s, soft-fail scenes)");
 // كل مشهد = قراءة 2-4 باندات + SCL، فالطلب هنا أتقل بطبيعته من /analyze.
 export const maxDuration = 300;
 
@@ -22,15 +44,17 @@ const TARGET_MAX_DIM = 1024;
 const SIGN_CACHE_TTL_MS = 50 * 60 * 1000;
 const IMAGE_CACHE_TTL_MS = 4 * 60 * 1000;
 /** سقف أمان: أكتر من كده والقراءة بتاخد وقت غير معقول (وبتفضي الميموري). */
-const MAX_SCENES = 12;
+const MAX_SCENES = 12; // عدد التواريخ المختلفة
+/** سقف أمان لعدد الـ tiles الكلي (التاريخ الواحد ممكن يبقى فيه أكتر من tile لو الـ AOI على الحدود). */
+const MAX_TILE_ENTRIES = 48;
 /**
  * أقصى عدد مشاهد بتتقرا في نفس اللحظة. كل مشهد = 2-5 باندات + SCL، فـ 12 مشهد بالتوازي
  * = عشرات الاتصالات المفتوحة على Azure Blob مرة واحدة، وده بيطلّع "fetch failed"
  * (connection reset / timeout) خصوصًا على النت البطيء أو الـ dev server.
  */
-const SCENE_READ_CONCURRENCY = 3;
+const SCENE_READ_CONCURRENCY = 2;
 /** عدد محاولات قراءة الباند الواحد قبل ما نفشّل الطلب (بنعيد بس على أخطاء الشبكة). */
-const READ_ATTEMPTS = 3;
+const READ_ATTEMPTS = 4;
 
 type BandRaster = {
   data: Float32Array | Uint16Array | Uint8Array;
@@ -299,15 +323,16 @@ async function readBand(
   const xRes = (nativeBbox[2] - nativeBbox[0]) / fullWidth;
   const yRes = (nativeBbox[3] - nativeBbox[1]) / fullHeight;
 
-  let bx0 = Math.floor((queryNative[0] - nativeBbox[0]) / xRes);
-  let bx1 = Math.ceil((queryNative[2] - nativeBbox[0]) / xRes);
-  let by0 = Math.floor((nativeBbox[3] - queryNative[3]) / yRes);
-  let by1 = Math.ceil((nativeBbox[3] - queryNative[1]) / yRes);
-
-  bx0 = Math.max(0, Math.min(fullWidth - 1, bx0));
-  bx1 = Math.max(bx0 + 1, Math.min(fullWidth, bx1));
-  by0 = Math.max(0, Math.min(fullHeight - 1, by0));
-  by1 = Math.max(by0 + 1, Math.min(fullHeight, by1));
+  // ⚠️ الـ window هنا عمدًا مش بيتقصّ (clamp) على حدود الصورة.
+  // الكود القديم كان لو الـ AOI بتعدّي حدود الـ tile بيقصّ الـ window ويرجّع raster أصغر،
+  // وبعدها resampleNearest كان بيمطّه على شبكة الـ AOI كلها → الجزء اللي جوه الـ tile
+  // بيتمدّد ويتحط في مكان غلط (وده اللي كان بيطلّع "نص المشهد").
+  // دلوقتي كل tile بترجّع نفس الـ window بالنسبة للـ AOI، والجزء اللي برة الصورة
+  // بيتملي 0 (nodata) فبيتعامل كبكسل غير صالح، وtile تانية تغطي الجزء ده بتكمّله.
+  const bx0 = Math.floor((queryNative[0] - nativeBbox[0]) / xRes);
+  const bx1 = Math.max(bx0 + 1, Math.ceil((queryNative[2] - nativeBbox[0]) / xRes));
+  const by0 = Math.floor((nativeBbox[3] - queryNative[3]) / yRes);
+  const by1 = Math.max(by0 + 1, Math.ceil((nativeBbox[3] - queryNative[1]) / yRes));
 
   const windowNativeBbox: [number, number, number, number] = [
     nativeBbox[0] + bx0 * xRes,
@@ -320,24 +345,50 @@ async function readBand(
   const sx = level.width / fullWidth;
   const sy = level.height / fullHeight;
 
-  let x0 = Math.floor(bx0 * sx);
-  let x1 = Math.ceil(bx1 * sx);
-  let y0 = Math.floor(by0 * sy);
-  let y1 = Math.ceil(by1 * sy);
-  x0 = Math.max(0, Math.min(level.width - 1, x0));
-  x1 = Math.max(x0 + 1, Math.min(level.width, x1));
-  y0 = Math.max(0, Math.min(level.height - 1, y0));
-  y1 = Math.max(y0 + 1, Math.min(level.height, y1));
+  // الـ window على مستوى الـ overview (من غير clamp)
+  const lx0 = Math.floor(bx0 * sx);
+  const lx1 = Math.max(lx0 + 1, Math.ceil(bx1 * sx));
+  const ly0 = Math.floor(by0 * sy);
+  const ly1 = Math.max(ly0 + 1, Math.ceil(by1 * sy));
+  const outW = lx1 - lx0;
+  const outH = ly1 - ly0;
 
-  const rasters = await level.image.readRasters({
-    window: [x0, y0, x1, y1],
-    interleave: false,
-  });
+  // الجزء اللي فعلًا جوه الصورة
+  const ix0 = Math.max(0, lx0);
+  const ix1 = Math.min(level.width, lx1);
+  const iy0 = Math.max(0, ly0);
+  const iy1 = Math.min(level.height, ly1);
+
+  let data: BandRaster["data"];
+  if (ix1 > ix0 && iy1 > iy0) {
+    const rasters = await level.image.readRasters({
+      window: [ix0, iy0, ix1, iy1],
+      interleave: false,
+    });
+    const src = rasters[0] as BandRaster["data"];
+    if (ix0 === lx0 && ix1 === lx1 && iy0 === ly0 && iy1 === ly1) {
+      data = src; // الـ window كله جوه الصورة — مفيش padding
+    } else {
+      const Ctor = src.constructor as new (len: number) => BandRaster["data"];
+      data = new Ctor(outW * outH); // أصفار = nodata
+      const srcW = ix1 - ix0;
+      for (let y = iy0; y < iy1; y++) {
+        const srcOff = (y - iy0) * srcW;
+        (data as Uint16Array).set(
+          src.subarray(srcOff, srcOff + srcW) as Uint16Array,
+          (y - ly0) * outW + (ix0 - lx0)
+        );
+      }
+    }
+  } else {
+    // الـ AOI كلها برة الـ tile دي (footprint بتاع STAC أوسع من الداتا الفعلية) — كلها nodata.
+    data = new Uint16Array(outW * outH);
+  }
 
   return {
-    data: rasters[0] as Float32Array | Uint16Array | Uint8Array,
-    width: x1 - x0,
-    height: y1 - y0,
+    data,
+    width: outW,
+    height: outH,
     bbox: reprojectToWGS84(windowNativeBbox, geoKeys),
   };
 }
@@ -392,7 +443,7 @@ async function readBandWithRetry(
       console.warn(
         `[interp] read attempt ${attempt}/${READ_ATTEMPTS} failed for ${url.split("?")[0]}: ${describeError(err)}`
       );
-      if (attempt < READ_ATTEMPTS) await new Promise((r) => setTimeout(r, 400 * attempt));
+      if (attempt < READ_ATTEMPTS) await new Promise((r) => setTimeout(r, 800 * attempt));
     }
   }
   throw lastErr;
@@ -554,15 +605,23 @@ export async function POST(req: NextRequest) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(target ?? ""))) {
     return NextResponse.json({ error: "Missing/invalid target date — expected YYYY-MM-DD" }, { status: 400 });
   }
-  if (scenes.length < 2) {
+  // التاريخ الواحد ممكن يتبعت كذا tile (AOI على حدود tiles) — بنعدّ التواريخ المختلفة.
+  const distinctDates = new Set(scenes.map((s) => s.date)).size;
+  if (distinctDates < 2) {
     return NextResponse.json(
-      { error: `Interpolation needs at least 2 scenes, got ${scenes.length}. Pick more dates from the list.` },
+      { error: `Interpolation needs at least 2 different dates, got ${distinctDates}. Pick more dates from the list.` },
       { status: 400 }
     );
   }
-  if (scenes.length > MAX_SCENES) {
+  if (distinctDates > MAX_SCENES) {
     return NextResponse.json(
-      { error: `Too many scenes (${scenes.length}). Maximum is ${MAX_SCENES} — deselect a few.` },
+      { error: `Too many dates (${distinctDates}). Maximum is ${MAX_SCENES} — deselect a few.` },
+      { status: 400 }
+    );
+  }
+  if (scenes.length > MAX_TILE_ENTRIES) {
+    return NextResponse.json(
+      { error: `Too many tiles (${scenes.length}). Maximum is ${MAX_TILE_ENTRIES} — deselect a few dates.` },
       { status: 400 }
     );
   }
@@ -583,27 +642,46 @@ export async function POST(req: NextRequest) {
 
   // ── (1) قراءة كل الباندات ─────────────────────────────────────────────────
   const tRead = performance.now();
-  let perSceneBands: { scene: (typeof ordered)[number]; bands: BandRaster[]; scl: BandRaster | null }[];
-  try {
-    perSceneBands = await mapWithConcurrency(ordered, SCENE_READ_CONCURRENCY, async (scene) => {
+  type SceneRead = { scene: (typeof ordered)[number]; bands: BandRaster[]; scl: BandRaster | null };
+  const readResults = await mapWithConcurrency(ordered, SCENE_READ_CONCURRENCY, async (scene) => {
+    // ⚠️ فشل قراءة مشهد واحد (timeout/reset) مش لازم يوقّع الطلب كله — بنسجّله ونكمّل
+    // بالباقي، وبعدين نشوف لو لسه فاضل تاريخين مختلفين على الأقل.
+    try {
       const bands = await Promise.all(
         scene.urls.map((u) => readBandWithRetry(u, token, bbox as [number, number, number, number]))
       );
       const scl =
         useScl && scene.sclUrl
           ? await readBandWithRetry(scene.sclUrl, token, bbox as [number, number, number, number]).catch((err) => {
-              // ⚠️ فشل قراءة SCL مش سبب كافي إننا نفشّل الطلب كله — بنكمل
-              // من غير ماسك للمشهد ده (وبيتسجل في اللوج) بدل ما نرمي 502 على
-              // مشهد واحد مكسور جوه stack من 6.
+              // فشل SCL مش سبب نفشّل المشهد — بنكمل من غير ماسك للمشهد ده.
               console.warn(`[interp] SCL read failed for ${scene.id}: ${describeError(err)}`);
               return null;
             })
           : null;
-      return { scene, bands, scl };
-    });
-  } catch (err) {
-    console.error(`[interp] band read failed: ${describeError(err)}`);
-    return NextResponse.json({ error: `Failed to read bands: ${describeError(err)}` }, { status: 502 });
+      return { ok: true as const, data: { scene, bands, scl } as SceneRead };
+    } catch (err) {
+      const reason = describeError(err);
+      console.error(`[interp] scene ${scene.id} (${scene.date}) skipped: ${reason}`);
+      return { ok: false as const, id: scene.id, date: scene.date, reason };
+    }
+  });
+
+  const perSceneBands: SceneRead[] = [];
+  const skippedScenes: { id: string; date: string; reason: string }[] = [];
+  for (const r of readResults) {
+    if (r.ok) perSceneBands.push(r.data);
+    else skippedScenes.push({ id: r.id, date: r.date, reason: r.reason });
+  }
+  if (new Set(perSceneBands.map((p) => p.scene.date)).size < 2) {
+    return NextResponse.json(
+      {
+        error:
+          `Failed to read bands: only ${new Set(perSceneBands.map((p) => p.scene.date)).size} date(s) could be read ` +
+          `(${skippedScenes.length} tile(s) failed — ${skippedScenes[0]?.reason ?? "unknown"}). Try again or pick fewer dates.`,
+        skippedScenes,
+      },
+      { status: 502 }
+    );
   }
   const readMs = performance.now() - tRead;
 
@@ -624,8 +702,18 @@ export async function POST(req: NextRequest) {
   const tCalc = performance.now();
   const maskSet = new Set<number>(maskClasses);
 
-  const stack: { days: number; values: Float32Array; valid: Uint8Array; validCount: number }[] = [];
+  type StackLayer = {
+    date: string;
+    ids: string[];
+    days: number;
+    values: Float32Array;
+    valid: Uint8Array;
+    validCount: number;
+  };
+  const stack: StackLayer[] = [];
+  const stackByDate = new Map<string, StackLayer>();
   const perScene: InterpolationMeta["perScene"] = [];
+  const perTile: NonNullable<InterpolationMeta["perTile"]> = [];
 
   for (const { scene, bands, scl } of perSceneBands) {
     const aligned = bands.map((b) => resampleNearest(b, width, height));
@@ -657,11 +745,42 @@ export async function POST(req: NextRequest) {
       validCount++;
     }
 
-    stack.push({ days: daysBetween(target, scene.date), values, valid, validCount });
+    // تشخيص: تغطية كل tile لوحدها قبل الدمج (لو tile ناقصة هتبان هنا).
+    const tilePercent = n > 0 ? Math.round((validCount / n) * 1000) / 10 : 0;
+    perTile.push({ id: scene.id, date: scene.date, validPercent: tilePercent });
+    console.log(`[interp] tile ${scene.id} (${scene.date}): ${tilePercent}% valid, window ${aligned[0].width}x${aligned[0].height}`);
+
+    // أكتر من tile في نفس التاريخ = mosaic: البكسل اللي مش صالح في tile بيتكمّل من التانية
+    // (أول قيمة صالحة بتكسب في منطقة التداخل بين الـ tiles).
+    const existing = stackByDate.get(scene.date);
+    if (existing) {
+      for (let i = 0; i < n; i++) {
+        if (!existing.valid[i] && valid[i]) {
+          existing.values[i] = values[i];
+          existing.valid[i] = 1;
+          existing.validCount++;
+        }
+      }
+      existing.ids.push(scene.id);
+    } else {
+      const layer: StackLayer = {
+        date: scene.date,
+        ids: [scene.id],
+        days: daysBetween(target, scene.date),
+        values,
+        valid,
+        validCount,
+      };
+      stackByDate.set(scene.date, layer);
+      stack.push(layer);
+    }
+  }
+
+  for (const layer of stack) {
     perScene.push({
-      id: scene.id,
-      date: scene.date,
-      validPercent: n > 0 ? Math.round((validCount / n) * 1000) / 10 : 0,
+      id: layer.ids.join("+"),
+      date: layer.date,
+      validPercent: n > 0 ? Math.round((layer.validCount / n) * 1000) / 10 : 0,
     });
   }
 
@@ -777,6 +896,8 @@ export async function POST(req: NextRequest) {
     meanInterpolationGapDays: mean1(gapSum, gapCount),
     meanExtrapolationDistanceDays: mean1(extrapSum, extrapCount),
     perScene,
+    perTile,
+    ...(skippedScenes.length ? { skippedScenes } : {}),
   };
 
   return new NextResponse(new Uint8Array(pngBuffer), {
