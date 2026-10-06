@@ -91,6 +91,8 @@ export default function MapPage() {
   const [projectSaving,    setProjectSaving]     = useState(false);
   const [elevationFloatOpen, setElevationFloatOpen] = useState(false);
   const [drawnFeatures, setDrawnFeatures] = useState<GeoJSON.Feature[]>([]);
+const drawnFeaturesRef = useRef<GeoJSON.Feature[]>([]);
+
   // ── قائمة الـ AOIs المرسومة + الـ AOI النشط (الباقي معطّل على الخريطة) ──
   const [aoiItems, setAoiItems] = useState<AOIListItem[]>([]);
   const [activeAoiId, setActiveAoiId] = useState<string | null>(null);
@@ -1121,6 +1123,7 @@ useEffect(() => {
   }), [coords, selectedArea, layers, combinedGeoJson]);
 
   const currentProjectSnapshot = useMemo<ProjectSnapshot>(() => {
+    console.log("SNAPSHOT DRAWN FEATURES:", drawnFeatures);
     const today = new Date();
     const from = new Date(today);
     from.setDate(today.getDate() - 30);
@@ -1147,38 +1150,82 @@ useEffect(() => {
     };
   }, [activePanel, captureTarget, coords, drawnFeatures, savedAnalyses, layers, selectedArea, selectedFeature, uploadedGeoJsonMap]);
 
-  const handleLoadProject = useCallback((project: UserProject) => {
+const handleLoadProject = useCallback(
+  (project: UserProject) => {
     const snapshot = project.snapshot;
+
     if (!snapshot) {
-      toast.error(isRTL ? "ملف المشروع غير صالح" : "Project data is not valid");
+      toast.error(
+        isRTL
+          ? "ملف المشروع غير صالح"
+          : "Project data is not valid"
+      );
       return;
     }
 
-    setUploadedGeoJsonMap(snapshot.uploadedGeoJsonMap ?? {});
-    setLayers(Array.isArray(snapshot.selectedLayers) ? snapshot.selectedLayers : []);
+    // Restore uploaded GeoJSON
+    setUploadedGeoJsonMap(
+      snapshot.uploadedGeoJsonMap ?? {}
+    );
+
+    // Restore selected layers
+    setLayers(
+      Array.isArray(snapshot.selectedLayers)
+        ? snapshot.selectedLayers
+        : []
+    );
+
+    // Restore AOI
     setSelectedFeature(
       snapshot.aoiGeometry
         ? ({
             type: "Feature",
-            properties: { name: project.name },
+            properties: {
+              name: project.name,
+            },
             geometry: snapshot.aoiGeometry,
           } as GeoJSON.Feature)
-        : null,
+        : null
     );
-    setSelectedArea(snapshot.analysisSettings?.selectedArea ?? { name: "Selected Area", ha: 0 });
-    setCoords(snapshot.analysisSettings?.coords ?? null);
-    const restoredFeatures = snapshot.drawnFeatures ?? [];
-    setDrawnFeatures(restoredFeatures);
-    if (restoredFeatures.length > 0) {
-      setInitialFeaturesToRestore(restoredFeatures);
-    }
-    // restore كل الـ analysis overlays على الخريطة
-    const analyses = snapshot.savedAnalyses ?? [];
+
+    // Restore selected area
+    setSelectedArea(
+      snapshot.analysisSettings?.selectedArea ?? {
+        name: "Selected Area",
+        ha: 0,
+      }
+    );
+
+    // Restore coordinates
+    setCoords(
+      snapshot.analysisSettings?.coords ?? null
+    );
+
+ console.log("LOADED SNAPSHOT:", snapshot);
+console.log("DRAWN FEATURES FROM SNAPSHOT:", snapshot.drawnFeatures);
+
+const restoredFeatures = snapshot.drawnFeatures ?? [];
+
+console.log("RESTORED FEATURES:", restoredFeatures);
+
+setDrawnFeatures(restoredFeatures);
+setInitialFeaturesToRestore(restoredFeatures);
+
+    // Restore analysis overlays
+    const analyses =
+      snapshot.savedAnalyses ?? [];
+
     setSavedAnalyses(analyses);
+
     if (analyses.length > 0) {
-      // نرسم كل analysis بـ delay متراكم عشان الخريطة تكون جاهزة
       analyses.forEach((analysis, index) => {
-        if (!analysis?.dataUrl && !analysis?.tileUrl) return;
+        if (
+          !analysis?.dataUrl &&
+          !analysis?.tileUrl
+        ) {
+          return;
+        }
+
         setTimeout(() => {
           rasterOverlayRef.current?.({
             name: analysis.name,
@@ -1192,16 +1239,36 @@ useEffect(() => {
             dataUrl: analysis.dataUrl,
             tileUrl: analysis.tileUrl,
           });
-        }, 800 + index * 300); // 800ms أول واحد، كل واحد بعده + 300ms
+        }, 1000 + index * 500);
       });
     }
-    const restoredPanel = (snapshot.analysisSettings?.activePanel as any) ?? "overview";
+
+    // Restore active panel
+    const restoredPanel =
+      (snapshot.analysisSettings?.activePanel as any) ??
+      "overview";
+
     setActivePanel(restoredPanel);
-    if (restoredPanel) lastActivePanelRef.current = restoredPanel;
+
+    if (restoredPanel) {
+      lastActivePanelRef.current = restoredPanel;
+    }
+
+    // Restore active project
     setActiveProject(project);
+
     setProjectStartOpen(false);
-    toast.success(isRTL ? "تم تحميل المشروع" : `Loaded ${project.name}`);
-  }, [isRTL]);
+
+    toast.success(
+      isRTL
+        ? "تم تحميل المشروع"
+        : `Loaded ${project.name}`
+    );
+  },
+  [isRTL]
+);
+
+
 
   const handleCreateStartupProject = useCallback((project: UserProject) => {
     setActiveProject(project);
@@ -1236,6 +1303,11 @@ useEffect(() => {
     if (!activeProject || projectSaving) return;
     setProjectSaving(true);
     try {
+      console.log("🔥 SAVING PROJECT:", {
+  projectId: activeProject.id,
+  snapshot: currentProjectSnapshot,
+  authenticated: sessionStatus === "authenticated",
+});
       const result = await updateProject(
         projectOwnerKey,
         { ...activeProject, snapshot: currentProjectSnapshot },
@@ -1379,7 +1451,7 @@ useEffect(() => {
   const handleWrapperDoubleClick = useCallback(() => {
     setView3D({ ...lastCoordsRef.current });
   }, []);
-
+console.log("MAP CLIENT INITIAL FEATURES:", initialFeaturesToRestore);
   return (
     <div className={`flex flex-col w-full h-[100dvh] min-h-[100dvh] bg-[#040d1a] overflow-hidden ${isRTL ? "font-arabic" : ""}`}>
 
@@ -1442,10 +1514,13 @@ useEffect(() => {
             geoJsonFitBounds={false}
             extrusionConfig={extrusionCfg || { enabled: false }}
             onFeatureClick={handleFeatureClick}
-            initialFeatures={initialFeaturesToRestore ?? undefined}
+            initialFeatures={initialFeaturesToRestore}
             aoiControlRef={aoiControlRef}
             onAOIListChange={(items, id) => { setAoiItems(items); setActiveAoiId(id); }}
             onAOIRemove={(id) => setDrawnFeatures((prev) => prev.filter((f) => f.properties?.id !== id))}
+            onDrawnFeaturesChange={(features) => {
+  setDrawnFeatures(features);
+}}
           />
         </div>
 
