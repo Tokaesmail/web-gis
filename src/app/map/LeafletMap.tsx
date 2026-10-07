@@ -1,13 +1,39 @@
 "use client";
 
 // ─── LeafletMap.tsx ───────────────────────────────────────────────────────────
-// التعديلات:
-// ① OSM تايلز بدل Esri (مفيهاش مشكلة zoom)
+// ① OSM/Esri tiles
 // ② Polygon بكليك واحد للإنهاء — زر "Close Shape" أو كليك على النقطة الأولى
 // ③ Double-click zoom متوقف تماماً
 // ④ الألوان للعرض بس — مش بتتبعت للباك
-// ⑤ AOI Editor: تعديل الرؤوس (move vertices) + Validation (self-intersection + max size)
+// ⑤ AOI Editor: تعديل الرؤوس + Validation
+// ⑥ persistData: true = "Create Project" (بيحفظ في IndexedDB) | false = مفيش حفظ
+//    • كل شكل (polygon/rectangle/circle/marker/measure) بيتسيف ويتسترجع بنوعه الصح
+//    • Delete (🗑️) بيمسح الشكل من الـ UI + IndexedDB
+//    • Delete All بيمسح كل حاجة من الـ UI + IndexedDB
+// ⑦ Save (💾) بيحفظ شكل واحد | saveAllRef بيحفظ كل الأشكال الـ pending
+// ⑧ ✅ التحليل بقى PER-SHAPE (كل شكل ليه تحليل مستقل بالـ ownerId):
+//    • رسمتين وتحليلين = الاتنين بيظهروا مع بعض (تحليل شكل ما بيمسحش تحليل شكل تاني)
+//    • مسح شكل = بيمسح تحليله بس (خريطة + IndexedDB + البروجكت عن طريق onAnalysisCleared(ownerId))
+//    • Delete Analysis = بيمسح تحليل الشكل الحالي بس | Delete All = بيمسح الكل (ownerId=null)
+// ⑨ التحليل بيتسيف (IndexedDB + onAnalysisSaved للأب) بس لو الشكل صاحبه متسيف
+//    • من غير Save: لا الشكل ولا التحليل بيتكتبوا في أي مكان
+//    • Save / Save All: الشكل + تحليله بيتكتبوا مع بعض
+//    • بعد الريفريش: بيرجع تحليل كل شكل متسيف، وأي تحليل يتيم بيتمسح من الـ DB
+// ⑩ كل حاجة كانت في localStorage اتنقلت لـ IndexedDB (مع migration تلقائي)
+// ⑪ تحقق بعد كل Save / Delete: بنقرا الـ DB ونتأكد إن الشكل اتكتب / اتمسح فعلاً
 import { saveAOI, getAllAOIs, deleteAOI, clearAllAOIs } from "./indexeddB";
+import {
+  kvGet,
+  kvSet,
+  imageOverlaysGetAll,
+  imageOverlaysReplaceAll,
+  imageOverlaysClear,
+  analysisGet,
+  analysisClear,
+  deletedIdsGetAll,
+  deletedIdsAdd,
+  type StoredAnalysis,
+} from "./projects/leafletStore";
 import { useEffect, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
 import { toast } from "sonner";
@@ -53,9 +79,51 @@ interface GeoJSONStyle {
   dashArray?: string;
 }
 
+type Bounds2 = [[number, number], [number, number]];
+
+type RasterOverlayConfig = {
+  name: string;
+  indexKey: string;
+  expression: string;
+  date: string;
+  dataUrl: string;
+  tileUrl?: string;
+  bounds: Bounds2;
+  opacity: number;
+  colorRamp: string;
+  coords: { lat: number; lng: number };
+};
+
+type SwipeOverlayConfig = {
+  beforeUrl: string;
+  afterUrl: string;
+  bounds: Bounds2;
+  beforeLabel?: string;
+  afterLabel?: string;
+};
+
+type SuperResOverlayConfig = {
+  dataUrl: string;
+  bounds: Bounds2;
+  coords: { lat: number; lng: number };
+};
+
+type PointsOverlayConfig = {
+  name: string;
+  indexKey: string;
+  date: string;
+  points: { lat: number; lng: number; value: number; color: string }[];
+  opacity: number;
+};
+
 interface Props {
+  onDrawnFeaturesChange?: (features: GeoJSON.Feature[]) => void;
+
   activeTool: DrawTool;
   captureTarget: CaptureTarget;
+  /** true = المستخدم داس "Create Project" → الأشكال بتتحفظ (IndexedDB).
+   *  false = "Create without project" → مفيش أي حفظ ولا استرجاع. */
+  persistData?: boolean;
   onAreaSelected: (
     name: string,
     area: number,
@@ -64,78 +132,39 @@ interface Props {
   onCoordsUpdate: (lat: number, lng: number) => void;
   flyToRef: React.MutableRefObject<((lat: number, lng: number) => void) | null>;
   clearRef: React.MutableRefObject<(() => void) | null>;
-  /** clears ONLY the analysis layers (raster overlays + super-resolution
-   * overlay) — leaves the drawn AOI shape/marker untouched. Used by the
-   * dedicated "Delete Analysis" button in the toolbar. */
+  /** clears ONLY the analysis of the CURRENT shape (raster / points /
+   * super-resolution / swipe) — leaves the drawn AOI shapes untouched. */
   clearAnalysisRef?: React.MutableRefObject<(() => void) | null>;
-  /** Captures whatever shape is currently drawn (lastCoordsRef/lastToolRef)
-   * WITHOUT requiring the user to draw a new one. Used by panels (like Palm
-   * Trees) that want to reuse the shape the user already selected instead of
-   * forcing a redraw. Returns true if a capture was attempted, false if
-   * there was nothing drawn to capture. */
+  /** Captures whatever shape is currently drawn WITHOUT requiring a new one. */
   captureCurrentRef?: React.MutableRefObject<(() => Promise<boolean>) | null>;
+  /** زرار "Save All" اللي فوق — بيحفظ كل الأشكال الـ pending */
+  saveAllRef?: React.MutableRefObject<(() => Promise<void>) | null>;
+  /** بتتنادى أي مرة تحليل يتمسح.
+   *  ownerId = id الشكل صاحب التحليل | null = اتمسحت كل التحليلات (Delete All).
+   *  → الأب لازم يمسح التحليل (أو الكل لو null) من savedAnalyses بتاع البروجكت */
+  onAnalysisCleared?: (ownerId: string | null) => void;
+  /** بتتنادى لما تحليل يتسيف (وصاحبه متسيف) — الأب يضيفه في savedAnalyses
+   *  (تحليل واحد لكل ownerId: استبدل القديم لو موجود) */
+  onAnalysisSaved?: (
+    ownerId: string,
+    kind: StoredAnalysis["kind"],
+    config: any,
+  ) => void;
   onSatChange: (handler: (sat: SatKey) => void) => void;
   onOpacityChangeRegister?: (handler: (o: number) => void) => void;
   /** register an image placement workflow (2 clicks to place image) */
   onImagePlacerRegister?: (handler: (file: File) => void) => void;
-  /** Call the registered handler with `null` to remove whatever analysis overlay is
-   *  currently on the map (same cleanup "Delete Analysis" uses) — added for panels
-   *  like Temporal Interpolation that need a real "Remove from map" action. */
   onRasterOverlayRegister?: (
-    handler: (
-      config: {
-        name: string;
-        indexKey: string;
-        expression: string;
-        date: string;
-        dataUrl: string;
-        tileUrl?: string;
-        bounds: [[number, number], [number, number]];
-        opacity: number;
-        colorRamp: string;
-        coords: { lat: number; lng: number };
-      } | null,
-    ) => void,
+    handler: (config: RasterOverlayConfig | null) => void,
   ) => void;
-  /** register a real, georeferenced Before/After swipe overlay directly on the map
-   *  (Change Detection panel only). Call the registered handler with `null` to remove it. */
   onSwipeOverlayRegister?: (
-    handler: (
-      config: {
-        beforeUrl: string;
-        afterUrl: string;
-        bounds: [[number, number], [number, number]];
-        beforeLabel?: string;
-        afterLabel?: string;
-      } | null,
-    ) => void,
+    handler: (config: SwipeOverlayConfig | null) => void,
   ) => void;
-  /** register a georeferenced Super Resolution result overlay directly on the map
-   *  (upscaled image placed exactly over its AOI, on top of the base tiles).
-   *  Call the registered handler with `null` to remove it. */
   onSuperResOverlayRegister?: (
-    handler: (
-      config: {
-        dataUrl: string;
-        bounds: [[number, number], [number, number]];
-        coords: { lat: number; lng: number };
-      } | null,
-    ) => void,
+    handler: (config: SuperResOverlayConfig | null) => void,
   ) => void;
-  /** register a real, georeferenced points overlay directly on the map — used for
-   *  "points" render style (e.g. Palm Trees: one CircleMarker per detected palm,
-   *  colored by density/value) as the exclusive alternative to a raster heatmap.
-   *  Call the registered handler with `null` to clear it. */
   onPointsOverlayRegister?: (
-    handler: (
-      config: {
-        name: string;
-        indexKey: string;
-        date: string;
-        points: { lat: number; lng: number; value: number; color: string }[];
-        opacity: number;
-      } | null,
-    ) => void,
+    handler: (config: PointsOverlayConfig | null) => void,
   ) => void;
   onCapture?: (capture: CaptureResult) => void;
   /** callback لما يضغط على GeoJSON feature */
@@ -172,8 +201,14 @@ const TOOL_COLORS = {
   marker: { stroke: "#f97316", fill: "rgba(249,115,22,0.85)" },
 };
 
+// ── مفاتيح IndexedDB / legacy localStorage ──────────────────────────────────
+const VIEW_KEY = "last_map_view"; // داخل store "kv"
+const ANALYSES_KEY = "analyses_v2"; // داخل store "kv": Record<ownerId, StoredAnalysis>
+const LEGACY_VIEW_KEY = "geosense_last_map_view";
+const LEGACY_DELETED_IDS_KEY = "leaflet_deleted_aoi_ids_v1";
+const LEGACY_IMAGE_OVERLAYS_KEY = "leaflet_image_overlays_v1";
+
 // ── ألوان نطاقات الجامعات (service area breaks) ──────────────────────────────
-// أخضر = 0-5 دق (الأقرب) | برتقالي = 5-10 | أحمر = 10-15 (الأبعد)
 function getUniversityColor(
   from: number,
   to: number,
@@ -230,12 +265,16 @@ function circleToPolygonLatLng(
 export default function LeafletMap({
   activeTool,
   captureTarget,
+  persistData = false,
   onAreaSelected,
   onCoordsUpdate,
   flyToRef,
   clearRef,
   clearAnalysisRef,
   captureCurrentRef,
+  saveAllRef,
+  onAnalysisCleared,
+  onAnalysisSaved,
   onSatChange,
   onOpacityChangeRegister,
   onCapture,
@@ -246,6 +285,7 @@ export default function LeafletMap({
   geoJsonFitBounds = true,
   onFeatureClick,
   onImagePlacerRegister,
+  onDrawnFeaturesChange,
   onRasterOverlayRegister,
   onSwipeOverlayRegister,
   onSuperResOverlayRegister,
@@ -259,7 +299,409 @@ export default function LeafletMap({
 }: Props) {
   const { t, isRTL } = useLang();
 
-  const IMAGE_OVERLAYS_STORAGE_KEY = "leaflet_image_overlays_v1";
+  // ── التحكم في الحفظ: Create Project = true | Create without project = false ──
+  const persistDataRef = useRef(persistData);
+  persistDataRef.current = persistData;
+
+  const [, setDrawnFeatures] = useState<GeoJSON.Feature[]>([]);
+  const drawnFeaturesRef = useRef<GeoJSON.Feature[]>([]);
+
+  // ✅ ref للـ callback عشان الـ closures القديمة تفضل تنادي آخر نسخة
+  const onDrawnFeaturesChangeRef = useRef(onDrawnFeaturesChange);
+  onDrawnFeaturesChangeRef.current = onDrawnFeaturesChange;
+
+  const onAnalysisClearedRef = useRef(onAnalysisCleared);
+  onAnalysisClearedRef.current = onAnalysisCleared;
+
+  const onAnalysisSavedRef = useRef(onAnalysisSaved);
+  onAnalysisSavedRef.current = onAnalysisSaved;
+
+  /** نقطة واحدة لتحديث قائمة الرسومات (ref + state + الأب) */
+  const setDrawn = (next: GeoJSON.Feature[]) => {
+    drawnFeaturesRef.current = next;
+    setDrawnFeatures([...next]);
+    onDrawnFeaturesChangeRef.current?.([...next]);
+  };
+
+  // wrappers: مابتعملش أي حاجة لو الحفظ مقفول (Create without project)
+  const saveAOIIfAllowed = (aoi: Parameters<typeof saveAOI>[0]) => {
+    if (!persistDataRef.current) return Promise.resolve();
+    return saveAOI(aoi);
+  };
+
+  // ═══ تحقق من الـ IndexedDB (circle / line / marker / polygon / rectangle بنفس المسار) ═══
+  /** يرجّع الـ ids اللي مش لاقيها في الـ DB (يعني الحفظ ماشتغلش فعلاً) */
+  const findMissingInDb = async (ids: string[]): Promise<string[]> => {
+    if (!persistDataRef.current) return [];
+    try {
+      const all = (await getAllAOIs()) as any[];
+      const have = new Set((all ?? []).map((a) => String(a?.id)));
+      return ids.filter((id) => !have.has(String(id)));
+    } catch (e) {
+      console.warn("DB verify failed", e);
+      return []; // لو القراءة نفسها فشلت ما نحكمش
+    }
+  };
+
+  /** يمسح id من الـ DB ويتأكد إنه فعلاً اتمسح (محاولتين) — من غير gating بـ persistData */
+  const deleteFromDbVerified = async (id: string): Promise<boolean> => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await deleteAOI(id);
+      } catch (e) {
+        console.error(`❌ deleteAOI failed (attempt ${attempt + 1}):`, id, e);
+        continue;
+      }
+      try {
+        const all = (await getAllAOIs()) as any[];
+        if (!(all ?? []).some((a) => String(a?.id) === String(id))) return true;
+        console.warn(`⚠️ ${id} still in IndexedDB after delete — retrying`);
+      } catch (_) {
+        return true;
+      }
+    }
+    toast.error(
+      isRTL
+        ? "فشل الحذف من قاعدة البيانات"
+        : "Failed to delete from database",
+    );
+    return false;
+  };
+
+  // ═══ Save workflow: الشكل مش بيتحفظ إلا لما المستخدم يدوس Save / Save All ═══
+  const pendingShapesRef = useRef<
+    Map<
+      string,
+      { feature: GeoJSON.Feature; aoi: Parameters<typeof saveAOI>[0] }
+    >
+  >(new Map());
+  const savedIdsRef = useRef<Set<string>>(new Set());
+  /** ids اللي المستخدم مسحها — عشان ما يتعادش رسمها من initialFeatures / الـ DB */
+  const deletedIdsRef = useRef<Set<string>>(new Set());
+  const deletedLoadedRef = useRef(false);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🛰️ التحليلات: PER-SHAPE (كل شكل ليه تحليل مستقل بالـ ownerId)
+  // ═══════════════════════════════════════════════════════════════════════════
+  /** آخر شكل بقى "الحالي" (اتعمل / اتفعّل / اتعدّل) — ده اللي البانلز بتحلله */
+  const currentShapeIdRef = useRef<string | null>(null);
+
+  type LiveAnalysis = {
+    kind: StoredAnalysis["kind"];
+    config: any;
+    cleanup: () => void; // بيشيل الـ layers من الخريطة
+  };
+  /** ownerId → التحليل الظاهر على الخريطة دلوقتي */
+  const analysesRef = useRef<Map<string, LiveAnalysis>>(new Map());
+
+  /** توقيع تحليل — عشان نعرف لو الأب رجّع نفس التحليل بعد المسح مباشرة */
+  const analysisSig = (kind: string, c: any): string => {
+    try {
+      if (kind === "swipe")
+        return `${kind}|${String(c.beforeUrl).length}|${String(c.afterUrl).length}|${JSON.stringify(c.bounds)}`;
+      if (kind === "points")
+        return `${kind}|${c.indexKey}|${c.date}|${c.points?.length ?? 0}`;
+      return `${kind}|${c.indexKey ?? ""}|${c.date ?? ""}|${String(c.dataUrl ?? c.tileUrl ?? "").length}|${JSON.stringify(c.bounds)}`;
+    } catch (_) {
+      return kind;
+    }
+  };
+  /** آخر تحليل اتمسح بإيد المستخدم (لمنع "echo" من الأب بيرجّعه تاني) */
+  const clearedAnalysisRef = useRef<{ sig: string; at: number } | null>(null);
+  const isEchoAfterClear = (kind: string, config: any): boolean => {
+    const c = clearedAnalysisRef.current;
+    if (!c) return false;
+    if (Date.now() - c.at > 1500) {
+      clearedAnalysisRef.current = null;
+      return false;
+    }
+    return c.sig === analysisSig(kind, config);
+  };
+
+  // طابور لتسلسل القراءة/الكتابة في الـ DB (عشان ما يحصلش race بين تحليلين)
+  const dbQueueRef = useRef<Promise<any>>(Promise.resolve());
+  const enqueue = <T,>(fn: () => Promise<T>): Promise<T> => {
+    const next = dbQueueRef.current.catch(() => {}).then(fn);
+    dbQueueRef.current = next;
+    return next;
+  };
+
+  const readAnalyses = async (): Promise<Record<string, any>> =>
+    (await kvGet<Record<string, any>>(ANALYSES_KEY)) ?? {};
+
+  /** يشيل overlay تحليل شكل معيّن من الخريطة (من غير DB / الأب) */
+  const removeOverlayFor = (owner: string) => {
+    const a = analysesRef.current.get(owner);
+    if (!a) return;
+    try {
+      a.cleanup();
+    } catch (_) {}
+    analysesRef.current.delete(owner);
+  };
+
+  /** بيتسيف في الـ DB + الأب بس لو Create Project والشكل صاحبه متسيف */
+  const persistAnalysisFor = (owner: string) => {
+    const a = analysesRef.current.get(owner);
+    if (!persistDataRef.current || !a || !savedIdsRef.current.has(owner))
+      return;
+    enqueue(async () => {
+      const all = await readAnalyses();
+      all[owner] = {
+        kind: a.kind,
+        config: a.config,
+        savedAt: Date.now(),
+        ownerId: owner,
+      };
+      await kvSet(ANALYSES_KEY, all);
+    }).catch((e) => console.warn("analysis save failed", e));
+    onAnalysisSavedRef.current?.(owner, a.kind, a.config);
+  };
+
+  /** بعد Save / Save All: اكتب تحليلات كل الأشكال اللي بقت متسيفة */
+  const flushAllAnalyses = () => {
+    analysesRef.current.forEach((_, owner) => persistAnalysisFor(owner));
+  };
+
+  /** يسجّل تحليل شكل معيّن (بيستبدل تحليل نفس الشكل بس، مش بتاع غيره) */
+  const registerAnalysis = (
+    owner: string,
+    kind: StoredAnalysis["kind"],
+    config: any,
+    cleanup: () => void,
+    persist: boolean,
+  ) => {
+    removeOverlayFor(owner);
+    analysesRef.current.set(owner, { kind, config, cleanup });
+    if (persist) persistAnalysisFor(owner);
+  };
+
+  /** مسح تحليل شكل واحد: خريطة + IndexedDB + بروجكت (عن طريق الأب) */
+  const deleteAnalysisFor = (owner: string, notify = true) => {
+    const a = analysesRef.current.get(owner);
+    if (a) {
+      clearedAnalysisRef.current = {
+        sig: analysisSig(a.kind, a.config),
+        at: Date.now(),
+      };
+    }
+    removeOverlayFor(owner);
+    // ✅ دايماً (من غير gating بـ persistData) عشان مفيش تحليل يتيم يفضل في الـ DB
+    enqueue(async () => {
+      const all = await readAnalyses();
+      if (owner in all) {
+        delete all[owner];
+        await kvSet(ANALYSES_KEY, all);
+      }
+    }).catch((e) => console.warn("analysis delete failed", e));
+    if (notify) onAnalysisClearedRef.current?.(owner);
+  };
+
+  /** مسح كل التحليلات: خريطة + IndexedDB + بروجكت (ownerId = null) */
+  const clearAllAnalyses = (notify = true) => {
+    Array.from(analysesRef.current.keys()).forEach((o) => removeOverlayFor(o));
+
+    // تنظيف احتياطي: أي layer في imagePane مش بتاع صور المستخدم = تحليل يتيم → يتشال
+    const map = mapInstanceRef.current;
+    if (map) {
+      const userLayers = new Set(imageOverlaysRef.current.map((o) => o.layer));
+      const orphans: any[] = [];
+      map.eachLayer((l: any) => {
+        if (l?.options?.pane === "imagePane" && !userLayers.has(l))
+          orphans.push(l);
+      });
+      orphans.forEach((l) => {
+        try {
+          map.removeLayer(l);
+        } catch (_) {}
+      });
+      try {
+        map
+          .getContainer()
+          .querySelectorAll(".swipe-compare-ui")
+          .forEach((el: Element) => el.remove());
+      } catch (_) {}
+    }
+    swipeOverlayRef.current = null;
+
+    enqueue(() => kvSet(ANALYSES_KEY, {})).catch((e) =>
+      console.warn("analyses clear failed", e),
+    );
+    analysisClear().catch(() => {}); // السجل القديم (legacy single record)
+    if (notify) onAnalysisClearedRef.current?.(null);
+  };
+
+  // ✅ "قبر" دائم في IndexedDB (store: deletedIds): أي id اتمسح ما يرجعش تاني
+  const loadDeletedIds = async () => {
+    if (deletedLoadedRef.current) return;
+    try {
+      const ids = await deletedIdsGetAll();
+      ids.forEach((x) => deletedIdsRef.current.add(String(x)));
+    } catch (e) {
+      console.warn("deletedIds load failed", e);
+    }
+    try {
+      const raw = localStorage.getItem(LEGACY_DELETED_IDS_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length) {
+          const clean = arr.map(String);
+          clean.forEach((x) => deletedIdsRef.current.add(x));
+          await deletedIdsAdd(clean);
+        }
+        localStorage.removeItem(LEGACY_DELETED_IDS_KEY);
+      }
+    } catch (_) {}
+    deletedLoadedRef.current = true;
+  };
+  const markDeleted = (ids: string[]) => {
+    const clean = ids.filter(Boolean).map(String);
+    if (!clean.length) return;
+    clean.forEach((i) => deletedIdsRef.current.add(i));
+    deletedIdsAdd(clean).catch((e) => console.warn("deletedIds save failed", e));
+  };
+  const isDeleted = (id: string) => deletedIdsRef.current.has(String(id));
+
+  /** يشيل علامة _unsaved من الـ feature بعد ما يتحفظ فعلاً */
+  const markFeatureSaved = (feature: GeoJSON.Feature) => {
+    if (feature.properties && "_unsaved" in feature.properties) {
+      const { _unsaved, ...rest } = feature.properties as any;
+      feature.properties = rest;
+    }
+  };
+
+  /** جديد → pending (مفيش حفظ) | متسيف قبل كده → يتحدّث في الـ DB والقائمة */
+  const upsertShape = (
+    id: string,
+    feature: GeoJSON.Feature,
+    aoi: Parameters<typeof saveAOI>[0],
+  ) => {
+    if (savedIdsRef.current.has(id)) {
+      saveAOIIfAllowed(aoi).catch((e) =>
+        console.error("Update save failed", e),
+      );
+      setDrawn(
+        drawnFeaturesRef.current.map((f) =>
+          f.properties?.id === id ? feature : f,
+        ),
+      );
+    } else {
+      // علامة للأب: الشكل ده لسه ماتحفظش → ما تحفظوش في البروجكت
+      feature.properties = { ...(feature.properties ?? {}), _unsaved: true };
+      pendingShapesRef.current.set(id, { feature, aoi });
+    }
+  };
+
+  /** زرار Save (شكل واحد) */
+  const saveShape = async (id: string) => {
+    const p = pendingShapesRef.current.get(id);
+    if (!p) return;
+    try {
+      await saveAOIIfAllowed(p.aoi);
+    } catch (e) {
+      console.error("Save failed", e);
+      toast.error(isRTL ? "فشل الحفظ" : "Save failed");
+      return; // ما نعلّمهوش saved لو الـ DB فشلت
+    }
+    // ✅ لو الشكل اتمسح أثناء الحفظ (race) → ما نرجّعوش
+    if (isDeleted(id)) {
+      deleteFromDbVerified(id);
+      return;
+    }
+    // ✅ تأكد إنه اتكتب فعلاً في الـ DB (circle / line / marker زي الباقي)
+    const missing = await findMissingInDb([id]);
+    if (missing.length) {
+      console.error("❌ Shape not found in IndexedDB after save:", p.aoi);
+      toast.error(
+        isRTL
+          ? "الشكل ماتكتبش في قاعدة البيانات"
+          : "Shape was not written to the database",
+      );
+      return;
+    }
+    pendingShapesRef.current.delete(id);
+    savedIdsRef.current.add(id);
+    markFeatureSaved(p.feature);
+    setDrawn([
+      ...drawnFeaturesRef.current.filter((f) => f.properties?.id !== id),
+      p.feature,
+    ]);
+    flushAllAnalyses();
+    try {
+      mapInstanceRef.current?.closePopup();
+    } catch (_) {}
+    toast.success(isRTL ? "تم الحفظ" : "Saved");
+  };
+
+  /** زرار Save All اللي فوق — بيحفظ كل الأشكال الـ pending */
+  const saveAllShapes = async () => {
+    const entries = Array.from(pendingShapesRef.current.entries());
+    if (!entries.length) {
+      toast.info(isRTL ? "مفيش رسومات جديدة للحفظ" : "Nothing new to save");
+      return;
+    }
+    const written: { id: string; p: (typeof entries)[number][1] }[] = [];
+    let failed = 0;
+    for (const [id, p] of entries) {
+      // ✅ اتمسح بعد ما الـ snapshot اتاخدت؟ تجاهله
+      if (!pendingShapesRef.current.has(id) || isDeleted(id)) continue;
+      try {
+        await saveAOIIfAllowed(p.aoi);
+        if (isDeleted(id)) {
+          deleteFromDbVerified(id);
+          continue;
+        }
+        written.push({ id, p });
+      } catch (e) {
+        failed++;
+        console.error("Save failed for", id, e);
+      }
+    }
+
+    // ✅ تحقق إن كل اللي اتكتب موجود فعلاً في الـ DB
+    const missing = new Set(await findMissingInDb(written.map((w) => w.id)));
+    const saved: GeoJSON.Feature[] = [];
+    for (const { id, p } of written) {
+      if (missing.has(id)) {
+        failed++;
+        console.error("❌ Shape not found in IndexedDB after save:", p.aoi);
+        continue;
+      }
+      pendingShapesRef.current.delete(id);
+      savedIdsRef.current.add(id);
+      markFeatureSaved(p.feature);
+      saved.push(p.feature);
+    }
+
+    if (saved.length) {
+      flushAllAnalyses();
+      const ids = new Set(saved.map((f) => f.properties?.id));
+      setDrawn([
+        ...drawnFeaturesRef.current.filter((f) => !ids.has(f.properties?.id)),
+        ...saved,
+      ]);
+    }
+    try {
+      mapInstanceRef.current?.closePopup();
+    } catch (_) {}
+    if (failed) {
+      toast.error(
+        isRTL ? `فشل حفظ ${failed} شكل` : `${failed} shape(s) failed to save`,
+      );
+    } else {
+      toast.success(
+        isRTL ? `تم حفظ ${saved.length} شكل` : `Saved ${saved.length} shape(s)`,
+      );
+    }
+  };
+
+  /** للأشكال المسترجعة (متسيفة أصلاً) من غير ما نبلّغ الأب تاني */
+  const markSavedSilently = (id: string, feature: GeoJSON.Feature) => {
+    savedIdsRef.current.add(id);
+    drawnFeaturesRef.current = [
+      ...drawnFeaturesRef.current.filter((f) => f.properties?.id !== id),
+      feature,
+    ];
+  };
 
   const projectStateRef = useRef<any>({
     aoi_polygons: [],
@@ -281,10 +723,8 @@ export default function LeafletMap({
   const drawPointsRef = useRef<[number, number][]>([]);
   const baseTileRef = useRef<any>(null);
   const labelsLayerRef = useRef<any>(null);
-  // بيتبع دلوقتي أي طبقة قمر شغالة، عشان نطبّق حد الـ 30 متر على Default بس
   const currentSatKeyRef = useRef<SatKey>("Default");
   const applyResolutionCapRef = useRef<(() => void) | null>(null);
-  // ── Zoom guard: يرجع زوم واحد أوتوماتيك لو التايلز مش متوفرة في المكان ده ──
   const tileErrorAtCurrentZoomRef = useRef(false);
   const zoomRevertTimeoutRef = useRef<any>(null);
   const lastStableZoomRef = useRef<number>(11);
@@ -293,7 +733,6 @@ export default function LeafletMap({
   const lastCoordsRef = useRef<LatLngPoint[]>([]);
   const lastToolRef = useRef<DrawTool>("pointer");
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
-  // نحتاج refs للـ map و L عشان نستخدمهم في finishPolygon من الـ button
   const mapObjRef = useRef<any>(null);
   const LRef = useRef<any>(null);
   const geoJsonLayerRef = useRef<any>(null);
@@ -302,7 +741,6 @@ export default function LeafletMap({
   const initialFeaturesLayerRef = useRef<any[]>([]);
   const rafRef = useRef<number | null>(null);
   const lastMoveRef = useRef<any>(null);
-  // ── throttle للـ virtual feature clicks (pointer tool) عشان منبعتش طلبات NDVI/Weather كتير على الفاضي ──
   const lastVirtualClickRef = useRef<{
     lat: number;
     lng: number;
@@ -319,74 +757,421 @@ export default function LeafletMap({
       layer: any;
     }[]
   >([]);
-  const rasterOverlayRef = useRef<Map<string, any>>(new Map());
-  const pointsOverlayRef = useRef<Map<string, any>>(new Map());
-  const superResOverlayRef = useRef<{ layer: any; marker: any } | null>(null);
+  /** الـ swipe UI واحد بس على الخريطة كلها (بيتحط على الـ container) */
   const swipeOverlayRef = useRef<{ cleanup: () => void } | null>(null);
-  // ✅ دالة موحّدة بتمسح كل أنواع overlays التحليل (raster / palm points /
-  // super resolution / change-detection swipe) من على الخريطة مرة واحدة.
-  // مستخدمة في كل مكان بيحتاج يمسح تحليل قديم قبل ما يحط واحد جديد —
-  // زرار "Delete Analysis"، وكمان جوه كل handler بتاع overlay جديد، عشان
-  // لو المستخدم بدّل من نوع تحليل لنوع تاني (مثلاً من Raster لـ Super
-  // Resolution أو من Palm Points لـ Swipe)، القديم يتشال أول ما الجديد
-  // يتحط بدل ما يترسموا فوق بعض.
-  // ✅ دوال مسح مفصّلة لكل نوع overlay — عشان handler من نوع معيّن لما ينادى
-  // بـ null (مثلاً Swipe أو Super Resolution بيتنادوا بـ null من البانل) يمسح
-  // نوعه هو بس، ومايمسحش الراستر اللي لسه متضاف على الخريطة.
-  const clearRasterOnlyRef = useRef<() => void>(() => {});
-  clearRasterOnlyRef.current = () => {
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🛰️ Apply analysis overlays (بتتنادى من الـ register handlers ومن الاسترجاع)
+  //    persist=false وقت الاسترجاع عشان ما نعيدش الكتابة في الـ DB
+  //    ownerId = الشكل صاحب التحليل (الافتراضي: الشكل الحالي)
+  // ═══════════════════════════════════════════════════════════════════════════
+  const needShapeToast = () =>
+    toast.error(
+      isRTL
+        ? "ارسم شكل الأول قبل التحليل"
+        : "Draw a shape before running analysis",
+    );
+
+  const applyRasterOverlay = (
+    config: RasterOverlayConfig,
+    persist = true,
+    ownerId: string | null = currentShapeIdRef.current,
+  ) => {
     const map = mapInstanceRef.current;
-    if (!map) return;
-    rasterOverlayRef.current.forEach((layer) => {
-      try {
-        map.removeLayer(layer);
-      } catch (_) {}
-    });
-    rasterOverlayRef.current.clear();
-  };
-  const clearPointsOnlyRef = useRef<() => void>(() => {});
-  clearPointsOnlyRef.current = () => {
-    const map = mapInstanceRef.current;
-    if (!map) return;
-    pointsOverlayRef.current.forEach((layer) => {
-      try {
-        map.removeLayer(layer);
-      } catch (_) {}
-    });
-    pointsOverlayRef.current.clear();
-  };
-  const clearSuperResOnlyRef = useRef<() => void>(() => {});
-  clearSuperResOnlyRef.current = () => {
-    const map = mapInstanceRef.current;
-    if (!map || !superResOverlayRef.current) return;
-    try {
-      map.removeLayer(superResOverlayRef.current.layer);
-    } catch (_) {}
-    try {
-      map.removeLayer(superResOverlayRef.current.marker);
-    } catch (_) {}
-    superResOverlayRef.current = null;
-  };
-  const clearSwipeOnlyRef = useRef<() => void>(() => {});
-  clearSwipeOnlyRef.current = () => {
-    if (!swipeOverlayRef.current) return;
-    try {
-      swipeOverlayRef.current.cleanup();
-    } catch (_) {}
-    swipeOverlayRef.current = null;
+    const L = LRef.current;
+    if (!map || !L) return;
+    if (!ownerId) {
+      needShapeToast();
+      return;
+    }
+
+    const hasTemplate = !!config.tileUrl && config.tileUrl.includes("{z}");
+    if (!config.dataUrl && !hasTemplate) {
+      console.warn(
+        "Raster overlay skipped: no dataUrl and tileUrl is not an XYZ template",
+        config,
+      );
+      toast.error(
+        isRTL
+          ? "مفيش صورة صالحة للعرض على الخريطة"
+          : "No displayable raster image for the map",
+      );
+      return;
+    }
+
+    // ✅ بيشيل تحليل نفس الشكل بس — تحليل الأشكال التانية بيفضل
+    removeOverlayFor(ownerId);
+
+    const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
+    const hasTileTemplate = !!config.tileUrl && config.tileUrl.includes("{z}");
+    const isSceneImage =
+      config.colorRamp === "Scene preview" ||
+      String(config.indexKey).toUpperCase() === "RGB";
+    const layer = hasTileTemplate
+      ? L.tileLayer(config.tileUrl!, {
+          opacity: config.opacity,
+          pane: "imagePane",
+          crossOrigin: "anonymous",
+          maxZoom: 22,
+          bounds,
+          noWrap: true,
+        }).addTo(map)
+      : L.imageOverlay(config.dataUrl, bounds, {
+          opacity: config.opacity,
+          pane: "imagePane",
+          className: isSceneImage
+            ? "scene-preview-raster-overlay"
+            : "change-detection-raster-overlay",
+        }).addTo(map);
+
+    registerAnalysis(
+      ownerId,
+      "raster",
+      config,
+      () => {
+        try {
+          map.removeLayer(layer);
+        } catch (_) {}
+      },
+      persist,
+    );
+
+    if (!hasTileTemplate && config.dataUrl) {
+      const probe = new Image();
+      probe.onload = () => {
+        try {
+          const nw = map.project(bounds.getNorthWest(), 0);
+          const se = map.project(bounds.getSouthEast(), 0);
+          const boundsAspect =
+            Math.abs(se.x - nw.x) / Math.max(1e-9, Math.abs(se.y - nw.y));
+          const imgAspect =
+            probe.naturalWidth / Math.max(1, probe.naturalHeight);
+          const ratio = imgAspect / boundsAspect;
+          if (ratio < 0.85 || ratio > 1.15) {
+            console.warn(
+              `⚠️ Raster preview aspect mismatch: image ${probe.naturalWidth}x${probe.naturalHeight} (${imgAspect.toFixed(2)}) vs bounds (${boundsAspect.toFixed(2)}) → الصورة هتتمط. لازم البانل تجيب الـ preview بنفس الـ bbox.`,
+              { bounds: config.bounds },
+            );
+          }
+        } catch (_) {}
+      };
+      probe.src = config.dataUrl;
+    }
   };
 
-  // ✅ دالة موحّدة بتمسح كل أنواع overlays التحليل مرة واحدة (Delete Analysis
-  // + قبل ما يتحط تحليل جديد فعلي). ⚠️ ماتتنادّاش لما handler ياخد null
-  // (مسح نوعه بس) — استخدمي الدوال المفصّلة فوق.
-  const clearAllAnalysisOverlaysRef = useRef<() => void>(() => {});
-  clearAllAnalysisOverlaysRef.current = () => {
-    if (!mapInstanceRef.current) return;
-    clearRasterOnlyRef.current();
-    clearPointsOnlyRef.current();
-    clearSuperResOnlyRef.current();
-    clearSwipeOnlyRef.current();
+  const applyPointsOverlay = (
+    config: PointsOverlayConfig,
+    persist = true,
+    ownerId: string | null = currentShapeIdRef.current,
+  ) => {
+    const map = mapInstanceRef.current;
+    const L = LRef.current;
+    if (!map || !L) return;
+    if (!ownerId) {
+      needShapeToast();
+      return;
+    }
+
+    removeOverlayFor(ownerId);
+    if (!config.points?.length) return;
+
+    const group = L.layerGroup(
+      config.points.map((p) =>
+        L.circleMarker([p.lat, p.lng], {
+          radius: 4,
+          color: p.color,
+          fillColor: p.color,
+          fillOpacity: config.opacity,
+          opacity: config.opacity,
+          weight: 1,
+        }).bindPopup(
+          `<b>${config.name}</b><br/>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<br/>value: ${p.value.toFixed(3)}`,
+        ),
+      ),
+    ).addTo(map);
+
+    registerAnalysis(
+      ownerId,
+      "points",
+      config,
+      () => {
+        try {
+          map.removeLayer(group);
+        } catch (_) {}
+      },
+      persist,
+    );
   };
+
+  const applySuperResOverlay = (
+    config: SuperResOverlayConfig,
+    persist = true,
+    ownerId: string | null = currentShapeIdRef.current,
+  ) => {
+    const map = mapInstanceRef.current;
+    const L = LRef.current;
+    if (!map || !L) return;
+    if (!ownerId) {
+      needShapeToast();
+      return;
+    }
+
+    removeOverlayFor(ownerId);
+    if (!config.dataUrl) return;
+
+    const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
+    const layer = L.imageOverlay(config.dataUrl, bounds, {
+      opacity: 1,
+      pane: "imagePane",
+      className: "change-detection-raster-overlay",
+    }).addTo(map);
+
+    const marker = L.circleMarker([config.coords.lat, config.coords.lng], {
+      radius: 6,
+      color: "#f97316",
+      fillColor: "#f97316",
+      fillOpacity: 0.75,
+      weight: 2,
+    })
+      .addTo(map)
+      .bindPopup("Super Resolution result");
+
+    registerAnalysis(
+      ownerId,
+      "superRes",
+      config,
+      () => {
+        try {
+          map.removeLayer(layer);
+        } catch (_) {}
+        try {
+          map.removeLayer(marker);
+        } catch (_) {}
+      },
+      persist,
+    );
+
+    // الـ fly بس لما التحليل جديد (مش وقت الاسترجاع)
+    if (persist) {
+      map.flyToBounds(bounds, {
+        padding: [42, 42],
+        maxZoom: 16,
+        duration: 0.8,
+      });
+    }
+  };
+
+  const applySwipeOverlay = (
+    config: SwipeOverlayConfig,
+    persist = true,
+    ownerId: string | null = currentShapeIdRef.current,
+  ) => {
+    const map = mapInstanceRef.current;
+    const L = LRef.current;
+    if (!map || !L) return;
+    if (!ownerId) {
+      needShapeToast();
+      return;
+    }
+
+    // ⚠️ الـ swipe UI واحد بس على الخريطة → أي swipe تاني (لأي شكل) يتشال من الخريطة
+    analysesRef.current.forEach((a, o) => {
+      if (a.kind === "swipe") removeOverlayFor(o);
+    });
+    removeOverlayFor(ownerId);
+
+    const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
+    const beforeLayer = L.imageOverlay(config.beforeUrl, bounds, {
+      pane: "imagePane",
+      opacity: 1,
+    }).addTo(map);
+    const afterLayer = L.imageOverlay(config.afterUrl, bounds, {
+      pane: "imagePane",
+      opacity: 1,
+    }).addTo(map);
+
+    const ui = L.DomUtil.create(
+      "div",
+      "swipe-compare-ui",
+      map.getContainer(),
+    ) as HTMLDivElement;
+    ui.style.cssText =
+      "position:absolute; inset:0; z-index:610; pointer-events:none; overflow:hidden;";
+
+    const line = document.createElement("div");
+    line.style.cssText =
+      "position:absolute; width:2px; background:#22d3ee; box-shadow:0 0 10px rgba(34,211,238,.8); pointer-events:none;";
+    ui.appendChild(line);
+
+    const handle = document.createElement("div");
+    handle.style.cssText =
+      "position:absolute; width:34px; height:34px; margin-left:-17px; margin-top:-17px; border-radius:9999px; background:#020817ee; border:2px solid #22d3ee; color:#22d3ee; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; cursor:ew-resize; pointer-events:all; box-shadow:0 4px 16px rgba(0,0,0,.55);";
+    handle.textContent = "↔";
+    ui.appendChild(handle);
+
+    L.DomEvent.disableClickPropagation(handle);
+    L.DomEvent.disableClickPropagation(ui);
+
+    const beforeLabel = document.createElement("div");
+    beforeLabel.textContent = config.beforeLabel ?? "Before";
+    beforeLabel.style.cssText =
+      "position:absolute; background:rgba(0,0,0,.7); color:#7dd3fc; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
+    ui.appendChild(beforeLabel);
+
+    const afterLabel = document.createElement("div");
+    afterLabel.textContent = config.afterLabel ?? "After";
+    afterLabel.style.cssText =
+      "position:absolute; background:rgba(0,0,0,.7); color:#fdba74; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
+    ui.appendChild(afterLabel);
+
+    let position = 0.5;
+
+    const applyClip = () => {
+      const afterEl = (afterLayer as any).getElement?.() as
+        | HTMLElement
+        | undefined;
+      if (afterEl) afterEl.style.clipPath = `inset(0 0 0 ${position * 100}%)`;
+    };
+
+    const reposition = () => {
+      const nw = map.latLngToContainerPoint(bounds.getNorthWest());
+      const se = map.latLngToContainerPoint(bounds.getSouthEast());
+      const left = Math.min(nw.x, se.x),
+        right = Math.max(nw.x, se.x);
+      const top = Math.min(nw.y, se.y),
+        bottom = Math.max(nw.y, se.y);
+      const x = left + (right - left) * position;
+      line.style.left = `${x}px`;
+      line.style.top = `${top}px`;
+      line.style.height = `${Math.max(0, bottom - top)}px`;
+      handle.style.left = `${x}px`;
+      handle.style.top = `${(top + bottom) / 2}px`;
+      beforeLabel.style.left = `${left + 10}px`;
+      beforeLabel.style.top = `${top + 10}px`;
+      afterLabel.style.left = `${Math.max(left + 10, right - 10 - afterLabel.offsetWidth)}px`;
+      afterLabel.style.top = `${top + 10}px`;
+    };
+
+    afterLayer.on("load", () => {
+      applyClip();
+      reposition();
+    });
+    beforeLayer.on("load", reposition);
+    applyClip();
+    reposition();
+
+    const onMapMove = () => reposition();
+    map.on("move", onMapMove);
+    map.on("zoom", onMapMove);
+
+    let dragging = false;
+    const onPointerDown = (e: PointerEvent) => {
+      dragging = true;
+      handle.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      e.stopPropagation();
+      map.dragging.disable();
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      const nw = map.latLngToContainerPoint(bounds.getNorthWest());
+      const se = map.latLngToContainerPoint(bounds.getSouthEast());
+      const left = Math.min(nw.x, se.x),
+        right = Math.max(nw.x, se.x);
+      const rect = map.getContainer().getBoundingClientRect();
+      const clientX = e.clientX - rect.left;
+      const frac = (clientX - left) / Math.max(1, right - left);
+      position = Math.max(0, Math.min(1, frac));
+      applyClip();
+      reposition();
+    };
+    const onPointerUp = () => {
+      dragging = false;
+      map.dragging.enable();
+    };
+
+    handle.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+
+    const swipeHandle = {
+      cleanup: () => {
+        map.off("move", onMapMove);
+        map.off("zoom", onMapMove);
+        handle.removeEventListener("pointerdown", onPointerDown);
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        try {
+          map.dragging.enable();
+        } catch {}
+        try {
+          map.removeLayer(beforeLayer);
+        } catch {}
+        try {
+          map.removeLayer(afterLayer);
+        } catch {}
+        try {
+          ui.remove();
+        } catch {}
+        if (swipeOverlayRef.current === swipeHandle)
+          swipeOverlayRef.current = null;
+      },
+    };
+    swipeOverlayRef.current = swipeHandle;
+
+    registerAnalysis(ownerId, "swipe", config, swipeHandle.cleanup, persist);
+  };
+
+  /** يرجّع تحليلات كل الأشكال المتسيفة من IndexedDB — بس لو صاحبها (الشكل) متسيف وموجود */
+  const restoreAnalysis = async () => {
+    if (!persistDataRef.current) return;
+    try {
+      const all = await readAnalyses();
+      let changed = false;
+
+      // migration من السجل القديم (single record) لو موجود
+      try {
+        const legacy: any = await analysisGet();
+        if (legacy?.ownerId && !all[legacy.ownerId]) {
+          all[legacy.ownerId] = legacy;
+          changed = true;
+        }
+        if (legacy) analysisClear().catch(() => {});
+      } catch (_) {}
+
+      if (!mapInstanceRef.current) return;
+
+      for (const [owner, rec] of Object.entries<any>(all)) {
+        const ownerOk = savedIdsRef.current.has(owner) && !isDeleted(owner);
+        if (!ownerOk) {
+          // صاحب التحليل مش موجود (اتمسح / ماتحفظش) → امسح التحليل اليتيم من الـ DB
+          console.warn("🧹 Stale analysis in IndexedDB (owner missing):", owner);
+          delete all[owner];
+          changed = true;
+          continue;
+        }
+        switch (rec.kind) {
+          case "raster":
+            applyRasterOverlay(rec.config, false, owner);
+            break;
+          case "points":
+            applyPointsOverlay(rec.config, false, owner);
+            break;
+          case "superRes":
+            applySuperResOverlay(rec.config, false, owner);
+            break;
+          case "swipe":
+            applySwipeOverlay(rec.config, false, owner);
+            break;
+        }
+      }
+
+      if (changed) await enqueue(() => kvSet(ANALYSES_KEY, all));
+    } catch (e) {
+      console.warn("Analysis restore failed", e);
+    }
+  };
+
   const placingImageRef = useRef<{
     file: File;
     src: string; // data URL (persistent across refresh)
@@ -408,10 +1193,7 @@ export default function LeafletMap({
     sendToBackend,
   } = useMapCanvas();
 
-  // ⚠️ لو المستخدم بادئ يرسم شكل ولسه مخلصوش (نقطة أو أكتر) وبدّل الأداة من التولبار
-  // (يبدأ يرسم دايرة أو مربع تاني وهو لسه في نص بولوجن) — كنا بنسيب الرسمة الناقصة
-  // معلقة على الماب (نقط/temp layers) وبعدين الشكل الجديد يترسم فوقها. دلوقتي أي
-  // تغيير للأداة يمسح الرسم الناقص الحالي أولاً.
+  // ⚠️ أي تغيير للأداة يمسح الرسم الناقص الحالي أولاً.
   useEffect(() => {
     if (activeToolRef.current !== activeTool) {
       if (drawPointsRef.current.length > 0) cancelCurrentDrawing();
@@ -434,10 +1216,10 @@ export default function LeafletMap({
     placingImageRef.current = null;
   };
 
-  const cancelCurrentDrawing = () => {
+  /** يشيل نقط الرسم المؤقتة (vertices) من الخريطة — بتتنادى لما الشكل يخلص */
+  const clearDraftMarkers = () => {
     const map = mapInstanceRef.current;
     if (!map) return;
-
     draftLayersRef.current.forEach((layer) => {
       try {
         map.removeLayer(layer);
@@ -447,6 +1229,13 @@ export default function LeafletMap({
       (layer) => !draftLayersRef.current.includes(layer),
     );
     draftLayersRef.current = [];
+  };
+
+  const cancelCurrentDrawing = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    clearDraftMarkers();
 
     if (tempLayerRef.current) {
       try {
@@ -460,12 +1249,6 @@ export default function LeafletMap({
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ✏️ AOI shape editing
-  //  • Polygon / Rectangle: drag any vertex · drag a faint midpoint on an edge
-  //    to add a vertex · right-click or double-click a vertex to delete it.
-  //  • Circle: drag the centre to move it · drag the edge handle to resize.
-  // Every drag-end is validated (no self-intersection, max size); an invalid
-  // result is reverted. A valid one updates the registry, the list, the popup,
-  // the canvas overlay and lastCoordsRef (so the analysis panels see the new shape).
   // ═══════════════════════════════════════════════════════════════════════════
   const teardownEditHandles = () => {
     const s = editSessionRef.current;
@@ -487,13 +1270,14 @@ export default function LeafletMap({
       html: `<div style="width:${size}px;height:${size}px;box-sizing:border-box;border-radius:50%;background:${solid ? "#ffffff" : "rgba(255,255,255,0.45)"};border:2px solid #00c8ff;box-shadow:0 0 0 3px rgba(0,200,255,0.25);cursor:grab"></div>`,
     });
 
-  /** بعد أي تعديل ناجح: حدّث الـ canvas / lastCoordsRef / الـ popup / الـ panels */
+  /** بعد أي تعديل ناجح: حدّث الـ canvas / lastCoordsRef / الـ popup / الـ DB / الـ panels */
   const applyEditedAoi = (id: string) => {
     const map = mapInstanceRef.current;
     const L = LRef.current;
     const e = aoiRegistryRef.current?.get(id);
     if (!map || !L || !e) return;
 
+    currentShapeIdRef.current = id;
     lastCoordsRef.current = e.coords;
     lastToolRef.current = e.tool;
     if (canvasRef.current) {
@@ -501,23 +1285,38 @@ export default function LeafletMap({
       redrawCurrent(canvasRef.current, map, L);
     }
 
-    // الـ popup القديم كان ماسك المساحة القديمة → أعد ربطه بالقيم الجديدة
     const icon =
       e.kind === "circle" ? "🟢" : e.kind === "rectangle" ? "📐" : "🔵";
     const radiusTxt =
       e.kind === "circle" && e.coords.length === 2
-        ? ` · R: ${map.distance([e.coords[0].lat, e.coords[0].lng], [e.coords[1].lat, e.coords[1].lng]).toFixed(0)} m`
+        ? ` · R: ${map
+            .distance(
+              [e.coords[0].lat, e.coords[0].lng],
+              [e.coords[1].lat, e.coords[1].lng],
+            )
+            .toFixed(0)} m`
         : "";
+
     try {
       e.layer.unbindPopup();
     } catch (_) {}
     e.layer.bindPopup(() => {
       const div = document.createElement("div");
       const label = document.createElement("div");
-      label.innerHTML = `${icon} ${e.name}${radiusTxt} · ≈ ${e.areaHa} ${t.ha}`;
+      label.innerHTML = `${icon} ${e.name} · ≈ ${e.areaHa} ha${radiusTxt}`;
       div.appendChild(label);
-      div.appendChild(buildShapePopupActions(e.layer, e.kind));
+      div.appendChild(buildShapePopupActions(e.layer, e.kind, id));
       return div;
+    });
+
+    // 💾 متسيف قبل كده → يتحدّث في الـ DB | جديد → pending لحد Save
+    upsertShape(id, e.feature, {
+      id,
+      name: e.name,
+      tool: e.tool as any,
+      coords: e.coords as any,
+      areaHa: e.areaHa,
+      createdAt: new Date().toISOString(),
     });
 
     if (editSessionRef.current) editSessionRef.current.dirty = true;
@@ -832,85 +1631,346 @@ export default function LeafletMap({
     }
   };
 
-  /** يمسح شكل واحد بس من على الماب (مش كل الرسومات زي زرار Delete All) */
-  const deleteSingleShape = (layer: any) => {
-    const aoiId = layer._aoiId;
-
-    // مسح من الـ IndexedDB
-    if (aoiId) {
-      deleteAOI(aoiId)
-        .then(() => console.log(`Deleted AOI ${aoiId} from IndexedDB`))
-        .catch((err) =>
-          console.error("Failed to delete AOI from IndexedDB:", err),
-        );
-    }
-
-    // مسح الطبقة من الخريطة
-    if (mapInstanceRef.current) {
-      mapInstanceRef.current.removeLayer(layer);
-    }
-
-    // إزالة الطبقة من المصفوفة المرجعية drawLayersRef
-    drawLayersRef.current = drawLayersRef.current.filter((l) => l !== layer);
+  /** يمسح شكل واحد (أي نوع: polygon / rectangle / circle / marker / line) من:
+   *  الخريطة + القائمة + الـ registry + IndexedDB (مع تحقق).
+   *  ✅ وبيمسح تحليل الشكل ده بس (خريطة + IndexedDB + بروجكت) — تحليل الأشكال التانية ما بيتأثرش. */
+  const deleteSingleShape = (
+    layer: any,
+    savedAoiId?: string,
+    kind?: "polygon" | "rectangle" | "circle" | "marker" | "measure",
+  ) => {
+    const aoiId: string | undefined = savedAoiId ?? layer?._aoiId;
     const map = mapInstanceRef.current;
-    if (!map) return;
-    try {
-      map.closePopup();
-    } catch (_) {}
-    try {
-      map.removeLayer(layer);
-    } catch (_) {}
+    const reg = aoiRegistryRef.current;
+
+    // لو الشكل ده بيتعدّل دلوقتي → اقفل الـ handles الأول
+    if (editSessionRef.current && editSessionRef.current.id === aoiId) {
+      reg?.setEditing(null);
+      teardownEditHandles();
+    }
+
+    // 1) القائمة + IndexedDB (بالـ id دايماً، من غير gating — حذف id مش موجود مفيهوش مشكلة)
+    if (aoiId) {
+      markDeleted([aoiId]);
+      pendingShapesRef.current.delete(aoiId);
+      savedIdsRef.current.delete(aoiId);
+      // ✅ دايماً نبلّغ الأب بالقائمة الجديدة عشان يحدّث البروجكت المتسيف
+      setDrawn(
+        drawnFeaturesRef.current.filter((f) => f.properties?.id !== aoiId),
+      );
+      deleteFromDbVerified(aoiId);
+      if (currentShapeIdRef.current === aoiId) currentShapeIdRef.current = null;
+    }
+
+    // 2) الخريطة
+    if (map) {
+      try {
+        map.closePopup();
+      } catch (_) {}
+      try {
+        map.removeLayer(layer);
+      } catch (_) {}
+    }
+
     drawLayersRef.current = drawLayersRef.current.filter((l) => l !== layer);
     draftLayersRef.current = draftLayersRef.current.filter((l) => l !== layer);
     initialFeaturesLayerRef.current = initialFeaturesLayerRef.current.filter(
       (l) => l !== layer,
     );
-    // شيله من قائمة الـ AOIs (ولو كان هو النشط، آخر واحد باقي هيبقى نشط)
-    aoiRegistryRef.current?.removeByLayer(layer);
+
+    // 3) الـ registry (marker / line مش فيه → بنبلّغ الأب بنفسنا)
+    const wasInRegistry = !!aoiId && !!reg?.get(aoiId);
+    reg?.removeByLayer(layer);
+    if (!wasInRegistry && aoiId) onAOIRemove?.(aoiId);
+
+    // 4) نضّف الـ canvas لو مفيش AOI نشط
+    const noneLeft = !reg?.getActiveId();
+    if (noneLeft && canvasRef.current) {
+      lastCoordsRef.current = [];
+      lastToolRef.current = "pointer";
+      clearCanvas(canvasRef.current);
+    }
+
+    // 5) 🧹 تحليل الشكل ده بس (measure مالوش تحليل)
+    if (aoiId && kind !== "measure") deleteAnalysisFor(aoiId, true);
   };
 
-  /** صف الأزرار اللي بتتحط جوه popup أي شكل مرسوم — Delete بس (Edit AOI اتشالت لأنها كانت مش شغالة). */
+  const toLL = (c: any): [number, number] =>
+    Array.isArray(c)
+      ? [Number(c[0]), Number(c[1])]
+      : [Number(c.lat), Number(c.lng)];
+
+  const layerExists = (id: string) =>
+    drawLayersRef.current.some((l) => l?._aoiId === id);
+
+  /** يرجّع الأشكال المتسيفة في IndexedDB حسب نوع كل شكل */
+  const restoreSavedAois = (map: any, L: any, saved: any[]) => {
+    const counts: Record<string, number> = {};
+    saved.forEach((item) => {
+      try {
+        if (!item?.id || layerExists(item.id)) return;
+        if (isDeleted(String(item.id))) {
+          deleteFromDbVerified(String(item.id)); // نضّف الـ DB من اللي اتمسح قبل كده
+          return;
+        }
+        const id = String(item.id);
+        const tool = item.tool ?? "polygon";
+        const name = String(item.name ?? "Restored Shape");
+        const area = Number(item.areaHa ?? 0);
+        const pts: [number, number][] = (item.coords ?? []).map(toLL);
+        if (!pts.length) {
+          console.warn("Saved AOI has no coords — skipped:", item);
+          return;
+        }
+        savedIdsRef.current.add(id);
+        counts[tool] = (counts[tool] ?? 0) + 1;
+        const reg = aoiRegistryRef.current;
+
+        // ── Marker ──
+        if (tool === "marker") {
+          const c = TOOL_COLORS.marker;
+          const mk = L.circleMarker(pts[0], {
+            radius: 7,
+            color: c.stroke,
+            fillColor: c.stroke,
+            fillOpacity: 0.85,
+            weight: 2,
+          }).addTo(map);
+          (mk as any)._aoiId = id;
+          mk.bindPopup(() => {
+            const div = document.createElement("div");
+            div.innerHTML = `📍 ${pts[0][0].toFixed(6)}°N<br/>${pts[0][1].toFixed(6)}°E`;
+            div.appendChild(buildShapePopupActions(mk, "marker", id));
+            return div;
+          });
+          drawLayersRef.current.push(mk);
+          setDrawn([
+            ...drawnFeaturesRef.current.filter((f) => f.properties?.id !== id),
+            {
+              type: "Feature",
+              geometry: { type: "Point", coordinates: [pts[0][1], pts[0][0]] },
+              properties: { id, name, _drawn: true, kind: "marker" },
+            },
+          ]);
+          return;
+        }
+
+        // ── Measure (line) ──
+        if (tool === "measure") {
+          if (pts.length < 2) return;
+          const c = TOOL_COLORS.measure;
+          const line = L.polyline(pts, {
+            color: c.stroke,
+            weight: 3,
+            dashArray: "5, 5",
+          }).addTo(map);
+          (line as any)._aoiId = id;
+          let total = 0;
+          for (let i = 0; i < pts.length - 1; i++)
+            total += L.latLng(pts[i]).distanceTo(L.latLng(pts[i + 1]));
+          const dist =
+            total >= 1000
+              ? `${(total / 1000).toFixed(2)} km`
+              : `${Math.round(total)} m`;
+          line.bindPopup(() => {
+            const div = document.createElement("div");
+            const label = document.createElement("div");
+            label.innerHTML = `📏 ${isRTL ? "المسافة" : "Distance"}: <b>${dist}</b>`;
+            div.appendChild(label);
+            div.appendChild(buildShapePopupActions(line, "measure", id));
+            return div;
+          });
+          drawLayersRef.current.push(line);
+          setDrawn([
+            ...drawnFeaturesRef.current.filter((f) => f.properties?.id !== id),
+            {
+              type: "Feature",
+              geometry: {
+                type: "LineString",
+                coordinates: pts.map(([la, ln]) => [ln, la]),
+              },
+              properties: { id, name, _drawn: true, kind: "measure" },
+            },
+          ]);
+          return;
+        }
+
+        // ── Rectangle / Circle / Polygon ──
+        let layer: any;
+        let kind: "polygon" | "rectangle" | "circle" = "polygon";
+        let regCoords: LatLngPoint[];
+        let feature: GeoJSON.Feature;
+        let c = TOOL_COLORS.polygon;
+        let label = `🔵 ${name} · ≈ ${area} ha`;
+
+        if (tool === "rectangle" && pts.length >= 3) {
+          kind = "rectangle";
+          c = TOOL_COLORS.rectangle;
+          layer = L.rectangle([pts[0], pts[2]], {
+            color: c.stroke,
+            weight: 2,
+            fillColor: c.fill,
+            fillOpacity: 0,
+          }).addTo(map);
+          regCoords = [
+            { lat: pts[0][0], lng: pts[0][1] },
+            { lat: pts[2][0], lng: pts[2][1] },
+          ];
+          feature = makePolygonFeature(name, pts, area, { id, kind });
+          label = `📐 ${name} · ≈ ${area} ha`;
+        } else if (tool === "circle" && pts.length >= 2) {
+          kind = "circle";
+          c = TOOL_COLORS.circle;
+          const radius = map.distance(pts[0], pts[1]);
+          layer = L.circle(pts[0], {
+            radius,
+            color: c.stroke,
+            weight: 2,
+            fillColor: c.fill,
+            fillOpacity: 0,
+          }).addTo(map);
+          regCoords = [
+            { lat: pts[0][0], lng: pts[0][1] },
+            { lat: pts[1][0], lng: pts[1][1] },
+          ];
+          feature = makePolygonFeature(
+            name,
+            circleToPolygonLatLng(pts[0][0], pts[0][1], radius, 64),
+            area,
+            { id, kind },
+          );
+          label = `🟢 ${name} · R: ${radius.toFixed(0)} m · ≈ ${area} ha`;
+        } else {
+          layer = L.polygon(pts, {
+            color: c.stroke,
+            weight: 2,
+            fillColor: c.fill,
+            fillOpacity: 0,
+          }).addTo(map);
+          regCoords = pts.map(([lat, lng]) => ({ lat, lng }));
+          feature = makePolygonFeature(name, pts, area, { id, kind });
+        }
+
+        (layer as any)._aoiId = id;
+        layer.bindPopup(() => {
+          const div = document.createElement("div");
+          const lbl = document.createElement("div");
+          lbl.innerHTML = label;
+          div.appendChild(lbl);
+          div.appendChild(buildShapePopupActions(layer, kind, id));
+          return div;
+        });
+        drawLayersRef.current.push(layer);
+
+        reg?.add({
+          id,
+          name,
+          kind,
+          tool: kind === "polygon" ? "polygon" : kind,
+          layer,
+          feature,
+          areaHa: area,
+          coords: regCoords,
+          stroke: c.stroke,
+        });
+        markSavedSilently(id, feature);
+      } catch (err) {
+        console.warn("Failed to restore saved AOI:", item, err);
+      }
+    });
+
+    console.log("✅ Restored saved AOIs by tool:", counts);
+
+    // الشكل النشط بعد الاسترجاع = الشكل الحالي
+    const activeId = aoiRegistryRef.current?.getActiveId();
+    if (activeId) currentShapeIdRef.current = activeId;
+  };
+
   const buildShapePopupActions = (
     layer: any,
     kind: "polygon" | "rectangle" | "circle" | "marker" | "measure",
+    aoiId?: string,
   ) => {
     const row = document.createElement("div");
     row.style.cssText = "display:flex;gap:6px;margin-top:6px;";
+    const id: string | undefined = aoiId ?? layer?._aoiId;
 
+    // 💾 Save
+    const isSaved = !!id && savedIdsRef.current.has(id);
+    const saveBtn = document.createElement("button");
+    saveBtn.textContent = isSaved
+      ? isRTL
+        ? "✅ تم الحفظ"
+        : "✅ Saved"
+      : isRTL
+        ? "💾 حفظ"
+        : "💾 Save";
+    saveBtn.disabled = isSaved;
+    saveBtn.style.cssText = isSaved
+      ? "background:#22c55e22;border:1px solid #22c55e55;color:#4ade80;padding:4px 10px;border-radius:8px;font-size:11px;cursor:default"
+      : "background:#00c8ff22;border:1px solid #00c8ff55;color:#00c8ff;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
+    saveBtn.onclick = () => {
+      if (id) saveShape(id);
+    };
+
+    // 🗑️ Delete
     const delBtn = document.createElement("button");
     delBtn.textContent = isRTL ? "🗑️ حذف" : "🗑️ Delete";
     delBtn.style.cssText =
       "background:#ef444422;border:1px solid #ef444455;color:#f87171;padding:4px 10px;border-radius:8px;font-size:11px;cursor:pointer";
-    delBtn.onclick = () => deleteSingleShape(layer);
-    row.appendChild(delBtn);
+    delBtn.onclick = () => {
+      deleteSingleShape(layer, id, kind);
+    };
 
+    row.appendChild(saveBtn);
+    row.appendChild(delBtn);
     return row;
   };
 
+  // ═══ الصور الثابتة (Image overlays) — IndexedDB store "imageOverlays" ═══════
   const persistImageOverlays = () => {
-    try {
-      const payload = imageOverlaysRef.current.map((o) => ({
-        id: o.id,
-        name: o.name,
-        src: o.src,
-        bounds: o.bounds,
-      }));
-      localStorage.setItem(IMAGE_OVERLAYS_STORAGE_KEY, JSON.stringify(payload));
-    } catch (_) {}
+    if (!persistDataRef.current) return;
+    const payload = imageOverlaysRef.current.map((o) => ({
+      id: o.id,
+      name: o.name,
+      src: o.src,
+      bounds: o.bounds,
+    }));
+    imageOverlaysReplaceAll(payload).catch((e) =>
+      console.warn("imageOverlays save failed", e),
+    );
   };
 
-  const restoreImageOverlays = () => {
-    const map = mapInstanceRef.current;
-    const L = LRef.current;
-    if (!map || !L) return;
+  const restoreImageOverlays = async () => {
+    if (!persistDataRef.current) return;
     try {
-      const raw = localStorage.getItem(IMAGE_OVERLAYS_STORAGE_KEY);
-      if (!raw) return;
-      const arr = JSON.parse(raw);
-      if (!Array.isArray(arr)) return;
+      let arr: any[] = await imageOverlaysGetAll();
+
+      // migration مرة واحدة من localStorage القديم
+      if (!arr.length) {
+        try {
+          const raw = localStorage.getItem(LEGACY_IMAGE_OVERLAYS_KEY);
+          if (raw) {
+            const legacy = JSON.parse(raw);
+            if (Array.isArray(legacy) && legacy.length) {
+              arr = legacy;
+              await imageOverlaysReplaceAll(legacy);
+            }
+          }
+        } catch (_) {}
+      }
+      try {
+        localStorage.removeItem(LEGACY_IMAGE_OVERLAYS_KEY);
+      } catch (_) {}
+
+      const map = mapInstanceRef.current;
+      const L = LRef.current;
+      if (!map || !L || !arr.length) return;
 
       for (const it of arr) {
         if (!it?.src || !it?.bounds) continue;
+        if (imageOverlaysRef.current.some((o) => o.id === String(it.id)))
+          continue;
         const b = it.bounds as [[number, number], [number, number]];
         const bounds = L.latLngBounds([b[0][0], b[0][1]], [b[1][0], b[1][1]]);
         const layer = L.imageOverlay(it.src, bounds, {
@@ -928,7 +1988,9 @@ export default function LeafletMap({
         });
       }
       refreshOverlaysUi();
-    } catch (_) {}
+    } catch (e) {
+      console.warn("Image overlays restore failed", e);
+    }
   };
 
   const refreshOverlaysUi = () => {
@@ -961,9 +2023,11 @@ export default function LeafletMap({
         } catch (_) {}
       });
       imageOverlaysRef.current = [];
-      try {
-        localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY);
-      } catch (_) {}
+      if (persistDataRef.current) {
+        imageOverlaysClear().catch((e) =>
+          console.warn("imageOverlays clear failed", e),
+        );
+      }
       refreshOverlaysUi();
     };
     title.appendChild(clearBtn);
@@ -990,6 +2054,7 @@ export default function LeafletMap({
         imageOverlaysRef.current = imageOverlaysRef.current.filter(
           (x) => x.id !== ov.id,
         );
+        // replaceAll بقائمة فاضية = مسح الـ store كله (فمفيش حاجة تترجع بعد الريفريش)
         persistImageOverlays();
         refreshOverlaysUi();
       };
@@ -1003,7 +2068,6 @@ export default function LeafletMap({
     const map = mapInstanceRef.current;
     if (!map) return;
 
-    // cancel any ongoing placement
     stopImagePlacement();
 
     const hint = document.createElement("div");
@@ -1019,7 +2083,6 @@ export default function LeafletMap({
     hint.textContent = `Preparing image…`;
     mapRef.current?.appendChild(hint);
 
-    // set placement state immediately so clicks are captured (but blocked until ready)
     placingImageRef.current = {
       file,
       src: "",
@@ -1049,373 +2112,64 @@ export default function LeafletMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onImagePlacerRegister, mapReady]);
 
+  // ── Raster overlay (config === null → "Remove from map": تحليل الشكل الحالي بس) ──
   useEffect(() => {
     if (!onRasterOverlayRegister) return;
     onRasterOverlayRegister((config) => {
-      const map = mapInstanceRef.current;
-      const L = LRef.current;
-      if (!map || !L) return;
-
-      // config === null → "Remove from map" (شوفي التعليق فوق onRasterOverlayRegister
-      // في الـ props) — بنمسح بنفس دالة "Delete Analysis" ونوقف هنا، من غير ما
-      // نكمل لبناء أي layer جديد.
       if (config === null) {
-        clearAllAnalysisOverlaysRef.current();
+        const owner = currentShapeIdRef.current;
+        if (owner) deleteAnalysisFor(owner);
         return;
       }
-      const hasTemplate = !!config.tileUrl && config.tileUrl.includes("{z}");
-      if (!config.dataUrl && !hasTemplate) {
-        console.warn(
-          "Raster overlay skipped: no dataUrl and tileUrl is not an XYZ template",
-          config,
-        );
-        toast.error(
-          isRTL
-            ? "مفيش صورة صالحة للعرض على الخريطة"
-            : "No displayable raster image for the map",
-        );
-        return;
-      }
-
-      // كل analysis ليه key فريد — name + date عشان نعرض نفس الـ analysis مع update
-      const overlayKey = `${config.indexKey}_${config.date}`;
-
-      // ⚠️ لازم نمسح أي تحليل قديم أيًا كان نوعه (raster تاني، Points، Super
-      // Resolution، Swipe) قبل ما نحط الجديد — مش بس نفس النوع — عشان محدش
-      // يفضل واقف تحت الجديد على الخريطة. clearAllAnalysisOverlaysRef هي نفس
-      // الدالة اللي زرار "Delete Analysis" بيستخدمها، فسلوك المسح واحد ومتسق
-      // في كل مكان.
-      clearAllAnalysisOverlaysRef.current();
-
-      const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
-      // ملحوظة: config.tileUrl لازم يكون XYZ template حقيقي (فيه {z}/{x}/{y}).
-      // لو هو مجرد رابط ملف GeoTIFF واحد (زي اللي راجع من raster-calc)، بيبقى
-      // مش صالح كـ tile source خالص (المتصفح مش بيقدر يعرض TIFF كـ tile)،
-      // فبنرجع لـ imageOverlay اللي شغال أصلًا بالـ PNG + bounds الحقيقية.
-      const hasTileTemplate =
-        !!config.tileUrl && config.tileUrl.includes("{z}");
-      const isSceneImage =
-        config.colorRamp === "Scene preview" ||
-        String(config.indexKey).toUpperCase() === "RGB";
-      const layer = hasTileTemplate
-        ? L.tileLayer(config.tileUrl!, {
-            opacity: config.opacity,
-            pane: "imagePane",
-            crossOrigin: "anonymous",
-            maxZoom: 22,
-            // ⚠️ FIX (الأساس): من غير bounds، الـ tileLayer بيحمّل ويعرض أي
-            // tile يقع جوه الـ viewport الحالي — يعني التحليل بيتعرض على
-            // الكرة الأرضية كلها وانتي لو زوّمتي/اتحركتي بره الـ AOI هتلاقيه
-            // لسه ظاهر. bounds هنا بتقفل الـ tileLayer على نفس الـ AOI bbox
-            // المختار بالظبط (زي الـ imageOverlay تمامًا).
-            bounds,
-            noWrap: true,
-          }).addTo(map)
-        : L.imageOverlay(config.dataUrl, bounds, {
-            opacity: config.opacity,
-            pane: "imagePane",
-            // الصورة الأصلية low-res (كلاسات مصنّفة، مش صورة عادية)، فلو المتصفح
-            // كبّرها بـ smooth/bilinear scaling الافتراضي، البقع/النقط الحمرا
-            // والخضرا الصغيرة بتتمسح وتتحول لبقعة ضبابية (زي اللي كان بيبان أخضر
-            // "شايل" فوق الخريطة). pixelated بيخلي كل بكسل مصنّف يبان بحدوده
-            // واضحة زي في صورة السايد بار بالظبط.
-            // ⚠️ pixelated بس للكلاسات المصنّفة (Change Detection). صور المشاهد
-            // (RGB / Scene preview) لازم تتعرض smooth وإلا بتطلع مكعبات ومشوّهة.
-            className: isSceneImage
-              ? "scene-preview-raster-overlay"
-              : "change-detection-raster-overlay",
-          }).addTo(map);
-      rasterOverlayRef.current.set(overlayKey, layer);
-
-      // تشخيص: لو نسبة أبعاد الصورة غير نسبة أبعاد الـ bounds على الخريطة يبقى
-      // الصورة هتتمط (ودي بالظبط اللي بتعمل خطوط أفقية مشوّهة).
-      if (!hasTileTemplate && config.dataUrl) {
-        const probe = new Image();
-        probe.onload = () => {
-          try {
-            const nw = map.project(bounds.getNorthWest(), 0);
-            const se = map.project(bounds.getSouthEast(), 0);
-            const boundsAspect =
-              Math.abs(se.x - nw.x) / Math.max(1e-9, Math.abs(se.y - nw.y));
-            const imgAspect =
-              probe.naturalWidth / Math.max(1, probe.naturalHeight);
-            const ratio = imgAspect / boundsAspect;
-            if (ratio < 0.85 || ratio > 1.15) {
-              console.warn(
-                `⚠️ Raster preview aspect mismatch: image ${probe.naturalWidth}x${probe.naturalHeight} (${imgAspect.toFixed(2)}) vs bounds (${boundsAspect.toFixed(2)}) → الصورة هتتمط. لازم البانل تجيب الـ preview بنفس الـ bbox.`,
-                { bounds: config.bounds },
-              );
-            }
-          } catch (_) {}
-        };
-        probe.src = config.dataUrl;
-      }
-
-      // map.flyToBounds(bounds, { padding: [42, 42], maxZoom: 14, duration: 0.8 });
-      // ❌ اتشالت نقطة الـ sceneMarker (الدائرة السماوي جوه الإطار الأصفر) خالص
-      // بناءً على طلبك — كانت بتتضاف مع كل preview وميتمسحش غير لو المستخدم
-      // قفل الـ popup بتاعها يدويًا، فكانت بتتراكم على الخريطة مع كل تحليل جديد.
-      // دلوقتي التحليل بيظهر (overlay/tile) من غير أي نقطة زيادة فوقه.
+      if (isEchoAfterClear("raster", config)) return;
+      applyRasterOverlay(config);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onRasterOverlayRegister, mapReady]);
 
-  // ── Points render style (Palm Trees "points" mode): نفس فكرة raster
-  // overlay بالظبط لكن بدل صورة واحدة، كل نقطة (نخلة) بتتحط كـ CircleMarker
-  // منفصلة ملوّنة على حسب الكثافة/القيمة بتاعتها، كلهم جوه LayerGroup واحد
-  // عشان يتشالوا/يتحطوا مع بعض بسهولة. ده اللي كان ناقص فعليًا — كانت
-  // مسجّلة بس مفيش حد بيسمعها، فـ "Points" مكنش بيظهر على الخريطة الأساسية
-  // خالص، كان بيرجع لـ fallback SVG جوه السايد بار بس.
+  // ── Points render style (Palm Trees "points" mode) ──────────────────────────
   useEffect(() => {
     if (!onPointsOverlayRegister) return;
     onPointsOverlayRegister((config) => {
-      const map = mapInstanceRef.current;
-      const L = LRef.current;
-      if (!map || !L) return;
-
-      // امسحي أي تحليل قديم أيًا كان نوعه قبل ما ترسمي الجديد — تحليل واحد
-      // بس ظاهر فوق الخريطة في نفس اللحظة (نفس الدالة اللي زرار Delete
-      // Analysis بيستخدمها).
       if (!config) {
-        clearPointsOnlyRef.current();
+        const owner = currentShapeIdRef.current;
+        if (owner) deleteAnalysisFor(owner);
         return;
       }
-      clearAllAnalysisOverlaysRef.current();
-      if (!config.points?.length) return;
-
-      const overlayKey = `${config.indexKey}_${config.date}`;
-      const group = L.layerGroup(
-        config.points.map((p) =>
-          L.circleMarker([p.lat, p.lng], {
-            radius: 4,
-            color: p.color,
-            fillColor: p.color,
-            fillOpacity: config.opacity,
-            opacity: config.opacity,
-            weight: 1,
-          }).bindPopup(
-            `<b>${config.name}</b><br/>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<br/>value: ${p.value.toFixed(3)}`,
-          ),
-        ),
-      ).addTo(map);
-
-      pointsOverlayRef.current.set(overlayKey, group);
+      if (isEchoAfterClear("points", config)) return;
+      applyPointsOverlay(config);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onPointsOverlayRegister, mapReady]);
 
-  // ── Super Resolution: نتيجة الـ SR بتتحط كـ imageOverlay حقيقي فوق التايلز
-  // بنفس bbox الطلب — بالظبط زي الـ raster overlay، فرق واحد إن ده overlay
-  // واحد بس (مفيش تعدد analyses زي raster)، فكل نتيجة جديدة بتستبدل القديمة ──
+  // ── Super Resolution overlay ────────────────────────────────────────────────
   useEffect(() => {
     if (!onSuperResOverlayRegister) return;
     onSuperResOverlayRegister((config) => {
-      const map = mapInstanceRef.current;
-      const L = LRef.current;
-      if (!map || !L) return;
-
-      // امسحي أي تحليل قديم أيًا كان نوعه قبل ما تحطي الجديد (أو لو config
-      // جايه null) — نفس الدالة اللي زرار Delete Analysis بيستخدمها.
       if (!config) {
-        clearSuperResOnlyRef.current();
+        const owner = currentShapeIdRef.current;
+        if (owner) deleteAnalysisFor(owner);
         return;
       }
-      clearAllAnalysisOverlaysRef.current();
-      if (!config.dataUrl) return;
-
-      const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
-      const layer = L.imageOverlay(config.dataUrl, bounds, {
-        opacity: 1,
-        pane: "imagePane",
-        className: "change-detection-raster-overlay",
-      }).addTo(map);
-
-      const marker = L.circleMarker([config.coords.lat, config.coords.lng], {
-        radius: 6,
-        color: "#f97316",
-        fillColor: "#f97316",
-        fillOpacity: 0.75,
-        weight: 2,
-      })
-        .addTo(map)
-        .bindPopup("Super Resolution result");
-
-      superResOverlayRef.current = { layer, marker };
-      map.flyToBounds(bounds, {
-        padding: [42, 42],
-        maxZoom: 16,
-        duration: 0.8,
-      });
+      if (isEchoAfterClear("superRes", config)) return;
+      applySuperResOverlay(config);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onSuperResOverlayRegister, mapReady]);
 
-  // ── Change Detection: real, georeferenced Before/After swipe directly on the map ──
-  // Two stacked L.imageOverlay layers (before + after) covering the exact same AOI
-  // bounds. The "after" layer's own DOM element is clipped with a CSS clip-path
-  // expressed as a percentage of *its own* box — since that box always exactly
-  // spans `bounds` regardless of zoom/pan, a plain 0..1 fraction is enough and
-  // never needs recalculating on zoom. Only the divider handle's on-screen pixel
-  // position needs to be recomputed on pan/zoom (via latLngToContainerPoint).
+  // ── Change Detection: real, georeferenced Before/After swipe on the map ────
   useEffect(() => {
     if (!onSwipeOverlayRegister) return;
     onSwipeOverlayRegister((config) => {
-      const map = mapInstanceRef.current;
-      const L = LRef.current;
-
-      // امسحي أي تحليل قديم أيًا كان نوعه الأول (update أو teardown) — نفس
-      // الدالة اللي زرار Delete Analysis بيستخدمها.
       if (!config) {
-        clearSwipeOnlyRef.current();
+        const owner = currentShapeIdRef.current;
+        if (owner) deleteAnalysisFor(owner);
         return;
       }
-      clearAllAnalysisOverlaysRef.current();
-      if (!map || !L) return;
-
-      const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
-      const beforeLayer = L.imageOverlay(config.beforeUrl, bounds, {
-        pane: "imagePane",
-        opacity: 1,
-      }).addTo(map);
-      const afterLayer = L.imageOverlay(config.afterUrl, bounds, {
-        pane: "imagePane",
-        opacity: 1,
-      }).addTo(map);
-
-      // UI: divider line + drag handle + before/after labels, as a plain DOM
-      // overlay sitting above the imagePane (350) but positioned/sized manually
-      // since it isn't a leaflet layer itself (needs free pixel-space dragging).
-      const ui = L.DomUtil.create(
-        "div",
-        "swipe-compare-ui",
-        map.getContainer(),
-      ) as HTMLDivElement;
-      ui.style.cssText =
-        "position:absolute; inset:0; z-index:610; pointer-events:none; overflow:hidden;";
-
-      const line = document.createElement("div");
-      line.style.cssText =
-        "position:absolute; width:2px; background:#22d3ee; box-shadow:0 0 10px rgba(34,211,238,.8); pointer-events:none;";
-      ui.appendChild(line);
-
-      const handle = document.createElement("div");
-      handle.style.cssText =
-        "position:absolute; width:34px; height:34px; margin-left:-17px; margin-top:-17px; border-radius:9999px; background:#020817ee; border:2px solid #22d3ee; color:#22d3ee; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; cursor:ew-resize; pointer-events:all; box-shadow:0 4px 16px rgba(0,0,0,.55);";
-      handle.textContent = "↔";
-      ui.appendChild(handle);
-
-      // CRITICAL: without this, dragging the handle also bubbles up as a
-      // click/mousedown to the Leaflet map container underneath. Leaflet then
-      // fires its own "click" handler (onFeatureClick with a virtual point
-      // feature), which overwrites selectedFeature -> AOI bounds change ->
-      // the swipe config gets recomputed with the wrong (or null) bounds and
-      // vanishes. disableClickPropagation stops click/dblclick/mousedown/
-      // touchstart/contextmenu from ever reaching the map for this element.
-      L.DomEvent.disableClickPropagation(handle);
-      L.DomEvent.disableClickPropagation(ui);
-
-      const beforeLabel = document.createElement("div");
-      beforeLabel.textContent = config.beforeLabel ?? "Before";
-      beforeLabel.style.cssText =
-        "position:absolute; background:rgba(0,0,0,.7); color:#7dd3fc; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
-      ui.appendChild(beforeLabel);
-
-      const afterLabel = document.createElement("div");
-      afterLabel.textContent = config.afterLabel ?? "After";
-      afterLabel.style.cssText =
-        "position:absolute; background:rgba(0,0,0,.7); color:#fdba74; font-size:11px; font-weight:700; letter-spacing:.03em; padding:4px 10px; border-radius:6px; pointer-events:none; white-space:nowrap;";
-      ui.appendChild(afterLabel);
-
-      let position = 0.5; // fraction 0..1 across the AOI width — before on the left, after on the right
-
-      const applyClip = () => {
-        const afterEl = (afterLayer as any).getElement?.() as
-          | HTMLElement
-          | undefined;
-        if (afterEl) afterEl.style.clipPath = `inset(0 0 0 ${position * 100}%)`;
-      };
-
-      const reposition = () => {
-        const nw = map.latLngToContainerPoint(bounds.getNorthWest());
-        const se = map.latLngToContainerPoint(bounds.getSouthEast());
-        const left = Math.min(nw.x, se.x),
-          right = Math.max(nw.x, se.x);
-        const top = Math.min(nw.y, se.y),
-          bottom = Math.max(nw.y, se.y);
-        const x = left + (right - left) * position;
-        line.style.left = `${x}px`;
-        line.style.top = `${top}px`;
-        line.style.height = `${Math.max(0, bottom - top)}px`;
-        handle.style.left = `${x}px`;
-        handle.style.top = `${(top + bottom) / 2}px`;
-        beforeLabel.style.left = `${left + 10}px`;
-        beforeLabel.style.top = `${top + 10}px`;
-        afterLabel.style.left = `${Math.max(left + 10, right - 10 - afterLabel.offsetWidth)}px`;
-        afterLabel.style.top = `${top + 10}px`;
-      };
-
-      afterLayer.on("load", () => {
-        applyClip();
-        reposition();
-      });
-      beforeLayer.on("load", reposition);
-      applyClip();
-      reposition();
-
-      const onMapMove = () => reposition();
-      map.on("move", onMapMove);
-      map.on("zoom", onMapMove);
-
-      let dragging = false;
-      const onPointerDown = (e: PointerEvent) => {
-        dragging = true;
-        handle.setPointerCapture(e.pointerId);
-        e.preventDefault();
-        e.stopPropagation();
-        // avoid the map itself panning/zooming while the handle is dragged
-        map.dragging.disable();
-      };
-      const onPointerMove = (e: PointerEvent) => {
-        if (!dragging) return;
-        const nw = map.latLngToContainerPoint(bounds.getNorthWest());
-        const se = map.latLngToContainerPoint(bounds.getSouthEast());
-        const left = Math.min(nw.x, se.x),
-          right = Math.max(nw.x, se.x);
-        const rect = map.getContainer().getBoundingClientRect();
-        const clientX = e.clientX - rect.left;
-        const frac = (clientX - left) / Math.max(1, right - left);
-        position = Math.max(0, Math.min(1, frac));
-        applyClip();
-        reposition();
-      };
-      const onPointerUp = () => {
-        dragging = false;
-        map.dragging.enable();
-      };
-
-      handle.addEventListener("pointerdown", onPointerDown);
-      window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp);
-
-      swipeOverlayRef.current = {
-        cleanup: () => {
-          map.off("move", onMapMove);
-          map.off("zoom", onMapMove);
-          handle.removeEventListener("pointerdown", onPointerDown);
-          window.removeEventListener("pointermove", onPointerMove);
-          window.removeEventListener("pointerup", onPointerUp);
-          try {
-            map.dragging.enable();
-          } catch {}
-          try {
-            map.removeLayer(beforeLayer);
-          } catch {}
-          try {
-            map.removeLayer(afterLayer);
-          } catch {}
-          try {
-            ui.remove();
-          } catch {}
-        },
-      };
+      if (isEchoAfterClear("swipe", config)) return;
+      applySwipeOverlay(config);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onSwipeOverlayRegister, mapReady]);
 
   // Escape cancels only the in-progress interaction.
@@ -1447,7 +2201,6 @@ export default function LeafletMap({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // clear
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!cfg?.enabled || !fc?.features?.length) return;
 
@@ -1456,7 +2209,6 @@ export default function LeafletMap({
     const color = cfg.color ?? "#22d3ee";
     const opacity = cfg.opacity ?? 0.55;
 
-    // approximate meters-per-pixel at current latitude for extrusion scaling
     const center = map.getCenter();
     const lat = center?.lat ?? 0;
     const zoom = map.getZoom();
@@ -1468,16 +2220,13 @@ export default function LeafletMap({
       Math.max(a, Math.min(b, n));
 
     const walkRings = (coords: any): any[] => {
-      // returns array of rings (each ring is array of [lng,lat])
       if (!coords) return [];
-      // Polygon: [ring[]]
       if (
         Array.isArray(coords) &&
         Array.isArray(coords[0]) &&
         typeof coords[0][0] === "number"
       )
         return [coords];
-      // MultiPolygon: [[ring[]], ...]
       if (
         Array.isArray(coords) &&
         Array.isArray(coords[0]) &&
@@ -1494,17 +2243,15 @@ export default function LeafletMap({
 
       const rawH = (f.properties as any)?.[heightProp];
       const hM = Number.isFinite(Number(rawH)) ? Number(rawH) : fallbackH;
-      const hPx = clamp(hM / Math.max(mpp, 0.0001), 6, 90); // keep it readable
+      const hPx = clamp(hM / Math.max(mpp, 0.0001), 6, 90);
       const dx = 0.7 * hPx;
       const dy = 1.0 * hPx;
 
       const rings = walkRings(g.coordinates);
       for (const ring of rings) {
-        // ring: array of [lng,lat]
         const pts = ring.map((c: any) => toPx(L.latLng(c[1], c[0])));
         if (pts.length < 3) continue;
 
-        // top polygon
         ctx.save();
         ctx.globalAlpha = opacity;
         ctx.fillStyle = color;
@@ -1518,7 +2265,6 @@ export default function LeafletMap({
         ctx.fill();
         ctx.stroke();
 
-        // side walls (simple quads per edge)
         ctx.globalAlpha = Math.max(0.18, opacity - 0.18);
         ctx.fillStyle = "rgba(0,0,0,0.22)";
         for (let i = 0; i < pts.length - 1; i++) {
@@ -1551,7 +2297,6 @@ export default function LeafletMap({
     const styleFn = (feature: any) => {
       const p = feature?.properties ?? {};
 
-      // ── University service-area polygons ─────────────────────────────────
       if (p._layerType === "university" || p.FromBreak !== undefined) {
         const uc = p._fillColor
           ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
@@ -1566,7 +2311,6 @@ export default function LeafletMap({
         };
       }
 
-      // ── الافتراضي العام (غير الجامعات) ─────────────────────────────────────
       return {
         color: geoJsonStyle?.color ?? "#00c8ff",
         weight: geoJsonStyle?.weight ?? 1.5,
@@ -1590,7 +2334,6 @@ export default function LeafletMap({
       if (!feature.properties) return;
       const p = feature.properties;
 
-      // ── University tooltip ────────────────────────────────────────────────
       if (p._layerType === "university" || p.FromBreak !== undefined) {
         const uc = p._fillColor
           ? { fill: p._fillColor }
@@ -1617,7 +2360,6 @@ export default function LeafletMap({
         return;
       }
 
-      // ── الافتراضي العام (غير الجامعات) — بدون tooltip مخصص ─────────────────
       lyr.on("click", (e: any) => {
         L.DomEvent.stopPropagation(e);
         if (onFeatureClick) onFeatureClick(feature as GeoJSON.Feature);
@@ -1631,17 +2373,6 @@ export default function LeafletMap({
       });
     };
 
-    // ── Performance: build the layer incrementally instead of feeding all
-    // features to L.geoJSON() in one synchronous call ───────────────────────
-    // Even with the Canvas renderer, Leaflet still has to project coordinates,
-    // run styleFn/onEachFeatureFn, and construct a layer object for every
-    // single feature — that JS work alone can block the main thread for
-    // seconds on a dataset this size (this was the real remaining cause of
-    // the ~3s Total Blocking Time). We create one empty L.geoJSON layer up
-    // front (so resetStyle()/getBounds() elsewhere keep working exactly like
-    // before) and feed it features in small batches across multiple
-    // requestAnimationFrame turns, so the browser always gets a chance to
-    // paint between batches instead of one giant blocking task.
     const layer = L.geoJSON(undefined, {
       renderer: L.canvas({ padding: 0.5 }),
       style: styleFn,
@@ -1659,9 +2390,6 @@ export default function LeafletMap({
           ? [geoJsonData]
           : [];
 
-    // Fly to the full extent right away — computed from the raw GeoJSON via
-    // turf (pure math, no DOM/layer cost), so the map doesn't have to wait
-    // for every batch to finish rendering before it can fly to bounds.
     if (geoJsonFitBounds && allFeatures.length) {
       try {
         const [minX, minY, maxX, maxY] = turfBbox(geoJsonData as any);
@@ -1679,7 +2407,7 @@ export default function LeafletMap({
     let cancelled = false;
     let rafId: number | null = null;
     const BATCH_SIZE = 50;
-    const FRAME_BUDGET_MS = 8; // keep each frame well under the ~50ms "long task" threshold
+    const FRAME_BUDGET_MS = 8;
     let cursor = 0;
 
     const processBatches = () => {
@@ -1714,13 +2442,12 @@ export default function LeafletMap({
     };
   }, [geoJsonData, mapReady, geoJsonFitBounds, geoJsonStyle, onFeatureClick]);
 
-  // ── Extra GeoJSON layer (شيكات الجامعات) ─────────────────────────────────
+    // ── Extra GeoJSON layer (شيكات الجامعات) ─────────────────────────────────
   useEffect(() => {
     const map = mapInstanceRef.current;
     const L = LRef.current;
     if (!map || !L) return;
 
-    // امسح القديمة
     if (extraGeoJsonLayerRef.current) {
       map.removeLayer(extraGeoJsonLayerRef.current);
       extraGeoJsonLayerRef.current = null;
@@ -1736,8 +2463,12 @@ export default function LeafletMap({
           ? [extraGeoJsonData]
           : [];
     const isGenerated = (f: any) =>
-      f?.properties?._generated === "weather-contour" || f?.properties?._generated === "elevation-contour";
-    const regularData = { type: "FeatureCollection", features: allFeats.filter((f) => !isGenerated(f)) };
+      f?.properties?._generated === "weather-contour" ||
+      f?.properties?._generated === "elevation-contour";
+    const regularData = {
+      type: "FeatureCollection",
+      features: allFeats.filter((f) => !isGenerated(f)),
+    };
     const generatedFeats = allFeats.filter(isGenerated);
     let contourLayer: any = null;
     let contourRenderer: any = null;
@@ -1752,7 +2483,6 @@ export default function LeafletMap({
             ? Math.max(0, Math.min(1, p._opacity))
             : 1;
 
-        // ── University service areas ───────────────────────────────────────────
         if (p._layerType === "university" || p.FromBreak !== undefined) {
           const uc = p._fillColor
             ? { fill: p._fillColor, stroke: p._strokeColor ?? p._fillColor }
@@ -1767,7 +2497,11 @@ export default function LeafletMap({
         }
 
         // ── Generated contour / isotherm lines: pure strokes, no fill ────────
-        if (p._generated === "weather-contour" || p.Contour !== undefined || p.TempC !== undefined) {
+        if (
+          p._generated === "weather-contour" ||
+          p.Contour !== undefined ||
+          p.TempC !== undefined
+        ) {
           return {
             color: p._color ?? p.color ?? "#00c8ff",
             weight: 2.5,
@@ -1791,7 +2525,6 @@ export default function LeafletMap({
       onEachFeature: (feature: any, lyr: any) => {
         const p = feature?.properties ?? {};
 
-        // ── إذا كانت داتا جامعات — tooltip مخصص ──────────────────────────────
         if (p._layerType === "university" || p.FromBreak !== undefined) {
           const uc = p._fillColor
             ? { fill: p._fillColor }
@@ -1820,10 +2553,8 @@ export default function LeafletMap({
           return;
         }
 
-        // ── داتا مرفوعة (GeoJSON عادي) — اعرض كل الـ properties ───────────────
         const propKeys = Object.keys(p).filter((k) => !k.startsWith("_"));
         if (propKeys.length > 0) {
-          // Tooltip: أول 3 fields بس
           const preview = propKeys
             .slice(0, 3)
             .map(
@@ -1835,7 +2566,6 @@ export default function LeafletMap({
             `<div style="font-size:.72rem;line-height:1.6;padding:2px 4px">${preview}</div>`,
             { sticky: true, className: "ndvi-tooltip" },
           );
-          // Popup: كل الـ properties عند الكليك
           const allProps = propKeys
             .map(
               (k) =>
@@ -1866,26 +2596,40 @@ export default function LeafletMap({
           map.createPane("contourPane");
           map.getPane("contourPane")!.style.zIndex = "450";
         }
-        contourLayer = L.geoJSON({ type: "FeatureCollection", features: generatedFeats } as any, {
-          pane: "contourPane",
-          renderer: (contourRenderer = L.svg({ pane: "contourPane" })),
-          style: (f: any) => {
-            const p = f?.properties ?? {};
-            const op = typeof p._opacity === "number" ? Math.max(0, Math.min(1, p._opacity)) : 1;
-            return {
-              color: p._color ?? p.color ?? "#00c8ff",
-              weight: 2.5,
-              opacity: 0.95 * op,
-              fill: false,
-            };
+        contourLayer = L.geoJSON(
+          { type: "FeatureCollection", features: generatedFeats } as any,
+          {
+            pane: "contourPane",
+            renderer: (contourRenderer = L.svg({ pane: "contourPane" })),
+            style: (f: any) => {
+              const p = f?.properties ?? {};
+              const op =
+                typeof p._opacity === "number"
+                  ? Math.max(0, Math.min(1, p._opacity))
+                  : 1;
+              return {
+                color: p._color ?? p.color ?? "#00c8ff",
+                weight: 2.5,
+                opacity: 0.95 * op,
+                fill: false,
+              };
+            },
+            onEachFeature: (f: any, lyr: any) => {
+              const p = f?.properties ?? {};
+              const label =
+                p.TempC !== undefined
+                  ? `${p.TempC} °C`
+                  : p.Contour !== undefined
+                    ? `${p.Contour} m`
+                    : "";
+              if (label)
+                lyr.bindTooltip(label, {
+                  sticky: true,
+                  className: "ndvi-tooltip",
+                });
+            },
           },
-          onEachFeature: (f: any, lyr: any) => {
-            const p = f?.properties ?? {};
-            const label =
-              p.TempC !== undefined ? `${p.TempC} °C` : p.Contour !== undefined ? `${p.Contour} m` : "";
-            if (label) lyr.bindTooltip(label, { sticky: true, className: "ndvi-tooltip" });
-          },
-        }).addTo(map);
+        ).addTo(map);
         if (contourRenderer?._container) {
           contourRenderer._container.style.maxWidth = "none";
           contourRenderer._container.style.maxHeight = "none";
@@ -1903,11 +2647,15 @@ export default function LeafletMap({
 
     return () => {
       if (contourLayer) {
-        try { map.removeLayer(contourLayer); } catch (_) {}
+        try {
+          map.removeLayer(contourLayer);
+        } catch (_) {}
         contourLayer = null;
       }
       if (contourRenderer) {
-        try { map.removeLayer(contourRenderer); } catch (_) {}
+        try {
+          map.removeLayer(contourRenderer);
+        } catch (_) {}
         contourRenderer = null;
       }
       if (extraGeoJsonLayerRef.current) {
@@ -1942,22 +2690,40 @@ export default function LeafletMap({
   useEffect(() => {
     const map = mapInstanceRef.current;
     const L = LRef.current;
+
     if (!map || !L || !initialFeatures?.length) return;
 
-    // امسح أي layers قديمة من load سابق
-    initialFeaturesLayerRef.current.forEach((layer) => {
-      try {
-        map.removeLayer(layer);
-      } catch (_) {}
-      aoiRegistryRef.current?.removeByLayer(layer);
-    });
-    initialFeaturesLayerRef.current = [];
+    // شيل بس الـ layers اللي اتشال id بتاعها من initialFeatures (مش كلهم) — عشان ما نعيدش رسم اللي المستخدم مسحه
+    const incomingIds = new Set(
+      initialFeatures
+        .map((f) => f.properties?.id)
+        .filter(Boolean)
+        .map(String),
+    );
+    initialFeaturesLayerRef.current = initialFeaturesLayerRef.current.filter(
+      (layer) => {
+        const lid = (layer as any)?._aoiId;
+        if (lid && incomingIds.has(String(lid))) return true;
+        try {
+          map.removeLayer(layer);
+        } catch (_) {}
+        drawLayersRef.current = drawLayersRef.current.filter(
+          (l) => l !== layer,
+        );
+        aoiRegistryRef.current?.removeByLayer(layer);
+        return false;
+      },
+    );
 
     const c = TOOL_COLORS.polygon;
     const bounds: any[] = [];
 
     initialFeatures.forEach((feature) => {
       try {
+        const pid = feature.properties?.id;
+        if (pid && layerExists(String(pid))) return; // اتسترجع قبل كده من الـ DB
+        if (pid && isDeleted(String(pid))) return; // المستخدم مسحه
+
         const geom = feature.geometry;
         const props = feature.properties ?? {};
         const name = String(props.name ?? "Restored Shape");
@@ -1965,7 +2731,6 @@ export default function LeafletMap({
 
         // ── Polygon / Rectangle ───────────────────────────────────────────────
         if (geom.type === "Polygon") {
-          // GeoJSON coords: [[[lng, lat], ...]]  → Leaflet: [[lat, lng], ...]
           const ring = geom.coordinates[0].map(([lng, lat]: number[]) => [
             lat,
             lng,
@@ -1977,31 +2742,34 @@ export default function LeafletMap({
             fillOpacity: 0,
           }).addTo(map);
 
+          const aoiId = String(props.id ?? newAoiId());
+          (poly as any)._aoiId = aoiId;
+
+          markSavedSilently(aoiId, {
+            ...feature,
+            properties: { ...props, id: aoiId },
+          });
+
+          // بيترسم كـ polygon عادي → نسجّله كـ polygon عشان الـ editor يشتغل صح
           poly.bindPopup(() => {
             const div = document.createElement("div");
             div.innerHTML = `🔵 ${name}${area ? ` · ≈ ${area} ha` : ""}`;
-            div.appendChild(buildShapePopupActions(poly, "polygon"));
+            div.appendChild(buildShapePopupActions(poly, "polygon", aoiId));
             return div;
           });
 
           drawLayersRef.current.push(poly);
           initialFeaturesLayerRef.current.push(poly);
 
-          // سجّل الـ AOI المستعاد في القائمة (آخر واحد بيبقى النشط)
-          const aoiId = String(props.id ?? newAoiId());
-          const aoiKind =
-            props.kind === "rectangle" || props.kind === "circle"
-              ? props.kind
-              : "polygon";
           aoiRegistryRef.current?.add({
             id: aoiId,
             name,
-            kind: aoiKind,
+            kind: "polygon",
             tool: "polygon",
             layer: poly,
             feature: {
               ...feature,
-              properties: { ...props, id: aoiId, kind: aoiKind },
+              properties: { ...props, id: aoiId, kind: "polygon" },
             },
             areaHa: area,
             coords: ring.map(([lat, lng]: number[]) => ({ lat, lng })),
@@ -2013,7 +2781,7 @@ export default function LeafletMap({
           } catch (_) {}
         }
 
-        // ── Circle (bounds approximation) ─────────────────────────────────────
+        // ── Point ─────────────────────────────────────────────────────────────
         if (geom.type === "Point") {
           const [lng, lat] = geom.coordinates as number[];
           const marker = L.circleMarker([lat, lng], {
@@ -2023,10 +2791,22 @@ export default function LeafletMap({
             fillOpacity: 0.85,
             weight: 2,
           }).addTo(map);
+          (marker as any)._aoiId = String(props.id ?? newAoiId());
+
+          markSavedSilently((marker as any)._aoiId, {
+            ...feature,
+            properties: { ...props, id: (marker as any)._aoiId },
+          });
           marker.bindPopup(() => {
             const div = document.createElement("div");
             div.innerHTML = `📍 ${name}`;
-            div.appendChild(buildShapePopupActions(marker, "marker"));
+            div.appendChild(
+              buildShapePopupActions(
+                marker,
+                "marker",
+                (marker as any)._aoiId,
+              ),
+            );
             return div;
           });
           drawLayersRef.current.push(marker);
@@ -2043,10 +2823,17 @@ export default function LeafletMap({
             color: TOOL_COLORS.measure.stroke,
             weight: 2.5,
           }).addTo(map);
+          (line as any)._aoiId = String(props.id ?? newAoiId());
+          markSavedSilently((line as any)._aoiId, {
+            ...feature,
+            properties: { ...props, id: (line as any)._aoiId },
+          });
           line.bindPopup(() => {
             const div = document.createElement("div");
             div.innerHTML = `📏 ${name}`;
-            div.appendChild(buildShapePopupActions(line, "measure"));
+            div.appendChild(
+              buildShapePopupActions(line, "measure", (line as any)._aoiId),
+            );
             return div;
           });
           drawLayersRef.current.push(line);
@@ -2060,21 +2847,20 @@ export default function LeafletMap({
       }
     });
 
-    // خلّي الـ AOI النشط بعد الاستعادة هو اللي الـ panels بتقرأه (بدون ما نفتح أي panel)
     const reg = aoiRegistryRef.current;
     const activeId = reg?.getActiveId();
     const activeEntry = activeId ? reg?.get(activeId) : null;
     if (activeEntry) {
       lastCoordsRef.current = activeEntry.coords;
       lastToolRef.current = "polygon";
+      currentShapeIdRef.current = activeEntry.id;
     }
 
-    // Fly to الـ bounds بتاعت كل الـ features المرسومة
     if (bounds.length) {
       try {
         const combined = bounds.reduce(
           (acc, b) => acc.extend(b),
-          L.latLngBounds(bounds[0]),
+          L.latLngBounds(bounds[0].getSouthWest(), bounds[0].getNorthEast()),
         );
         if (combined.isValid()) {
           map.flyToBounds(combined, {
@@ -2140,7 +2926,6 @@ export default function LeafletMap({
     if (pts.length < 3) return { ok: false, msg: "Not enough points" };
 
     const feature = makePolygonFeature("temp", pts, 0);
-
     const result = validateAOI(feature);
 
     if (!result.valid) {
@@ -2158,8 +2943,6 @@ export default function LeafletMap({
     metadata: CaptureMetadata,
   ) => {
     // ── AOI validation: no self-intersection + within max size ────────────────
-    // Only meaningful for polygon-like shapes with >= 3 points; markers/measure
-    // lines (areaSizeHa === 0, < 3 points) skip this check.
     if (coordinates.length >= 3) {
       const feature = makePolygonFeature(
         metadata.areaName,
@@ -2196,11 +2979,6 @@ export default function LeafletMap({
         viewportBounds,
       } = captureResult;
       onCapture?.(captureResult);
-      // ⚠️ largeBlob بيتحسب دايمًا محليًا عشان الـ preview في الواجهة (MapClient
-      // بيخزن largeUrl حتى مع captureTarget === "small")، بس ده مش معناه إنه
-      // لازم يترفع للباك. الباك دلوقتي dummy مش بيعمل حاجة بالصورة، فرفع صورتين
-      // (small + large) على كل capture واحد كان بيضاعف حجم الأپلود من غير أي
-      // فايدة فعلية. بنرفع بس الصورة اللي فعلاً مطلوبة حسب captureTarget.
       const res = await sendToBackend(
         smallBlob,
         captureTarget === "large" ? largeBlob : undefined,
@@ -2215,9 +2993,8 @@ export default function LeafletMap({
     }
   };
 
-  // ── Start editing an existing finished AOI layer (move vertices / resize) ──
   const finishPolygon = async (map: any, L: any) => {
-    const pts = drawPointsRef.current;
+    const pts: [number, number][] = [...drawPointsRef.current];
 
     const check = validatePolygonBeforeSave(pts);
     if (!check.ok) {
@@ -2229,6 +3006,10 @@ export default function LeafletMap({
       tempLayerRef.current = null;
     }
     if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
+
+    // الشكل خلص → شيل نقط الرسم المؤقتة وصفّر الحالة فوراً
+    clearDraftMarkers();
+    drawPointsRef.current = [];
 
     const c = TOOL_COLORS.polygon;
     const poly = L.polygon(pts, {
@@ -2243,34 +3024,36 @@ export default function LeafletMap({
     const polygon = turfPolygon([coords]);
     const area = parseFloat((turfArea(polygon) / 10000).toFixed(1));
 
+    const reg = aoiRegistryRef.current;
+    const aoiId = newAoiId();
+    (poly as any)._aoiId = aoiId;
+    const aoiName = reg?.nextName("Drawn Polygon") ?? "Drawn Polygon";
+
     poly
       .bindPopup(() => {
         const div = document.createElement("div");
         const label = document.createElement("div");
         label.innerHTML = `🔵 ${t.polygon} · ≈ ${area} ${t.ha}`;
         div.appendChild(label);
-        div.appendChild(buildShapePopupActions(poly, "polygon"));
+        div.appendChild(buildShapePopupActions(poly, "polygon", aoiId));
         return div;
       })
       .openPopup();
 
-    const reg = aoiRegistryRef.current;
-    const aoiId = newAoiId();
-    const aoiName = reg?.nextName("Drawn Polygon") ?? "Drawn Polygon";
     const feature = makePolygonFeature(aoiName, pts, area, {
       id: aoiId,
       kind: "polygon",
     });
 
-    // 💾 1. الحفظ في IndexedDB لتثبيت الشكل محلياً
-    saveAOI({
+    // 1. pending لحد ما المستخدم يدوس Save / Save All
+    upsertShape(aoiId, feature, {
       id: aoiId,
       name: aoiName,
       tool: "polygon" as any,
       coords: pts.map(([lat, lng]: [number, number]) => ({ lat, lng })) as any,
       areaHa: area,
       createdAt: new Date().toISOString(),
-    }).catch((e) => console.error("Polygon save failed", e));
+    });
 
     // 2. التحديث في الـ Registry للواجهة
     reg?.add({
@@ -2284,6 +3067,7 @@ export default function LeafletMap({
       coords: pts.map(([lat, lng]: [number, number]) => ({ lat, lng })),
       stroke: c.stroke,
     });
+    currentShapeIdRef.current = aoiId;
 
     onAreaSelected(aoiName, area, feature);
     onFeatureClick?.(feature);
@@ -2309,73 +3093,126 @@ export default function LeafletMap({
       };
       await handleCapture(canvasRef.current, map, L, coordinates, metadata);
     }
-    draftLayersRef.current = [];
-    drawPointsRef.current = [];
   };
+
   const finishMeasure = (map: any, L: any) => {
-    const pts = drawPointsRef.current;
+    const pts: [number, number][] = [...drawPointsRef.current];
+
     if (pts.length < 2) return;
 
-    // إزالة الطبقات المؤقتة وزر الإنهاء
     if (tempLayerRef.current) {
       map.removeLayer(tempLayerRef.current);
       tempLayerRef.current = null;
     }
-    if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
+
+    if (closeBtnRef.current) {
+      closeBtnRef.current.style.display = "none";
+    }
+
+    clearDraftMarkers();
+    drawPointsRef.current = [];
 
     const c = TOOL_COLORS.measure;
-    // رسم المسار على الخريطة
+
     const line = L.polyline(pts, {
       color: c.stroke,
       weight: 3,
       dashArray: "5, 5",
     }).addTo(map);
+
     drawLayersRef.current.push(line);
 
-    // حساب المسافة الإجمالية بالمتر/الكيلومتر
     let totalMeters = 0;
     for (let i = 0; i < pts.length - 1; i++) {
       totalMeters += L.latLng(pts[i]).distanceTo(L.latLng(pts[i + 1]));
     }
+
     const distanceFormatted =
       totalMeters >= 1000
         ? `${(totalMeters / 1000).toFixed(2)} km`
         : `${Math.round(totalMeters)} m`;
 
-    // ربط النافذة المنبثقة (Popup) بالخط
+    const aoiId = newAoiId();
+    (line as any)._aoiId = aoiId;
+    (line as any).__savedAoiId = aoiId;
+
+    const lineFeature: GeoJSON.Feature = {
+      type: "Feature",
+      geometry: {
+        type: "LineString",
+        coordinates: pts.map(([lat, lng]) => [lng, lat]),
+      },
+      properties: {
+        id: aoiId,
+        name: `Measurement (${distanceFormatted})`,
+        _drawn: true,
+        kind: "measure",
+      },
+    };
+
     line
       .bindPopup(() => {
         const div = document.createElement("div");
+
         const label = document.createElement("div");
-        label.innerHTML = `📏 ${isRTL ? "المسافة" : "Distance"}: <b>${distanceFormatted}</b>`;
+        label.innerHTML = `📏 ${
+          isRTL ? "المسافة" : "Distance"
+        }: <b>${distanceFormatted}</b>`;
         div.appendChild(label);
-        div.appendChild(buildShapePopupActions(line, "measure"));
+
+        div.appendChild(buildShapePopupActions(line, "measure", aoiId));
         return div;
       })
       .openPopup();
 
-    // ⬇️ التخزين في IndexedDB ⬇️
-    const aoiId = crypto.randomUUID();
-    (line as any)._aoiId = aoiId;
-
-    saveAOI({
+    // pending لحد Save — الإحداثيات بنحفظها {lat,lng} زي باقي الأشكال
+    upsertShape(aoiId, lineFeature, {
       id: aoiId,
       name: `Measurement (${distanceFormatted})`,
-      tool: "polygon", // يتم تخزين المسار كقائمة نقاط
-      coords: [...pts],
+      tool: "measure" as any,
+      coords: pts.map(([lat, lng]) => ({ lat, lng })) as any,
       areaHa: 0,
       createdAt: new Date().toISOString(),
-    }).catch((e) => console.error("Measure save failed", e));
+    });
 
-    // تنظيف المصفوفات المؤقتة
-    draftLayersRef.current = [];
-    drawPointsRef.current = [];
+    lastCoordsRef.current = pts.map(([lat, lng]) => ({
+      lat,
+      lng,
+    }));
+    lastToolRef.current = "measure";
   };
 
   useEffect(() => {
     if (typeof window === "undefined" || mapInstanceRef.current) return;
 
-    import("leaflet").then((L) => {
+    import("leaflet").then(async (L) => {
+      // ✅ حمّل الـ deleted ids + آخر view من IndexedDB قبل ما نبني الخريطة
+      //    (restore بيعتمد على isDeleted بشكل synchronous)
+      await loadDeletedIds();
+
+      const DEFAULT_VIEW = { lat: 21.54, lng: 39.19, zoom: 11 };
+      const validView = (p: any) =>
+        Number.isFinite(p?.lat) &&
+        Number.isFinite(p?.lng) &&
+        Number.isFinite(p?.zoom);
+      let initialView = DEFAULT_VIEW;
+      try {
+        const v = await kvGet<{ lat: number; lng: number; zoom: number }>(
+          VIEW_KEY,
+        );
+        if (validView(v)) {
+          initialView = v!;
+        } else {
+          // legacy localStorage (مرة واحدة)
+          const rawView = localStorage.getItem(LEGACY_VIEW_KEY);
+          if (rawView) {
+            const parsed = JSON.parse(rawView);
+            if (validView(parsed)) initialView = parsed;
+            localStorage.removeItem(LEGACY_VIEW_KEY);
+          }
+        }
+      } catch (_) {}
+
       if (!mapRef.current || mapInstanceRef.current) return;
       LRef.current = L;
 
@@ -2387,24 +3224,6 @@ export default function LeafletMap({
         shadowUrl:
           "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
       });
-
-      // ── استرجاع آخر مكان/زوم كان فاتحهم اليوزر بدل ما نرجع للسعودية كل مرة ──
-      const LAST_VIEW_STORAGE_KEY = "geosense_last_map_view";
-      const DEFAULT_VIEW = { lat: 21.54, lng: 39.19, zoom: 11 };
-      let initialView = DEFAULT_VIEW;
-      try {
-        const rawView = localStorage.getItem(LAST_VIEW_STORAGE_KEY);
-        if (rawView) {
-          const parsed = JSON.parse(rawView);
-          if (
-            Number.isFinite(parsed?.lat) &&
-            Number.isFinite(parsed?.lng) &&
-            Number.isFinite(parsed?.zoom)
-          ) {
-            initialView = parsed;
-          }
-        }
-      } catch (_) {}
 
       const map = L.map(mapRef.current!, {
         center: [initialView.lat, initialView.lng],
@@ -2423,28 +3242,25 @@ export default function LeafletMap({
       mapInstanceRef.current = map;
       mapObjRef.current = map;
 
-      // بعد أي تحريك/زوم بنحفظ آخر مكان عشان لو عمل ريفريش يرجعله تاني
       map.on("moveend zoomend", () => {
         try {
           const c = map.getCenter();
-          localStorage.setItem(
-            LAST_VIEW_STORAGE_KEY,
-            JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }),
-          );
+          kvSet(VIEW_KEY, {
+            lat: c.lat,
+            lng: c.lng,
+            zoom: map.getZoom(),
+          }).catch(() => {});
         } catch (_) {}
       });
 
-      // ── Zoom guard: لو التايلز فشلت تحمّل (404 / no data) عند زوم معين،
-      // رجّع زوم واحد لورا أوتوماتيك بدل ما تفضل الصورة "not available" ──
+      // ── Zoom guard ──
       lastStableZoomRef.current = map.getZoom();
 
       const attachTileErrorGuard = (layer: any) => {
         layer.on("tileerror", () => {
           tileErrorAtCurrentZoomRef.current = true;
         });
-        layer.on("tileload", () => {
-          // على الأقل تايل واحد نجح في التحميل عند الزوم ده
-        });
+        layer.on("tileload", () => {});
       };
 
       map.on("zoomstart", () => {
@@ -2456,11 +3272,9 @@ export default function LeafletMap({
       map.on("zoomend", () => {
         if (zoomRevertTimeoutRef.current)
           clearTimeout(zoomRevertTimeoutRef.current);
-        // استنى شوية عشان التايلز تاخد فرصتها تحاول تحمل
         zoomRevertTimeoutRef.current = setTimeout(() => {
           const cz = map.getZoom();
           if (tileErrorAtCurrentZoomRef.current) {
-            // فيه تايلز فشلت — ارجع لآخر زوم كان شغال بيه
             const target = Math.min(lastStableZoomRef.current, cz - 1);
             if (target >= map.getMinZoom() && target < cz) {
               map.setZoom(target);
@@ -2475,7 +3289,8 @@ export default function LeafletMap({
           }
         }, 450);
       });
-      // ── Scale Bar ─────────────────────────────────────────────────
+
+      // ── Scale Bar ──
       L.control
         .scale({
           position: "bottomleft",
@@ -2497,35 +3312,49 @@ export default function LeafletMap({
       Object.assign(map.getPane("imagePane")!.style, { zIndex: "350" });
       imagePaneReadyRef.current = true;
 
-      // ── 🆕 RESTORE AOI AFTER REFRESH ─────────────────────────
+      // ── AOI registry (لازم يتعمل قبل الاسترجاع) ──
+      aoiRegistryRef.current = new AOIRegistry({
+        onListChange: (items, activeId) => onAOIListChange?.(items, activeId),
+        onRemove: (e) => onAOIRemove?.(e.id),
+        onEditingChange: (id) => {
+          if (!id) teardownEditHandles();
+        },
+        onActivate: (e) => {
+          if (!e) {
+            currentShapeIdRef.current = null;
+            lastCoordsRef.current = [];
+            lastToolRef.current = "pointer";
+            if (canvasRef.current) clearCanvas(canvasRef.current);
+            return;
+          }
+          currentShapeIdRef.current = e.id;
+          lastCoordsRef.current = e.coords;
+          lastToolRef.current = e.tool;
+          if (canvasRef.current) {
+            clearCanvas(canvasRef.current);
+            redrawCurrent(canvasRef.current, map, L);
+          }
+          onAreaSelected(e.name, e.areaHa, e.feature);
+          onFeatureClick?.(e.feature);
+        },
+      });
+
+      // ── 🆕 RESTORE AOI + ANALYSES AFTER REFRESH (بس لو Create Project) ───────
       if (!restoredRef.current) {
         restoredRef.current = true;
-        getAllAOIs()
-          .then((saved) => {
-            if (!mapInstanceRef.current) return;
-            const c = TOOL_COLORS.polygon;
-            saved.forEach((item) => {
-              const poly = L.polygon(item.coords, {
-                color: c.stroke,
-                weight: 2,
-                fillColor: c.fill,
-                fillOpacity: 0,
-              }).addTo(map);
-              (poly as any)._aoiId = item.id;
-              drawLayersRef.current.push(poly);
-              poly.bindPopup(() => {
-                const div = document.createElement("div");
-                div.innerHTML = `🔵 ${item.name} · ≈ ${item.areaHa} ha`;
-                div.appendChild(buildShapePopupActions(poly, "polygon"));
-                return div;
-              });
-            });
-          })
-          .catch((e) => console.error("AOI restore failed", e));
-      } // ← ده قوس الـ if، لازم يكون موجود
+        if (persistDataRef.current) {
+          getAllAOIs()
+            .then(async (saved) => {
+              if (!mapInstanceRef.current) return;
+              restoreSavedAois(map, L, saved as any[]);
+              // تحليل كل شكل بيترجع بس لو صاحبه (ownerId) اتسترجع — وإلا بيتمسح من الـ DB
+              await restoreAnalysis();
+            })
+            .catch((e) => console.error("AOI restore failed", e));
+        }
+      }
 
-      // ① Esri WorldImagery — مباشر بدون proxy (Esri بيبعت CORS headers أصلًا،
-      // فمفيش داعي إننا نمرر كل تايل عبر السيرفر بتاعنا ونستهلك Fast Origin Transfer)
+      // ① Esri WorldImagery — مباشر بدون proxy
       baseTileRef.current = L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         {
@@ -2578,8 +3407,6 @@ export default function LeafletMap({
             this._canvas,
             lmap.containerPointToLayerPoint([0, 0]),
           );
-          // نغيّر width/height بس لو فعلاً اتغيّر الحجم — إعادة تخصيص الـ pixel
-          // buffer وهو بنفس القيمة بتعمل clear + realloc كامل من غير داعي
           if (this._canvas.width !== size.x || this._canvas.height !== size.y) {
             this._canvas.width = size.x;
             this._canvas.height = size.y;
@@ -2589,7 +3416,7 @@ export default function LeafletMap({
       });
       new CanvasLayer().addTo(map);
 
-      // ── Extrusion Canvas (separate from capture canvas) ───────────────────
+      // ── Extrusion Canvas ──────────────────────────────────────────────────
       const ExtrudeCanvasLayer = (L.Layer as any).extend({
         onAdd(this: any, lmap: any) {
           const canvas = document.createElement("canvas");
@@ -2622,7 +3449,6 @@ export default function LeafletMap({
             this._canvas.width = size.x;
             this._canvas.height = size.y;
           }
-          // draw extrusions after resizing
           drawExtrusions();
         },
       });
@@ -2666,7 +3492,6 @@ export default function LeafletMap({
         if (tool === "measure") finishMeasure(map, L);
       });
       mapRef.current!.appendChild(closeBtn);
-      const coordPanel = document.createElement("div");
 
       // ── Image overlays manager UI ─────────────────────────────────────────
       const overlaysUi = document.createElement("div");
@@ -2681,8 +3506,7 @@ export default function LeafletMap({
         font-family:DM Sans, sans-serif;
       `;
       mapRef.current!.appendChild(overlaysUi);
-      // restore persisted overlays once map is ready
-      restoreImageOverlays();
+      restoreImageOverlays(); // async — بيرجع من IndexedDB
 
       // ── Sat / Index ───────────────────────────────────────────────────────
       onSatChange((satKey: SatKey) => {
@@ -2699,11 +3523,8 @@ export default function LeafletMap({
           crossOrigin: "anonymous",
         }).addTo(map);
         attachTileErrorGuard(baseTileRef.current);
-        // إعادة ضبط حالة الزوم عند تبديل المصدر (كل مصدر له تغطية مختلفة)
         tileErrorAtCurrentZoomRef.current = false;
         lastStableZoomRef.current = map.getZoom();
-        // حد الـ 30 متر مخصوص لـ Default بس — لأي طبقة تانية نرجّع الماكس زوم
-        // الطبيعي بتاعها زي ما هو متعرّف في SAT_LAYERS من غير أي سقف إضافي
         if (satKey === "Default") {
           applyResolutionCapRef.current?.();
         } else {
@@ -2716,14 +3537,9 @@ export default function LeafletMap({
           labelsLayerRef.current.setOpacity(o * 0.8 + 0.1);
       });
 
-      // ── Scale-bar zoom cap (يوقف لما شريط المقياس يوصل ~30 م) ──────────────
-      // بعد الحد ده الـ API بيرجع بيانات غلط/متكررة، فبنوقف الزوم عند أقرب
-      // مستوى بيخلي شريط المقياس (اللي maxWidth بتاعه 150px هنا) يقرا ~30 متر
-      // ونطلع تنبيه، بدل ما نسيب اليوزر يكمّل زوم ويجيبله نتيجة غلط من الـ API.
-      // ملحوظة: ده مختلف عن "30 متر لكل بيكسل" اللي كانت بتوقف الزوم بدري
-      // جدًا (حوالي zoom 12 = شريط مقياس بيقرا كيلومترات) — المطلوب أعمق بكتير.
-      const TARGET_SCALE_LABEL_M = 30; // القراءة المطلوبة على شريط المقياس بالمتر
-      const SCALE_BAR_MAX_WIDTH_PX = 150; // لازم يطابق maxWidth بتاع L.control.scale فوق
+      // ── Scale-bar zoom cap ──
+      const TARGET_SCALE_LABEL_M = 30;
+      const SCALE_BAR_MAX_WIDTH_PX = 150;
       const resolutionCapNotifiedRef = { current: false };
 
       const computeMaxZoomForResolution = (
@@ -2747,13 +3563,11 @@ export default function LeafletMap({
       };
 
       const applyResolutionCap = () => {
-        // الحد ده مخصوص لطبقة Default (Esri) بس — أي طبقة تانية (Google،
-        // Sentinel-2، Street Map، Terrain) تفضل شغالة بالماكس زوم الطبيعي بتاعها
         if (currentSatKeyRef.current !== "Default") return;
         const lat = map.getCenter().lat;
         const capZoom = computeMaxZoomForResolution(lat, TARGET_SCALE_LABEL_M);
         map.setMaxZoom(capZoom);
-        resolutionCapNotifiedRef.current = false; // إعادة تعيين لما اليوزر يتحرك لمكان/دقة جديدة
+        resolutionCapNotifiedRef.current = false;
       };
       applyResolutionCapRef.current = applyResolutionCap;
 
@@ -2793,36 +3607,9 @@ export default function LeafletMap({
               `<b>📍 Location</b><br/>${safeLat.toFixed(5)}°N, ${safeLng.toFixed(5)}°E`,
             )
             .openPopup();
-          // ✅ سجّليه هنا عشان زرار الـ Clear/Delete يقدر يمسحه زي أي شكل تاني
           drawLayersRef.current.push(searchMarker);
         }, 1700);
       };
-
-      // ── AOI registry: يتابع كل الـ AOIs المرسومة، واحد بس نشط والباقي معطّل ──
-      aoiRegistryRef.current = new AOIRegistry({
-        onListChange: (items, activeId) => onAOIListChange?.(items, activeId),
-        onRemove: (e) => onAOIRemove?.(e.id),
-        onEditingChange: (id) => {
-          if (!id) teardownEditHandles();
-        },
-        onActivate: (e) => {
-          if (!e) {
-            lastCoordsRef.current = [];
-            lastToolRef.current = "pointer";
-            if (canvasRef.current) clearCanvas(canvasRef.current);
-            return;
-          }
-          // captureCurrentRef والـ panels بتشتغل على lastCoordsRef/lastToolRef
-          lastCoordsRef.current = e.coords;
-          lastToolRef.current = e.tool;
-          if (canvasRef.current) {
-            clearCanvas(canvasRef.current);
-            redrawCurrent(canvasRef.current, map, L);
-          }
-          onAreaSelected(e.name, e.areaHa, e.feature);
-          onFeatureClick?.(e.feature);
-        },
-      });
 
       const focusAoi = (id: string) => {
         const e = aoiRegistryRef.current?.get(id);
@@ -2844,7 +3631,7 @@ export default function LeafletMap({
           focus: focusAoi,
           remove: (id) => {
             const e = aoiRegistryRef.current?.get(id);
-            if (e) deleteSingleShape(e.layer);
+            if (e) deleteSingleShape(e.layer, id, e.kind);
           },
           startEdit: (id) => startEditAoi(id),
           stopEdit: () => {
@@ -2853,22 +3640,48 @@ export default function LeafletMap({
         };
       }
 
+      // ── 💾 Save All: يحفظ كل الأشكال الـ pending ──
+      if (saveAllRef) {
+        saveAllRef.current = saveAllShapes;
+      }
+
+      // ── Delete All: يمسح كل حاجة من الـ UI + IndexedDB (الأشكال + كل التحليلات + الصور) ──
       clearRef.current = () => {
-        drawLayersRef.current.forEach((l) => map.removeLayer(l));
+        // سجّل كل الـ ids عشان ما يتعادش رسمها من initialFeatures / الـ DB
+        const allIds: string[] = [];
+        drawLayersRef.current.forEach((l) => {
+          if (l?._aoiId) allIds.push(String(l._aoiId));
+        });
+        savedIdsRef.current.forEach((id) => allIds.push(id));
+        pendingShapesRef.current.forEach((_, id) => allIds.push(id));
+        drawnFeaturesRef.current.forEach((f) => {
+          if (f.properties?.id) allIds.push(String(f.properties.id));
+        });
+        markDeleted(allIds);
+        teardownEditHandles();
+        drawLayersRef.current.forEach((l) => {
+          try {
+            map.removeLayer(l);
+          } catch (_) {}
+        });
         aoiRegistryRef.current?.clear();
         drawLayersRef.current = [];
         draftLayersRef.current = [];
+        initialFeaturesLayerRef.current = [];
         drawPointsRef.current = [];
         lastCoordsRef.current = [];
         lastToolRef.current = "pointer";
+        currentShapeIdRef.current = null;
         if (tempLayerRef.current) {
           map.removeLayer(tempLayerRef.current);
           tempLayerRef.current = null;
         }
         if (canvasRef.current) clearCanvas(canvasRef.current);
         if (closeBtnRef.current) closeBtnRef.current.style.display = "none";
+        try {
+          map.closePopup();
+        } catch (_) {}
 
-        // clear image overlays
         imageOverlaysRef.current.forEach((ov) => {
           try {
             map.removeLayer(ov.layer);
@@ -2876,7 +3689,17 @@ export default function LeafletMap({
         });
         imageOverlaysRef.current = [];
 
-        clearAllAOIs()
+        setDrawn([]);
+        pendingShapesRef.current.clear();
+        savedIdsRef.current.clear();
+
+        // ✅ دايماً امسح الـ DB كله (حتى لو persist مقفول) + سجّل كل الـ ids الموجودة فيه
+        getAllAOIs()
+          .then((all: any[]) =>
+            markDeleted((all ?? []).map((a) => String(a?.id)).filter(Boolean)),
+          )
+          .catch(() => {})
+          .then(() => clearAllAOIs())
           .then(() => {
             toast.success(
               isRTL
@@ -2893,29 +3716,23 @@ export default function LeafletMap({
             );
           });
 
-        // امسح كل أنواع overlays التحليل (raster / palm points / super
-        // resolution / change-detection swipe) بنفس الدالة الموحّدة.
-        clearAllAnalysisOverlaysRef.current();
-        try {
-          localStorage.removeItem(IMAGE_OVERLAYS_STORAGE_KEY);
-        } catch (_) {}
+        // ✅ امسح كل التحليلات من الخريطة + IndexedDB + بلّغ الأب (ownerId = null → امسح الكل)
+        clearAllAnalyses(true);
+        imageOverlaysClear().catch(() => {});
         refreshOverlaysUi();
         stopImagePlacement();
       };
 
-      // ✅ زرار "Delete Analysis" المستقل — بيمسح overlays التحليل بس
-      // (raster / palm points / super resolution / change-detection swipe)
-      // وبيسيب الـ AOI/الشكل المرسوم زي ما هو من غير ما يلمسه.
+      // ✅ زرار "Delete Analysis" المستقل: بيمسح تحليل الشكل الحالي بس
+      //    (خريطة + IndexedDB + بروجكت) — تحليل الأشكال التانية بيفضل
       if (clearAnalysisRef) {
         clearAnalysisRef.current = () => {
-          clearAllAnalysisOverlaysRef.current();
+          const owner = currentShapeIdRef.current;
+          if (owner) deleteAnalysisFor(owner, true);
         };
       }
 
-      // ── Capture the shape that's ALREADY drawn (lastCoordsRef/lastToolRef)
-      // on demand, without requiring the user to draw a new one. Used by
-      // panels like Palm Trees that want to reuse the currently selected
-      // shape instead of forcing a redraw every time. ───────────────────────
+      // ── Capture the shape that's ALREADY drawn ──
       if (captureCurrentRef) {
         captureCurrentRef.current = async () => {
           const coords = lastCoordsRef.current;
@@ -2947,11 +3764,6 @@ export default function LeafletMap({
               );
               onCapture?.(captureResult);
             } else if (tool === "rectangle" && coords.length === 2) {
-              // ⚠️ lastCoordsRef only stores the 2 diagonal corners (that's all
-              // redrawCurrent needs for drawRect). But capture()'s polygon-clip
-              // needs all 4 corners — passing just 2 collapses the clip region
-              // to a zero-area line, producing a near-blank image. Rebuild the
-              // 4 corners exactly like the rectangle-draw-completion code does.
               const [p1, p2] = coords;
               const rectCoords: LatLngPoint[] = [
                 { lat: p1.lat, lng: p1.lng },
@@ -2981,15 +3793,12 @@ export default function LeafletMap({
       map.on("click", async (e: any) => {
         const tool = activeToolRef.current;
         const { lat, lng } = e.latlng;
-        // throttle setState to avoid React re-renders on every click
         requestAnimationFrame(() => onCoordsUpdate(lat, lng));
 
-        // Trigger onFeatureClick with a virtual feature to update panels (Weather/NDVI) for any click
-        // ── Threshold: نتجاهل الكليكات اللي قريبة جداً (مكان) أو سريعة جداً (وقت) من آخر كليك ──
-        // ده بيمنع طلبات NDVI/Weather المتكررة لو المستخدم بس بيتصفح الخريطة بكليكات متقاربة
+        // Virtual feature click (pointer tool) مع throttle
         if (tool === "pointer") {
-          const MIN_DISTANCE_M = 15; // أقل مسافة (متر) عشان نعتبره كليك جديد فعلاً
-          const MIN_INTERVAL_MS = 250; // أقل فاصل زمني بين كليكين متتاليين
+          const MIN_DISTANCE_M = 15;
+          const MIN_INTERVAL_MS = 250;
           const now = Date.now();
           const last = lastVirtualClickRef.current;
           const isTooClose =
@@ -3011,7 +3820,6 @@ export default function LeafletMap({
         if (placingImageRef.current) {
           const st = placingImageRef.current;
           if (!st.ready) {
-            // image still preparing
             if (st.hintEl)
               st.hintEl.textContent = `Preparing image… please wait`;
             return;
@@ -3041,8 +3849,7 @@ export default function LeafletMap({
             const south = Math.min(a.lat, b.lat);
             const east = Math.max(a.lng, b.lng);
             const west = Math.min(a.lng, b.lng);
-            // ensure bounds not too tiny (otherwise image may appear invisible)
-            const minDelta = 0.00015; // ~15-20m
+            const minDelta = 0.00015;
             const n2 = north === south ? north + minDelta : north;
             const s2 = north === south ? south - minDelta : south;
             const e2 = east === west ? east + minDelta : east;
@@ -3092,22 +3899,38 @@ export default function LeafletMap({
             fillOpacity: 0.85,
             weight: 2,
           }).addTo(map);
-          const aoiId = crypto.randomUUID();
+          const aoiId = newAoiId();
           (mk as any)._aoiId = aoiId;
 
-          saveAOI({
+          const markerFeature: GeoJSON.Feature = {
+            type: "Feature",
+            geometry: {
+              type: "Point",
+              coordinates: [lng, lat],
+            },
+            properties: {
+              id: aoiId,
+              name: "Marker",
+              _drawn: true,
+              kind: "marker",
+            },
+          };
+
+          upsertShape(aoiId, markerFeature, {
             id: aoiId,
             name: "Marker",
             tool: "marker" as any,
             coords: [{ lat, lng }] as any,
             areaHa: 0,
             createdAt: new Date().toISOString(),
-          }).catch((e) => console.error("Marker save failed", e));
+          });
+          // الـ marker هو الشكل الحالي (البانلز بتحلله) → أي تحليل بعد كده تابع له
+          currentShapeIdRef.current = aoiId;
 
           mk.bindPopup(() => {
             const div = document.createElement("div");
             div.innerHTML = `📍 ${lat.toFixed(6)}°N<br/>${lng.toFixed(6)}°E`;
-            div.appendChild(buildShapePopupActions(mk, "marker"));
+            div.appendChild(buildShapePopupActions(mk, "marker", aoiId));
             return div;
           }).openPopup();
           drawLayersRef.current.push(mk);
@@ -3232,6 +4055,14 @@ export default function LeafletMap({
             draftLayersRef.current.push(marker);
           } else {
             const p1 = drawPointsRef.current[0];
+            // الشكل خلص → شيل النقطة المؤقتة وصفّر الحالة فوراً
+            clearDraftMarkers();
+            drawPointsRef.current = [];
+            if (tempLayerRef.current) {
+              map.removeLayer(tempLayerRef.current);
+              tempLayerRef.current = null;
+            }
+
             const rect = L.rectangle([p1, [lat, lng]], {
               color: c.stroke,
               weight: 2,
@@ -3260,23 +4091,15 @@ export default function LeafletMap({
               { lat, lng: p1[1] },
             ];
 
-            // حفظ المربع في IndexedDB
-            saveAOI({
-              id: aoiiId,
-              name: "Drawn Rectangle",
-              tool: "rectangle",
-              coords: rectPoints as any,
-              areaHa: area,
-              createdAt: new Date().toISOString(),
-            }).catch((e) => console.error("Rectangle save failed", e));
-
             rect
               .bindPopup(() => {
                 const div = document.createElement("div");
                 const label = document.createElement("div");
                 label.innerHTML = `📐 ${t.rectangle} · ≈ ${area} ${t.ha}`;
                 div.appendChild(label);
-                div.appendChild(buildShapePopupActions(rect, "rectangle"));
+                div.appendChild(
+                  buildShapePopupActions(rect, "rectangle", aoiiId),
+                );
                 return div;
               })
               .openPopup();
@@ -3297,6 +4120,15 @@ export default function LeafletMap({
               area,
               { id: aoiiId, kind: "rectangle" },
             );
+
+            upsertShape(aoiiId, feature, {
+              id: aoiiId,
+              name: aoiName,
+              tool: "rectangle",
+              coords: rectPoints as any,
+              areaHa: area,
+              createdAt: new Date().toISOString(),
+            });
             reg?.add({
               id: aoiiId,
               name: aoiName,
@@ -3311,6 +4143,7 @@ export default function LeafletMap({
               ],
               stroke: c.stroke,
             });
+            currentShapeIdRef.current = aoiiId;
             onAreaSelected(aoiName, area, feature);
             onFeatureClick?.(feature);
             if (canvasRef.current) {
@@ -3336,12 +4169,6 @@ export default function LeafletMap({
                 metadata,
               );
             }
-            draftLayersRef.current = [];
-            drawPointsRef.current = [];
-            if (tempLayerRef.current) {
-              map.removeLayer(tempLayerRef.current);
-              tempLayerRef.current = null;
-            }
           }
           return;
         }
@@ -3362,6 +4189,13 @@ export default function LeafletMap({
             drawPointsRef.current.push([lat, lng]);
           } else {
             const center = drawPointsRef.current[0];
+            // الشكل خلص → صفّر الحالة فوراً (قبل أي await)
+            drawPointsRef.current = [];
+            if (tempLayerRef.current) {
+              map.removeLayer(tempLayerRef.current);
+              tempLayerRef.current = null;
+            }
+
             const radius = map.distance(center, [lat, lng]);
             const circ = L.circle(center, {
               radius,
@@ -3378,26 +4212,13 @@ export default function LeafletMap({
             const aoiId = newAoiId();
             (circ as any)._aoiId = aoiId;
 
-            // حفظ الدائرة في IndexedDB
-            saveAOI({
-              id: aoiId,
-              name: "Drawn Circle",
-              tool: "circle",
-              coords: [
-                { lat: center[0], lng: center[1] },
-                { lat, lng },
-              ] as any,
-              areaHa: area,
-              createdAt: new Date().toISOString(),
-            }).catch((e) => console.error("Circle save failed", e));
-
             circ
               .bindPopup(() => {
                 const div = document.createElement("div");
                 const label = document.createElement("div");
                 label.innerHTML = `🟢 ${t.circle} · R: ${radius.toFixed(0)} m · ≈ ${area} ${t.ha}`;
                 div.appendChild(label);
-                div.appendChild(buildShapePopupActions(circ, "circle"));
+                div.appendChild(buildShapePopupActions(circ, "circle", aoiId));
                 return div;
               })
               .openPopup();
@@ -3417,6 +4238,18 @@ export default function LeafletMap({
               kind: "circle",
             });
 
+            upsertShape(aoiId, feature, {
+              id: aoiId,
+              name: aoiName,
+              tool: "circle",
+              coords: [
+                { lat: center[0], lng: center[1] },
+                { lat, lng },
+              ] as any,
+              areaHa: area,
+              createdAt: new Date().toISOString(),
+            });
+
             reg?.add({
               id: aoiId,
               name: aoiName,
@@ -3431,6 +4264,7 @@ export default function LeafletMap({
               ],
               stroke: c.stroke,
             });
+            currentShapeIdRef.current = aoiId;
 
             onAreaSelected(aoiName, area, feature);
             onFeatureClick?.(feature);
@@ -3485,12 +4319,6 @@ export default function LeafletMap({
               );
               if (res.ok) console.log("✅ Backend:", await res.json());
             }
-
-            drawPointsRef.current = [];
-            if (tempLayerRef.current) {
-              map.removeLayer(tempLayerRef.current);
-              tempLayerRef.current = null;
-            }
           }
           return;
         }
@@ -3538,6 +4366,9 @@ export default function LeafletMap({
           }
         });
       });
+
+      // ✅ الخريطة جهزت — الـ effects اللي معتمدة على mapReady تشتغل
+      setMapReady(true);
     });
 
     return () => {
@@ -3546,6 +4377,13 @@ export default function LeafletMap({
         overlaysUiRef.current.remove();
         overlaysUiRef.current = null;
       }
+      // ✅ نضّف overlays كل التحليلات (من الذاكرة بس — الـ DB ما بيتلمسش)
+      analysesRef.current.forEach((a) => {
+        try {
+          a.cleanup();
+        } catch (_) {}
+      });
+      analysesRef.current.clear();
       if (swipeOverlayRef.current) {
         swipeOverlayRef.current.cleanup();
         swipeOverlayRef.current = null;
@@ -3554,6 +4392,11 @@ export default function LeafletMap({
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
       }
+      // ✅ لو الكومبوننت اتعمله unmount/remount (React StrictMode) نرجّع الاسترجاع من الأول
+      restoredRef.current = false;
+      drawLayersRef.current = [];
+      draftLayersRef.current = [];
+      initialFeaturesLayerRef.current = [];
     };
   }, []);
 
@@ -3571,7 +4414,6 @@ export default function LeafletMap({
 
   return (
     <>
-      {/* <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" /> */}
       <style>{`
 .leaflet-control-scale-line{background:rgba(4,13,26,.85)!important;border:1px solid rgba(0,200,255,.4)!important;border-top:2px solid rgba(0,200,255,.8)!important;color:#e2e8f0!important;font-size:10px!important;font-weight:600!important;letter-spacing:.05em!important;padding:2px 6px!important;border-radius:0 0 4px 4px!important;backdrop-filter:blur(4px)!important;box-shadow:0 2px 8px rgba(0,0,0,.5)!important;white-space:nowrap!important}
 .leaflet-control-scale{margin-bottom:8px!important;margin-left:12px!important}
