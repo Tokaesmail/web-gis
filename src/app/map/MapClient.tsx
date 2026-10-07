@@ -336,7 +336,11 @@ export default function MapPage() {
             ...f,
             properties: { 
               ...f.properties, 
-              _color: layer.color,
+              // Generated isotherms carry their own heat colour - don't overwrite it
+              // with the layer's default cyan.
+              _color: f.properties?._generated === "weather-contour"
+                ? f.properties._color
+                : layer.color,
               _opacity: layer.opacity 
             }
           })));
@@ -526,6 +530,22 @@ useEffect(() => {
   // الـ AOI/الشكل المرسوم على الخريطة.
   const handleClearAnalysis = useCallback(() => {
     clearAnalysisRef.current?.();
+
+    // Elevation contours / isotherms are stored as uploaded GeoJSON, not as raster
+    // overlays, so the Leaflet-side clear doesn't know about them. Remove those too.
+    setUploadedGeoJsonMap((prev) => {
+      const next: Record<string, any> = {};
+      let changed = false;
+      for (const [name, gj] of Object.entries(prev)) {
+        const gen = gj?.features?.[0]?.properties?._generated;
+        if (gen === "elevation-contour" || gen === "weather-contour") {
+          changed = true;
+          continue;
+        }
+        next[name] = gj;
+      }
+      return changed ? next : prev;
+    });
   }, []);
 
   const handleToggleView = useCallback(() => {
@@ -1275,6 +1295,24 @@ useEffect(() => {
     };
   }, [currentProjectSnapshot, activeProject, projectOwnerKey, sessionStatus]);
 
+  // ── Feature used by the floating Elevation panel ──────────────────────────
+  // With the pointer tool, every map click (even on a drawn shape) fires a virtual
+  // Point feature that replaces `selectedFeature` — so the elevation panel ended up
+  // with a ~200 m box around the click instead of the drawn area. Prefer the active
+  // drawn AOI (polygon/rectangle), then the latest drawn area, and never a virtual point.
+  const elevationFeature = useMemo(() => {
+    const isArea = (f: any) =>
+      f?.geometry?.type === "Polygon" || f?.geometry?.type === "MultiPolygon";
+
+    if (isArea(selectedFeature) && !selectedFeature?.properties?._virtual) return selectedFeature;
+
+    const active = drawnFeatures.find((f) => f.properties?.id === activeAoiId);
+    if (isArea(active)) return active;
+
+    const lastArea = [...drawnFeatures].reverse().find(isArea);
+    return lastArea ?? selectedFeature;
+  }, [selectedFeature, drawnFeatures, activeAoiId]);
+
   // ── Shared sidebar ────────────────────────────────────────────────────────
   const sharedSidebar = useMemo(() => (
     <AnalysisSidebar
@@ -1700,10 +1738,11 @@ useEffect(() => {
             <FloatingElevationPanel
               open={elevationFloatOpen}
               onClose={() => setElevationFloatOpen(false)}
-              selectedFeature={selectedFeature}
+              selectedFeature={elevationFeature}
               onContoursGenerated={(geojson, fileName) => handleGeoJSONUpload(geojson, fileName)}
               initialPosition={{ x: 16, y: 64 }}
             />
+
           </>
         )}
 

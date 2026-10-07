@@ -31,42 +31,53 @@ interface LatLng {
   lng: number;
 }
 
-async function fetchPointTemperature(point: LatLng): Promise<{ value: number; time: string | null }> {
-  try {
-    const url =
-      `https://api.open-meteo.com/v1/forecast?latitude=${point.lat.toFixed(5)}&longitude=${point.lng.toFixed(5)}` +
-      `&current=temperature_2m&timezone=auto`;
-    const res = await fetch(url);
-    if (!res.ok) return { value: NaN, time: null };
-    const data = await res.json();
-    const value = data?.current?.temperature_2m;
-    const time = data?.current?.time ?? null;
-    return { value: typeof value === "number" ? value : NaN, time };
-  } catch {
-    return { value: NaN, time: null };
-  }
-}
+type Sample = { value: number; time: string | null };
+const NAN_SAMPLE: Sample = { value: NaN, time: null };
 
-// Run point lookups with limited concurrency so a 12x12+ grid doesn't fire
-// hundreds of simultaneous requests at Open-Meteo.
-async function withConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  worker: (item: T) => Promise<R>
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let cursor = 0;
+const BATCH_SIZE = 50;     // Open-Meteo accepts comma-separated coordinates in ONE request
+const BATCH_DELAY_MS = 250;
+const MAX_RETRIES = 3;
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-  async function run() {
-    while (cursor < items.length) {
-      const i = cursor++;
-      results[i] = await worker(items[i]);
+// One request for up to BATCH_SIZE points (Open-Meteo returns an array for multi-point
+// requests, a single object for one point). The old code fired one request PER cell with
+// no retry, so 429 rate-limits silently turned cells into NaN -> missing / wrong isotherms.
+async function fetchBatchTemperature(points: LatLng[]): Promise<Sample[]> {
+  const url =
+    `https://api.open-meteo.com/v1/forecast` +
+    `?latitude=${points.map((p) => p.lat.toFixed(5)).join(",")}` +
+    `&longitude=${points.map((p) => p.lng.toFixed(5)).join(",")}` +
+    `&current=temperature_2m&timezone=auto`;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(url);
+      if (res.status === 429 || res.status >= 500) {
+        await sleep(1200 * 2 ** attempt);
+        continue;
+      }
+      if (!res.ok) return points.map(() => NAN_SAMPLE);
+      const data = await res.json();
+      const list: any[] = Array.isArray(data) ? data : [data];
+      if (list.length !== points.length) return points.map(() => NAN_SAMPLE);
+      return list.map((d) => {
+        const v = d?.current?.temperature_2m;
+        return { value: typeof v === "number" ? v : NaN, time: d?.current?.time ?? null };
+      });
+    } catch {
+      await sleep(800 * 2 ** attempt);
     }
   }
+  return points.map(() => NAN_SAMPLE);
+}
 
-  const workers = Array.from({ length: Math.min(limit, items.length) }, () => run());
-  await Promise.all(workers);
-  return results;
+async function fetchAllTemperatures(points: LatLng[]): Promise<Sample[]> {
+  const out: Sample[] = [];
+  for (let i = 0; i < points.length; i += BATCH_SIZE) {
+    out.push(...(await fetchBatchTemperature(points.slice(i, i + BATCH_SIZE))));
+    if (i + BATCH_SIZE < points.length) await sleep(BATCH_DELAY_MS);
+  }
+  return out;
 }
 
 /**
@@ -81,12 +92,13 @@ async function withConcurrency<T, R>(
 export async function buildTemperatureGrid(
   bounds: { north: number; south: number; east: number; west: number },
   resolution = 8,
-  concurrency = 6
+  _concurrency = 6 // kept for backwards compatibility (requests are now batched)
 ): Promise<TemperatureGrid> {
   const latSpan = Math.max(bounds.north - bounds.south, 1e-6);
   const lngSpan = Math.max(bounds.east - bounds.west, 1e-6);
 
-  const aspect = lngSpan / latSpan;
+  const midLat = (bounds.north + bounds.south) / 2;
+  const aspect = (lngSpan * Math.cos((midLat * Math.PI) / 180)) / latSpan;
   let cols = aspect >= 1 ? resolution : Math.max(3, Math.round(resolution * aspect));
   let rowsCount = aspect >= 1 ? Math.max(3, Math.round(resolution / aspect)) : resolution;
   cols = Math.min(16, Math.max(3, cols));
@@ -102,7 +114,10 @@ export async function buildTemperatureGrid(
     }
   }
 
-  const fetched = await withConcurrency(points, concurrency, fetchPointTemperature);
+  const fetched = await fetchAllTemperatures(points);
+  if (!fetched.some((c) => Number.isFinite(c.value))) {
+    throw new Error("Open-Meteo returned no temperature data (rate-limited?). Try again in a moment.");
+  }
 
   const rows: number[][] = [];
   let min = Infinity;
