@@ -1516,7 +1516,7 @@ console.log("MAP CLIENT INITIAL FEATURES:", initialFeaturesToRestore);
             geoJsonFitBounds={false}
             extrusionConfig={extrusionCfg || { enabled: false }}
             onFeatureClick={handleFeatureClick}
-            initialFeatures={initialFeaturesToRestore}
+            initialFeatures={initialFeaturesToRestore || []}
             aoiControlRef={aoiControlRef}
             onAOIListChange={(items, id) => { setAoiItems(items); setActiveAoiId(id); }}
             onAOIRemove={(id) => setDrawnFeatures((prev) => prev.filter((f) => f.properties?.id !== id))}
