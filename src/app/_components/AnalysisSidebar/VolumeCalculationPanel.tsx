@@ -5,7 +5,7 @@
 //
 // Method:
 //   1. Sample a grid of elevation points inside the polygon bounds
-//      (using Open-Elevation batch API — same service as elevationService.ts)
+//      (via /api/elevation proxy — Open-Meteo → OpenTopoData → Open-Elevation fallback)
 //   2. Filter only points that fall inside the polygon (point-in-polygon via @turf/turf)
 //   3. Integrate: Volume = Σ (elevation[i] - base_elevation) × cell_area
 //      where cell_area = (grid_spacing_m)²
@@ -19,7 +19,8 @@ import { useState, useMemo, useRef } from "react";
 import * as turf from "@turf/turf";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
-type RefPlaneMode = "min" | "mean" | "custom";
+type RefPlaneMode = "min" | "robust" | "mean" | "custom";
+const ROBUST_PERCENTILE = 1; // "Robust min" = 1st percentile of sampled elevations
 
 type SamplePoint = {
   lat: number;
@@ -37,7 +38,14 @@ type VolumeResult = {
   maxElev: number;
   meanElev: number;
   basePlane: number;     // m
+  refMode: RefPlaneMode; // base plane mode this result was computed with
   polygonAreaM2: number;
+  gridSpacingM: number;       // grid spacing actually used (m)
+  requestedSpacingM: number;  // spacing the user picked (m)
+  noDataCount: number;        // points the DEM had no value for (skipped)
+  providers: string[];        // elevation sources that contributed
+  minPoint: { lat: number; lng: number };
+  maxPoint: { lat: number; lng: number };
 };
 
 // ── Grid resolution options ────────────────────────────────────────────────────
@@ -118,34 +126,144 @@ function filterInsidePolygon(
   }
 }
 
-// Batch elevation fetch from Open-Elevation (max 100 pts per request)
-async function fetchElevationBatch(pts: { lat: number; lng: number }[]): Promise<number[]> {
-  const BATCH = 100;
-  const results: number[] = [];
+// ── Elevation fetching (via /api/elevation proxy with provider fallback) ──────
+const ELEV_BATCH = 100;          // max points per request
+const ELEV_DELAY_MS = 1100;      // ~1 request/sec to stay under public rate limits
+const ELEV_MAX_RETRIES = 2;      // client-side retries on 429 / 5xx (the route already retries too)
+const PROVIDER_ORDER = ["open-meteo", "opentopodata", "open-elevation"]; // tried one at a time
+const MAX_SAMPLE_POINTS = 3000;  // cap (~30 s of fetching at 1 req/sec)
+const MIN_RESOLUTION_M = 30;     // SRTM native resolution — finer is pointless
 
-  for (let i = 0; i < pts.length; i += BATCH) {
-    const slice = pts.slice(i, i + BATCH);
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+async function fetchElevations(
+  pts: { lat: number; lng: number }[],
+  opts: {
+    isCancelled: () => boolean;
+    onProgress?: (done: number, total: number) => void;
+    provider?: string; // force a single DEM source for every batch
+  },
+): Promise<{ elevs: (number | null)[]; providers: string[] }> {
+  const results: (number | null)[] = [];
+  const providers = new Set<string>();
+
+  for (let i = 0; i < pts.length; i += ELEV_BATCH) {
+    if (opts.isCancelled()) throw new Error("Cancelled");
+
+    const slice = pts.slice(i, i + ELEV_BATCH);
     const locations = slice.map(p => ({ latitude: p.lat, longitude: p.lng }));
 
-    const res = await fetch("/api/elevation", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({ locations }),
-    });
+    let attempt = 0;
+    while (true) {
+      const res = await fetch("/api/elevation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ locations, provider: opts.provider }),
+      });
 
-    if (!res.ok) throw new Error(`Elevation API error ${res.status}`);
-    const data = await res.json();
-    const elevs = (data?.results ?? []).map((r: any) => r?.elevation ?? 0);
-    results.push(...elevs);
+      const retriable = res.status === 429 || res.status >= 500;
+      if (!res.ok && retriable && attempt < ELEV_MAX_RETRIES) {
+        const ra = Number(res.headers.get("retry-after"));
+        const wait = ra > 0 ? ra * 1000 : 1500 * 2 ** attempt; // 1.5s, 3s, 6s, 12s
+        await sleep(wait);
+        if (opts.isCancelled()) throw new Error("Cancelled");
+        attempt++;
+        continue;
+      }
+      if (!res.ok) {
+        let detail = "";
+        try { detail = (await res.json())?.error ?? ""; } catch { /* ignore */ }
+        throw new Error(`Elevation API error ${res.status}${detail ? ` — ${detail}` : ""}`);
+      }
+
+      const data = await res.json();
+      // keep null for "no data" — never treat missing elevation as 0 m
+      const elevs: (number | null)[] = (data?.results ?? []).map((r: any) =>
+        typeof r?.elevation === "number" && Number.isFinite(r.elevation) ? r.elevation : null
+      );
+      (data?.providers ?? []).forEach((p: string) => providers.add(p));
+      if (elevs.length !== slice.length) {
+        throw new Error("Elevation API returned an unexpected number of results");
+      }
+      results.push(...elevs);
+      break;
+    }
+
+    opts.onProgress?.(Math.min(i + ELEV_BATCH, pts.length), pts.length);
+    if (i + ELEV_BATCH < pts.length) await sleep(ELEV_DELAY_MS);
   }
 
-  return results;
+  return { elevs: results, providers: Array.from(providers) };
+}
+
+// Runs the whole calculation on ONE elevation source. If a source fails part-way,
+// the run restarts from scratch on the next source, so values are never mixed
+// between different DEMs (e.g. Copernicus 90 m + SRTM 30 m).
+async function fetchElevationsSingleSource(
+  pts: { lat: number; lng: number }[],
+  opts: { isCancelled: () => boolean; onProgress?: (done: number, total: number) => void },
+): Promise<{ elevs: (number | null)[]; providers: string[] }> {
+  let lastErr: Error | null = null;
+
+  for (const provider of PROVIDER_ORDER) {
+    try {
+      return await fetchElevations(pts, { ...opts, provider });
+    } catch (e: any) {
+      if (e?.message === "Cancelled" || opts.isCancelled()) throw e;
+      lastErr = e;
+      opts.onProgress?.(0, pts.length); // reset progress bar for the retry
+    }
+  }
+  throw lastErr ?? new Error("All elevation sources failed");
+}
+
+// Build a sample grid close to (but not above) MAX_SAMPLE_POINTS.
+// Picks the spacing from a cheap bbox estimate first, then fine-tunes in small
+// steps, so we land near the cap instead of overshooting to a much coarser grid.
+function buildAdaptiveGrid(
+  bbox: { west: number; east: number; south: number; north: number },
+  feature: GeoJSON.Feature,
+  requestedM: number,
+): { inside: { lat: number; lng: number }[]; spacingM: number } {
+  const base = Math.max(requestedM, MIN_RESOLUTION_M);
+  const midLat = (bbox.south + bbox.north) / 2;
+  const widthM  = lngDegToMeters(bbox.east - bbox.west, midLat);
+  const heightM = degToMeters(bbox.north - bbox.south);
+
+  const make = (r: number) => filterInsidePolygon(buildGrid(bbox, r), feature);
+
+  // 1) cheap pre-pick from the bbox cell count (avoids filtering 100k+ points)
+  const cells = Math.ceil(widthM / base) * Math.ceil(heightM / base);
+  const target = MAX_SAMPLE_POINTS * 1.3;
+  let spacing = cells > target ? Math.ceil(base * Math.sqrt(cells / target)) : base;
+  let inside = make(spacing);
+
+  // 2) polygon fills less of its bbox than assumed → we can afford a finer grid
+  if (spacing > base && inside.length > 0 && inside.length < MAX_SAMPLE_POINTS * 0.7) {
+    spacing = Math.max(base, Math.floor(spacing * Math.sqrt(inside.length / (MAX_SAMPLE_POINTS * 0.97))));
+    inside = make(spacing);
+  }
+
+  // 3) still above the cap → creep up in small steps
+  let guard = 0;
+  while (inside.length > MAX_SAMPLE_POINTS && guard++ < 25) {
+    spacing = Math.ceil(spacing * 1.03);
+    inside = make(spacing);
+  }
+
+  return { inside, spacingM: spacing };
 }
 
 // Compute volume results from sampled points
+// Each sample represents an equal share of the polygon: cell = polygonArea / n.
+// (A nominal spacing² would over-count, because cells on the polygon edge
+//  are only partly inside it.)
 function computeVolume(
   samples: SamplePoint[],
-  cellAreaM2: number,
+  nominalSpacingM: number,
+  requestedSpacingM: number,
+  noDataCount: number,
+  providers: string[],
   refMode: RefPlaneMode,
   customBase: number,
   feature: GeoJSON.Feature,
@@ -155,10 +273,27 @@ function computeVolume(
   const maxElev  = Math.max(...elevs);
   const meanElev = elevs.reduce((a, b) => a + b, 0) / elevs.length;
 
+  // robust min: low percentile, ignores isolated outliers (DEM glitches, canals…)
+  const sorted = [...elevs].sort((a, b) => a - b);
+  const pos = (ROBUST_PERCENTILE / 100) * (sorted.length - 1);
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  const robustMin = sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+
   const basePlane =
     refMode === "min"    ? minElev :
+    refMode === "robust" ? robustMin :
     refMode === "mean"   ? meanElev :
     customBase;
+
+  // polygon area from turf
+  let polygonAreaM2 = 0;
+  try {
+    polygonAreaM2 = turf.area(feature);
+  } catch {}
+
+  const cellAreaM2 = polygonAreaM2 > 0
+    ? polygonAreaM2 / samples.length
+    : nominalSpacingM * nominalSpacingM;
 
   let above = 0;
   let below = 0;
@@ -168,11 +303,8 @@ function computeVolume(
     else           below += Math.abs(diff) * cellAreaM2;
   }
 
-  // polygon area from turf
-  let polygonAreaM2 = 0;
-  try {
-    polygonAreaM2 = turf.area(feature);
-  } catch {}
+  const minS = samples.find(s => s.elevation === minElev)!;
+  const maxS = samples.find(s => s.elevation === maxElev)!;
 
   return {
     volumeAbove:   above,
@@ -182,15 +314,34 @@ function computeVolume(
     sampledPoints: samples.length,
     minElev, maxElev, meanElev,
     basePlane,
+    refMode,
     polygonAreaM2,
+    gridSpacingM: nominalSpacingM,
+    requestedSpacingM,
+    noDataCount,
+    providers,
+    minPoint: { lat: minS.lat, lng: minS.lng },
+    maxPoint: { lat: maxS.lat, lng: maxS.lng },
   };
 }
 
 function fmtVol(m3: number): string {
-  if (Math.abs(m3) >= 1_000_000) return (m3 / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 3 }) + " Mm³";
-  if (Math.abs(m3) >= 1_000)     return (m3 / 1_000).toLocaleString(undefined,     { maximumFractionDigits: 3 }) + " km³/1000";
+  const abs = Math.abs(m3);
+  if (abs >= 1_000_000_000) return (m3 / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " km³";
+  if (abs >= 1_000_000)     return (m3 / 1_000_000).toLocaleString(undefined,     { maximumFractionDigits: 3 }) + " Mm³";
   return m3.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " m³";
 }
+
+const PROVIDER_LABELS: Record<string, string> = {
+  "open-meteo":     "Copernicus DEM 90 m (Open-Meteo)",
+  "opentopodata":   "SRTM 30 m (OpenTopoData)",
+  "open-elevation": "SRTM (Open-Elevation)",
+};
+function fmtProviders(list: string[]): string {
+  const names = list.filter(p => p !== "cache").map(p => PROVIDER_LABELS[p] ?? p);
+  return names.length ? names.join(" + ") : "cached DEM values";
+}
+
 function fmtArea(m2: number): string {
   if (m2 >= 1_000_000) return (m2 / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " km²";
   return (m2 / 10_000).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " ha";
@@ -227,7 +378,13 @@ export default function VolumeCalculationPanel({
     return Math.round(cols * rows * 0.6);
   }, [bbox, resolution]);
 
-  const cellAreaM2 = resolution * resolution;
+  // If the grid would exceed the cap, it gets coarsened automatically — preview that
+  const expectedSpacing = useMemo(() => {
+    const base = Math.max(resolution, MIN_RESOLUTION_M);
+    if (!estimatedPoints) return base;
+    const scale = Math.sqrt(estimatedPoints / MAX_SAMPLE_POINTS);
+    return scale > 1 ? Math.round(base * scale) : base;
+  }, [estimatedPoints, resolution]);
 
   const handleCalculate = async () => {
     if (!selectedFeature || !bbox) return;
@@ -239,51 +396,39 @@ export default function VolumeCalculationPanel({
     setErrorMsg("");
 
     try {
-      // 1. Build bbox grid
-      const grid = buildGrid(bbox, resolution);
-      if (!grid.length) throw new Error("Grid is empty — try a larger polygon or coarser resolution");
-
+      // 1. Build sample grid inside the polygon (auto-coarsened to the point cap)
+      const { inside, spacingM: effRes } = buildAdaptiveGrid(bbox, selectedFeature, resolution);
       setProgress(15);
 
-      // 2. Filter inside polygon
+      // 2. Check we have points
       setStatus("sampling");
-      const inside = filterInsidePolygon(grid, selectedFeature);
-      if (!inside.length) throw new Error("No grid points fell inside the polygon");
-
+      if (!inside.length) throw new Error("No grid points fell inside the polygon — try a larger polygon or finer resolution");
       setProgress(25);
 
-      // 3. Check point limit
-      if (inside.length > 500) {
-        // warn but continue — Open-Elevation can handle ~500 pts in batches
-        // For very large counts, auto-bump resolution
-      }
-
-      // 4. Fetch elevation in batches with progress tracking
+      // 3. Fetch elevation in batches (rate-limit friendly, with retry)
       setStatus("fetching");
-      const BATCH = 100;
-      const allElevs: number[] = [];
-
-      for (let i = 0; i < inside.length; i += BATCH) {
-        if (abortRef.current) throw new Error("Cancelled");
-        const slice = inside.slice(i, i + BATCH);
-        const elevs = await fetchElevationBatch(slice);
-        allElevs.push(...elevs);
-        setProgress(25 + Math.round(((i + BATCH) / inside.length) * 60));
-      }
+      const { elevs: allElevs, providers } = await fetchElevationsSingleSource(inside, {
+        isCancelled: () => abortRef.current,
+        onProgress: (done, total) => setProgress(25 + Math.round((done / total) * 60)),
+      });
 
       setStatus("computing");
       setProgress(88);
 
-      // 5. Assemble samples
-      const pts: SamplePoint[] = inside.map((p, idx) => ({
-        lat: p.lat,
-        lng: p.lng,
-        elevation: allElevs[idx] ?? 0,
-      }));
+      // 4. Assemble samples (skip points the DEM has no data for)
+      const pts: SamplePoint[] = [];
+      inside.forEach((p, idx) => {
+        const e = allElevs[idx];
+        if (e !== null && e !== undefined) pts.push({ lat: p.lat, lng: p.lng, elevation: e });
+      });
+      const noDataCount = inside.length - pts.length;
+      if (!pts.length) throw new Error("No elevation data available for this area");
       setSamples(pts);
 
-      // 6. Compute volume
-      const res = computeVolume(pts, cellAreaM2, refMode, customBase, selectedFeature);
+      // 5. Compute volume
+      const res = computeVolume(
+        pts, effRes, resolution, noDataCount, providers, refMode, customBase, selectedFeature,
+      );
       setResult(res);
       setProgress(100);
       setStatus("done");
@@ -389,9 +534,13 @@ export default function VolumeCalculationPanel({
         {bbox && (
           <p className="text-[0.65rem] text-slate-500">
             ~{estimatedPoints.toLocaleString()} sample points inside polygon
-            {estimatedPoints > 400 && (
-              <span className="text-amber-400 ml-1">· may be slow, consider Coarse</span>
-            )}
+            {estimatedPoints > MAX_SAMPLE_POINTS ? (
+              <span className="text-amber-400 ml-1">
+                · too many points — grid will be coarsened to ~{expectedSpacing} m
+              </span>
+            ) : estimatedPoints > 400 ? (
+              <span className="text-amber-400 ml-1">· ~1 sec per 100 pts, consider Coarse</span>
+            ) : null}
           </p>
         )}
       </div>
@@ -402,6 +551,7 @@ export default function VolumeCalculationPanel({
         <div className="flex flex-col gap-1.5">
           {([
             { id: "min",    label: "Minimum elevation",  desc: "Volume above lowest point" },
+            { id: "robust", label: "Robust minimum",     desc: `${ROBUST_PERCENTILE}st percentile — ignores outlier points` },
             { id: "mean",   label: "Mean elevation",     desc: "Cut/fill balance plane" },
             { id: "custom", label: "Custom altitude",    desc: "Specify exact base (m)" },
           ] as { id: RefPlaneMode; label: string; desc: string }[]).map(opt => (
@@ -532,7 +682,7 @@ export default function VolumeCalculationPanel({
               { label: "Mean Elevation",   value: `${result.meanElev.toFixed(1)} m` },
               { label: "Polygon Area",     value: fmtArea(result.polygonAreaM2) },
               { label: "Sample Points",    value: result.sampledPoints.toLocaleString() },
-              { label: "Cell Size",        value: `${Math.sqrt(result.cellArea).toFixed(0)} × ${Math.sqrt(result.cellArea).toFixed(0)} m` },
+              { label: "Grid Spacing",     value: `${result.gridSpacingM.toLocaleString()} m` },
             ].map((row, i) => (
               <div key={row.label} className={`flex items-center justify-between px-3 py-2 ${i > 0 ? "border-t border-white/[0.05]" : ""}`}>
                 <span className="text-xs text-slate-500">{row.label}</span>
@@ -540,6 +690,43 @@ export default function VolumeCalculationPanel({
               </div>
             ))}
           </div>
+
+          {/* Spot-check coordinates (verify against Google Earth etc.) */}
+          <p className="text-[0.6rem] text-slate-500 leading-relaxed font-mono">
+            Lowest: {result.minPoint.lat.toFixed(5)}, {result.minPoint.lng.toFixed(5)} ({result.minElev.toFixed(1)} m)
+            <br />
+            Highest: {result.maxPoint.lat.toFixed(5)}, {result.maxPoint.lng.toFixed(5)} ({result.maxElev.toFixed(1)} m)
+          </p>
+
+          {/* Accuracy notes */}
+          {(() => {
+            const notes: string[] = [];
+            if (result.gridSpacingM > result.requestedSpacingM) {
+              notes.push(
+                `Grid was coarsened from ${result.requestedSpacingM} m to ${result.gridSpacingM} m to stay within ${MAX_SAMPLE_POINTS.toLocaleString()} points. Use a smaller polygon for finer detail.`
+              );
+            }
+            if (result.polygonAreaM2 > 100_000_000) {
+              notes.push("Large area: this is a coarse terrain-volume estimate, not suitable for engineering quantities.");
+            }
+            if (result.refMode !== "custom") {
+              notes.push("Base plane comes from the data (min/robust min/mean), so this is terrain volume relative to that plane, not a true cut/fill. Use a custom base elevation for real earthworks.");
+            }
+            if (result.refMode === "robust" && result.volumeBelow > 0) {
+              notes.push(`Robust base is ${(result.basePlane - result.minElev).toFixed(1)} m above the absolute minimum, so the lowest points count as "below base".`);
+            }
+            if (result.noDataCount > 0) {
+              notes.push(`${result.noDataCount.toLocaleString()} point(s) had no elevation data and were skipped.`);
+            }
+            if (result.providers.filter(p => p !== "cache").length > 1) {
+              notes.push("Elevation came from more than one source (fallback), so values may differ slightly between parts of the area.");
+            }
+            return notes.length ? (
+              <div className="rounded-xl bg-amber-400/[0.07] border border-amber-400/20 px-3 py-2 text-[0.65rem] text-amber-200/90 leading-relaxed flex flex-col gap-1">
+                {notes.map((n, i) => <div key={i}>• {n}</div>)}
+              </div>
+            ) : null;
+          })()}
 
           {/* Elevation mini-histogram */}
           <ElevationMiniChart samples={samples} basePlane={result.basePlane} />
@@ -559,7 +746,7 @@ export default function VolumeCalculationPanel({
 
           {/* Data source note */}
           <p className="text-[0.6rem] text-slate-600 text-center leading-relaxed">
-            Elevation data: Open-Elevation (SRTM 30m) · {result.sampledPoints} pts × {Math.sqrt(result.cellArea).toFixed(0)} m grid
+            Elevation data: {fmtProviders(result.providers)} · {result.sampledPoints.toLocaleString()} pts · ~{Math.round(Math.sqrt(result.cellArea)).toLocaleString()} m per point
           </p>
         </div>
       )}

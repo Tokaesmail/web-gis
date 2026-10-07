@@ -16,7 +16,7 @@
 // floating panel that sits above the map — no sidebar needed.
 
 import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
-import { buildElevationGrid, type ElevationGrid } from "../../../../lib/elevation";
+import { buildElevationGrid, fillGridGaps, sanitizeContours, type ElevationGrid } from "../../../../lib/elevation";
 import { gridToContours } from "../../../../lib/marchingSquares";
 import { buildTemperatureGrid, type TemperatureGrid } from "../../../../lib/temperatureGrid";
 import { gridToTemperatureContours } from "../../../../lib/temperatureContours";
@@ -53,6 +53,20 @@ function getFeatureBounds(feature?: GeoJSON.Feature | null) {
 
 function midOf(bounds: { north: number; south: number; east: number; west: number }) {
   return { lat: (bounds.north + bounds.south) / 2, lng: (bounds.east + bounds.west) / 2 };
+}
+
+// ── contour interval helpers ───────────────────────────────────────────────────
+// A fixed interval (default 25 m) produces ZERO lines on flat/small areas, so the
+// panel looked like it "did nothing". Pick a readable interval from the data range.
+const NICE_INTERVALS = [1, 2, 5, 10, 20, 25, 50, 100, 200];
+function niceIntervalFor(range: number, targetLevels = 8) {
+  const raw = range / targetLevels;
+  return NICE_INTERVALS.find((n) => n >= raw) ?? NICE_INTERVALS[NICE_INTERVALS.length - 1];
+}
+function emptyContourMessage(range: number, interval: number) {
+  return range < 2
+    ? `This area is almost flat (elevation range ${range.toFixed(1)} m), so there are no contour lines to draw. Try a larger area.`
+    : `No contour lines at a ${interval} m interval (elevation range is ${range.toFixed(0)} m). Lower the contour interval.`;
 }
 
 const wmoIcon = (c: number) =>
@@ -143,6 +157,17 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
   const bounds = useMemo(() => getFeatureBounds(selectedFeature), [selectedFeature]);
   const center = useMemo(() => midOf(bounds), [bounds]);
 
+  // A click/point (or nothing) gives only a tiny ~200 m box — the contours would be
+  // invisible at normal zoom. Tell the user to draw an area instead.
+  const geomType = selectedFeature?.geometry?.type;
+  const isAreaSelected = geomType === "Polygon" || geomType === "MultiPolygon";
+  const areaWarning = !isAreaSelected ? (
+    <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-2.5 py-2 text-[0.62rem] text-amber-300">
+      No area selected — draw a polygon or rectangle first. Right now only a ~200 m box around a point is used,
+      so the contours would be too small to see on the map.
+    </div>
+  ) : null;
+
   // ── Mode switch ──────────────────────────────────────────────────────────
   const [mode, setMode] = useState<ContourMode>("elevation");
 
@@ -161,43 +186,73 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
   const [tempContours, setTempContours] = useState<GeoJSON.FeatureCollection | null>(null);
   const [tempLoading, setTempLoading] = useState(false);
   const [tempError, setTempError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   // ── Shared live weather card ─────────────────────────────────────────────
   const [weather, setWeather] = useState<any>(null);
   const [weatherLoading, setWeatherLoading] = useState(false);
 
   const runElevation = useCallback(async () => {
+    if (!isAreaSelected) {
+      setError("Draw a polygon / rectangle / circle first - contours can only be built for a real area.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const g = await buildElevationGrid(bounds, resolution);
       setGrid(g);
-      const c = gridToContours(g, { interval });
+
+      // auto-fit the interval when it would give fewer than ~3 levels
+      const range = g.max - g.min;
+      let iv = interval;
+      if (range > 0 && range / iv < 3) {
+        iv = niceIntervalFor(range);
+        setIntervalM(iv);
+      }
+
+      const c = sanitizeContours(gridToContours(g, { interval: iv }));
       setContours(c);
+      if (!c.features.length) setError(emptyContourMessage(range, iv));
     } catch (e: any) {
       setError(e?.message ?? "Elevation lookup failed");
     } finally {
       setLoading(false);
     }
-  }, [bounds, resolution, interval]);
+  }, [bounds, resolution, interval, isAreaSelected]);
 
   const runWeatherContours = useCallback(async () => {
+    if (!isAreaSelected) {
+      setTempError("Draw a polygon / rectangle / circle first - isotherms can only be built for a real area.");
+      return;
+    }
     setTempLoading(true);
     setTempError(null);
     try {
-      const g = await buildTemperatureGrid(bounds, tempResolution);
-      setTempGrid(g);
-      const c = gridToTemperatureContours(g, { interval: tempInterval });
+      const g = fillGridGaps(await buildTemperatureGrid(bounds, tempResolution));
+      setTempGrid({ ...g });
+      // Auto-fit the interval: a fixed 2 C gives 0 lines when the AOI spans less than 2 C.
+      const trange = g.max - g.min;
+      let tiv = tempInterval;
+      if (trange > 0 && trange / tiv < 3) {
+        tiv = Math.max(0.1, Math.round((trange / 6) * 10) / 10);
+        setTempInterval(tiv);
+      }
+      const c = sanitizeContours(gridToTemperatureContours(g, { interval: tiv }));
       setTempContours(c);
       if (c.features.length === 0) {
-        setTempError("No isotherm crossings found in this AOI — try a smaller interval or a larger area.");
+        setTempError(
+          trange < 0.1
+            ? "Temperature is uniform across this AOI (the weather model is coarser than the area), so there are no isotherms. Draw a larger area."
+            : "No isotherm crossings found in this AOI - try a smaller interval or a larger area."
+        );
       }
     } catch (e: any) {
       setTempError(e?.message ?? "Temperature lookup failed");
     } finally {
       setTempLoading(false);
     }
-  }, [bounds, tempResolution, tempInterval]);
+  }, [bounds, tempResolution, tempInterval, isAreaSelected]);
 
   const fetchWeather = useCallback(async () => {
     setWeatherLoading(true);
@@ -216,27 +271,43 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
     }
   }, [center.lat, center.lng]);
 
+  // Shared "Add to Map" logic: validates, sends, and tells the user what happened.
+  const sendToMap = useCallback((fc: GeoJSON.FeatureCollection, prefix: string) => {
+    if (!onContoursGenerated) {
+      setNotice({ ok: false, text: "This panel is not connected to the map: the host did not pass onContoursGenerated (check AnalysisSidebar)." });
+      return;
+    }
+    const clean = sanitizeContours(fc);
+    if (!clean.features.length) {
+      setNotice({ ok: false, text: "All generated lines had invalid coordinates, so nothing was sent to the map." });
+      return;
+    }
+    const fileName = `${prefix}-${Date.now()}.geojson`;
+    onContoursGenerated(clean, fileName);
+    setNotice(null);
+  }, [onContoursGenerated]);
+
   const handleAddElevationToMap = useCallback(() => {
-    if (!contours) return;
-    const fileName = `elevation-contours-${Date.now()}.geojson`;
-    onContoursGenerated?.(contours, fileName);
-  }, [contours, onContoursGenerated]);
+    if (contours) sendToMap(contours, "elevation-contours");
+  }, [contours, sendToMap]);
 
   const handleAddWeatherToMap = useCallback(() => {
-    if (!tempContours) return;
-    const fileName = `weather-contours-${Date.now()}.geojson`;
-    onContoursGenerated?.(tempContours, fileName);
-  }, [tempContours, onContoursGenerated]);
+    if (tempContours) sendToMap(tempContours, "weather-contours");
+  }, [tempContours, sendToMap]);
 
   // re-interpolate contours instantly when interval changes (no new fetch needed)
   const handleIntervalChange = (val: number) => {
     setIntervalM(val);
-    if (grid) setContours(gridToContours(grid, { interval: val }));
+    if (grid) {
+      const c = sanitizeContours(gridToContours(grid, { interval: val }));
+      setContours(c);
+      setError(c.features.length ? null : emptyContourMessage(grid.max - grid.min, val));
+    }
   };
 
   const handleTempIntervalChange = (val: number) => {
     setTempInterval(val);
-    if (tempGrid) setTempContours(gridToTemperatureContours(tempGrid, { interval: val }));
+    if (tempGrid) setTempContours(sanitizeContours(gridToTemperatureContours(tempGrid, { interval: val })));
   };
 
   const cur = weather?.current;
@@ -253,7 +324,7 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
           <button
             key={m.key}
             type="button"
-            onClick={() => setMode(m.key)}
+            onClick={() => { setMode(m.key); setNotice(null); }}
             className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium transition-all cursor-pointer ${
               mode === m.key
                 ? "bg-cyan-400 text-[#040d1a] shadow-[0_0_12px_rgba(0,212,255,0.3)]"
@@ -273,7 +344,7 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
         </p>
         <p className="text-xs text-slate-300">
           {mode === "elevation"
-            ? "Open-Meteo weather · Open-Elevation terrain · client-side contour interpolation"
+            ? "Open-Meteo weather · DEM terrain · client-side contour interpolation"
             : "Open-Meteo current temperature · client-side isotherm interpolation"}
         </p>
       </div>
@@ -341,7 +412,7 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
                 <span className="text-[0.65rem] text-cyan-300 font-mono">{interval} m</span>
               </div>
               <input
-                type="range" min={5} max={200} step={5} value={interval}
+                type="range" min={1} max={200} step={1} value={interval}
                 onChange={(e) => handleIntervalChange(Number(e.target.value))}
                 className="w-full accent-cyan-400"
               />
@@ -350,6 +421,7 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
             <p className="text-[0.58rem] text-slate-600">
               BBOX {bounds.west.toFixed(4)}, {bounds.south.toFixed(4)}, {bounds.east.toFixed(4)}, {bounds.north.toFixed(4)}
             </p>
+            {areaWarning}
 
             <button
               onClick={runElevation}
@@ -386,10 +458,12 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
                 <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Preview</p>
                 <span className={`text-[0.55rem] px-1.5 py-0.5 rounded-full border ${
                   grid.source === "open-meteo" ? "bg-cyan-400/10 text-cyan-300 border-cyan-400/20" :
-                  grid.source === "open-elevation" ? "bg-amber-400/10 text-amber-300 border-amber-400/20" :
-                  "bg-violet-400/10 text-violet-300 border-violet-400/20"
+                  "bg-amber-400/10 text-amber-300 border-amber-400/20"
                 }`}>
-                  {grid.source === "open-meteo" ? "Open-Meteo" : grid.source === "open-elevation" ? "Open-Elevation (fallback)" : "Mixed sources"}
+                  {grid.source === "open-meteo" ? "Copernicus DEM 90 m"
+                    : grid.source === "opentopodata" ? "SRTM 30 m (fallback)"
+                    : grid.source === "open-elevation" ? "SRTM (fallback)"
+                    : "Mixed sources"}
                 </span>
               </div>
 
@@ -408,6 +482,12 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
                 ))}
               </div>
 
+              {!!contours?.features.length && (
+                <p className="text-[0.6rem] text-cyan-300/80 text-center">
+                  The lines appear on the map only after you press “Add Contours to Map”.
+                </p>
+              )}
+
               <button
                 onClick={handleAddElevationToMap}
                 disabled={!contours?.features.length}
@@ -418,11 +498,19 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
                 </svg>
                 Add Contours to Map
               </button>
+
+              {notice && (
+                <div className={`rounded-lg border px-2.5 py-2 text-[0.62rem] ${
+                  notice.ok ? "border-emerald-500/20 bg-emerald-500/[0.06] text-emerald-300"
+                            : "border-red-500/20 bg-red-500/[0.06] text-red-300"}`}>
+                  {notice.text}
+                </div>
+              )}
             </div>
           )}
 
           <p className="text-[0.58rem] text-slate-600 text-center leading-relaxed">
-            Elevation comes from Open-Meteo (Copernicus DEM, 90m) with automatic fallback to Open-Elevation (SRTM).
+            Elevation comes from Open-Meteo (Copernicus DEM, 90m) with automatic fallback to OpenTopoData / Open-Elevation (SRTM), via the app's own elevation proxy.
             Contours are interpolated locally using marching squares — no server round-trip.
           </p>
         </>
@@ -457,7 +545,7 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
                 <span className="text-[0.65rem] text-cyan-300 font-mono">{tempInterval} °C</span>
               </div>
               <input
-                type="range" min={0.5} max={5} step={0.5} value={tempInterval}
+                type="range" min={0.1} max={5} step={0.1} value={tempInterval}
                 onChange={(e) => handleTempIntervalChange(Number(e.target.value))}
                 className="w-full accent-cyan-400"
               />
@@ -466,6 +554,7 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
             <p className="text-[0.58rem] text-slate-600">
               BBOX {bounds.west.toFixed(4)}, {bounds.south.toFixed(4)}, {bounds.east.toFixed(4)}, {bounds.north.toFixed(4)}
             </p>
+            {areaWarning}
 
             <button
               onClick={runWeatherContours}
@@ -546,6 +635,14 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
                 </svg>
                 Add Isotherms to Map
               </button>
+
+              {notice && (
+                <div className={`rounded-lg border px-2.5 py-2 text-[0.62rem] ${
+                  notice.ok ? "border-emerald-500/20 bg-emerald-500/[0.06] text-emerald-300"
+                            : "border-red-500/20 bg-red-500/[0.06] text-red-300"}`}>
+                  {notice.text}
+                </div>
+              )}
             </div>
           )}
 
