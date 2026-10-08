@@ -206,6 +206,10 @@ interface SatelliteScene {
   thumbnail?: string;
   assets: Record<string, string>;
   bbox?: number[];
+  // ⚠️ (2026-10-08) كل الـ tiles (MGRS/path-row) اللي اتصوّرت في نفس اليوم — لما الـ AOI على حد
+  // بين tile-ين (زي T35R/T36R عند 30°E) الـ scene الواحدة مش بتغطي الـ AOI كله، فبنحتفظ
+  // بالـ tiles كلها بدل ما نرمي كل واحدة غير الأقل غيوم. شوفي searchScenes + getSceneAssetUrlGroup.
+  tiles?: SatelliteScene[];
 }
 
 interface PreviewDef {
@@ -1205,6 +1209,82 @@ function getSceneAssetUrl(scene: SatelliteScene, assetKey: string) {
   return getAssetLookupKeys(assetKey).map((key) => scene.assets[key]).find(Boolean);
 }
 
+// ── Multi-tile helpers (2026-10-08) ─────────────────────────────────────────
+type AoiBbox = [number, number, number, number]; // [west, south, east, north]
+
+function bboxIntersectsAoi(b: number[], aoi: AoiBbox) {
+  return b[2] > aoi[0] && b[0] < aoi[2] && b[3] > aoi[1] && b[1] < aoi[3];
+}
+
+// Tiles of this scene's pass that actually touch the AOI (STAC bbox = axis-aligned
+// footprint, slightly generous, so a corner-touching tile can still slip in — the
+// backend skips tiles that don't really overlap, see NoOverlapError in route.ts).
+function getRelevantTiles(scene: SatelliteScene, aoi: AoiBbox): SatelliteScene[] {
+  const tiles = scene.tiles?.length ? scene.tiles : [scene];
+  const relevant = tiles.filter((t) => !t.bbox || bboxIntersectsAoi(t.bbox, aoi));
+  return relevant.length ? relevant : tiles;
+}
+
+// Same as getSceneAssetUrl but returns "hrefTileA|hrefTileB" for every relevant tile —
+// route.ts's /api/raster-proxy/analyze mosaics the "|" groups onto one AOI-wide grid.
+// With a single tile it returns the plain href, i.e. exactly the old behavior.
+function getSceneAssetUrlGroup(scene: SatelliteScene, assetKey: string, aoi: AoiBbox): string | undefined {
+  const hrefs = getRelevantTiles(scene, aoi)
+    .map((t) => getSceneAssetUrl(t, assetKey))
+    .filter((h): h is string => !!h);
+  const unique = Array.from(new Set(hrefs));
+  return unique.length ? unique.join("|") : undefined;
+}
+
+// Rough share (0–1) of the AOI that the scene's tiles reach, by sampling a grid of
+// points inside the AOI against the STAC footprints. Footprints are generous, so
+// this can only over-estimate coverage — if it warns, the gap is real.
+function aoiCoverageFraction(scene: SatelliteScene, aoi: AoiBbox, steps = 24): number {
+  const boxes = (scene.tiles?.length ? scene.tiles : [scene])
+    .map((t) => t.bbox)
+    .filter((b): b is number[] => Array.isArray(b) && b.length >= 4);
+  if (!boxes.length) return 1;
+  let hit = 0;
+  let total = 0;
+  for (let i = 0; i < steps; i++) {
+    const lon = aoi[0] + ((i + 0.5) / steps) * (aoi[2] - aoi[0]);
+    for (let j = 0; j < steps; j++) {
+      const lat = aoi[1] + ((j + 0.5) / steps) * (aoi[3] - aoi[1]);
+      total++;
+      if (boxes.some((b) => lon >= b[0] && lon <= b[2] && lat >= b[1] && lat <= b[3])) hit++;
+    }
+  }
+  return total ? hit / total : 1;
+}
+
+function loadImageForComposite(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("tile preview failed to load"));
+    img.src = url;
+  });
+}
+
+// Draws several same-bbox/same-size preview PNGs (one per tile — each is transparent
+// outside its own footprint) on top of each other into one data URL.
+async function compositeTilePreviews(urls: string[]): Promise<string> {
+  const settled = await Promise.allSettled(urls.map(loadImageForComposite));
+  const imgs = settled
+    .filter((r): r is PromiseFulfilledResult<HTMLImageElement> => r.status === "fulfilled")
+    .map((r) => r.value);
+  if (!imgs.length) throw new Error("no tile preview could be loaded");
+  const canvas = document.createElement("canvas");
+  canvas.width = imgs[0].naturalWidth;
+  canvas.height = imgs[0].naturalHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("canvas 2d context unavailable");
+  // first tile = best-priority → drawn last so it wins in overlap zones
+  for (let i = imgs.length - 1; i >= 0; i--) ctx.drawImage(imgs[i], 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/png");
+}
+
 // ── Sentinel-1 SAR-derivative / DEM-derivative pipeline ─────────────────────
 // Mirrors makeRasterProxyAnalyzeUrl in SatelliteDataPanel.tsx exactly (same
 // query params, same branch logic) so /api/raster-proxy/analyze — which
@@ -1387,6 +1467,37 @@ async function makePreviewUrl(
     url.searchParams.set("colormap_name", def.colormap ?? "rdylgn");
   }
   return { url: url.toString() };
+}
+
+// ⚠️ (2026-10-08) makePreviewUrl() works on ONE STAC item. For the default optical
+// path (TiTiler /item/bbox) an item that only covers part of the AOI returns a
+// half-empty image — the other half is a different tile of the same pass. So when
+// the scene has ≥2 tiles touching the AOI, render each tile with the same bbox/size
+// and composite them client-side. Other pipelines are untouched.
+async function makePreviewUrlMosaic(
+  scene: SatelliteScene,
+  indexKey: PreviewKey,
+  bbox: AoiBbox,
+  source: SatSource,
+  sentinelDecodeToken?: string,
+  titilerSharedRescale?: string | null,
+  onProgress?: (previewUrl: string) => void,
+): Promise<{ url?: string; error?: string }> {
+  const def = PREVIEW_DEFS[indexKey];
+  const tiles = getRelevantTiles(scene, bbox);
+  if (def.pipeline || tiles.length < 2 || typeof document === "undefined") {
+    return makePreviewUrl(scene, indexKey, bbox, source, sentinelDecodeToken, titilerSharedRescale, onProgress);
+  }
+  const results = await Promise.all(
+    tiles.map((t) => makePreviewUrl(t, indexKey, bbox, source, sentinelDecodeToken, titilerSharedRescale)),
+  );
+  const urls = results.map((r) => r.url).filter((u): u is string => !!u);
+  if (urls.length < 2) return results.find((r) => r.url) ?? results[0];
+  try {
+    return { url: await compositeTilePreviews(urls) };
+  } catch {
+    return results.find((r) => r.url) ?? results[0];
+  }
 }
 
 function formatDateDMY(value: string) {
@@ -1618,22 +1729,45 @@ function ChangeCompareModal({
   );
 }
 
+// ⚠️ (2026-10-08) الافتراضيات كلها في 2026: Before = مايو، After = سبتمبر.
+const DEFAULT_BEFORE_FROM = "2026-05-01";
+const DEFAULT_BEFORE_TO = "2026-06-01";
+const DEFAULT_AFTER_FROM = "2026-09-01";
+const DEFAULT_AFTER_TO = "2026-10-01";
+
+// ⚠️ (2026-10-08) نفس شكل الحقل الأصلي (خانة واحدة + أيقونة تقويم)، بس النص المعروض
+// دايمًا DD/MM/YYYY (يوم/شهر/سنة) بغض النظر عن لغة المتصفح — ترتيب <input type="date">
+// بيتحدد من لغة المتصفح (شهر/يوم/سنة عندك) ومفيش طريقة نغيّره من الكود. فبنعرض النص
+// بنفسنا، وفوقه input date شفاف (opacity-0) هو اللي بيفتح التقويم ويرجّع القيمة
+// "YYYY-MM-DD" زي ما كانت، فباقي الكود (STAC / min / max) مااتغيّرش.
 function DatePickerField({
   label, value, min, max, onChange,
 }: { label: string; value: string; min?: string; max?: string; onChange: (v: string) => void }) {
   return (
     <label className="space-y-1 block">
       <span className="text-[0.58rem] uppercase tracking-wider text-slate-500">{label}</span>
-      <input
-        type="date"
-        value={value}
-        min={min}
-        max={max}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-9 w-full cursor-pointer rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 font-mono text-xs text-slate-200 outline-none transition [color-scheme:dark] focus:border-cyan-400/40"
-        aria-label={label}
-        title={formatDateDMY(value)}
-      />
+      <div className="relative">
+        <div className="flex h-9 w-full items-center justify-between rounded-lg border border-white/[0.08] bg-[#020817]/70 px-2.5 font-mono text-xs text-slate-200 transition focus-within:border-cyan-400/40">
+          <span>{formatDateDMY(value)}</span>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-slate-400" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="18" rx="2" />
+            <line x1="16" y1="2" x2="16" y2="6" />
+            <line x1="8" y1="2" x2="8" y2="6" />
+            <line x1="3" y1="10" x2="21" y2="10" />
+          </svg>
+        </div>
+        <input
+          type="date"
+          value={value}
+          min={min}
+          max={max}
+          onChange={(e) => { if (e.target.value) onChange(e.target.value); }}
+          onClick={(e) => { try { e.currentTarget.showPicker?.(); } catch { /* already open / unsupported */ } }}
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-0 [color-scheme:dark]"
+          aria-label={label}
+          title={formatDateDMY(value)}
+        />
+      </div>
     </label>
   );
 }
@@ -1792,15 +1926,15 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   const [threshold, setThreshold] = useState(0.08);
   const [direction, setDirection] = useState<ChangeDirection>("both");
 
-  const [beforeFrom, setBeforeFrom] = useState("2025-11-01");
-  const [beforeTo, setBeforeTo] = useState("2025-12-01");
+  const [beforeFrom, setBeforeFrom] = useState(DEFAULT_BEFORE_FROM);
+  const [beforeTo, setBeforeTo] = useState(DEFAULT_BEFORE_TO);
   const [beforeScenes, setBeforeScenes] = useState<SatelliteScene[]>([]);
   const [beforeStatus, setBeforeStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [beforeError, setBeforeError] = useState<string | null>(null);
   const [beforeScene, setBeforeScene] = useState<SatelliteScene | null>(null);
 
-  const [afterFrom, setAfterFrom] = useState("2026-05-01");
-  const [afterTo, setAfterTo] = useState("2026-06-01");
+  const [afterFrom, setAfterFrom] = useState(DEFAULT_AFTER_FROM);
+  const [afterTo, setAfterTo] = useState(DEFAULT_AFTER_TO);
   const [afterScenes, setAfterScenes] = useState<SatelliteScene[]>([]);
   const [afterStatus, setAfterStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [afterError, setAfterError] = useState<string | null>(null);
@@ -1989,12 +2123,12 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
         return Number.isFinite(year) && year >= 2000 && year <= 2006;
       };
       if (inAsterRange(beforeFrom) || inAsterRange(beforeTo)) {
-        setBeforeFrom("2025-11-01");
-        setBeforeTo("2025-12-01");
+        setBeforeFrom(DEFAULT_BEFORE_FROM);
+        setBeforeTo(DEFAULT_BEFORE_TO);
       }
       if (inAsterRange(afterFrom) || inAsterRange(afterTo)) {
-        setAfterFrom("2026-05-01");
-        setAfterTo("2026-06-01");
+        setAfterFrom(DEFAULT_AFTER_FROM);
+        setAfterTo(DEFAULT_AFTER_TO);
       }
     }
     prevSourceRef.current = source;
@@ -2035,6 +2169,10 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
       // التاريخ — ده بالظبط سبب "No matching scenes" اللي كانت بتظهر مع DEM.
       // لمصادر static زي دي، منسيبش الـ datetime في الـ query خالص.
       const isStaticSource = SOURCE_META[source]?.cadence === "static";
+      // ⚠️ (2026-10-08) Sentinel-2 / Landsat: same-day items on different tiles are
+      // pieces of ONE pass → keep them all (see SatelliteScene.tiles) instead of
+      // keeping only the least-cloudy tile and losing the rest of the AOI.
+      const groupTiles = source === "sentinel-2" || source === "landsat";
       const searchBody: Record<string, unknown> = {
         collections: [collection],
         bbox: [west, south, east, north],
@@ -2139,10 +2277,17 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
         // بنفس التاريخ بالظبط — يعني نفس اليوم بيتعد مرتين في القايمة. هنا
         // بنسيب أحسن نسخة بس (أقل غيوم) لكل تاريخ، عشان القايمة تعكس عدد
         // المرورات الحقيقية مش عدد الـ tiles.
+        // ⚠️ FIX (2026-10-08): كان بيسيب tile واحد بس لكل تاريخ — فالـ AOI اللي على حد
+        // بين T35R/T36R كانت بتتغطى نصها بس (والنص التاني فاضي في الـ preview والـ
+        // change map). دلوقتي لـ Sentinel-2/Landsat بنجمّع كل الـ tiles في scene واحدة
+        // (tiles[])، والـ backend بيعمل mosaic. باقي المصادر زي ما كانت.
         .reduce<SatelliteScene[]>((deduped, scene) => {
           const existing = deduped.find((s) => s.date === scene.date);
           if (!existing) {
-            deduped.push(scene);
+            deduped.push(groupTiles ? { ...scene, tiles: [scene] } : scene);
+          } else if (groupTiles) {
+            existing.tiles!.push(scene);
+            existing.cloud = Math.max(existing.cloud, scene.cloud);
           } else if (scene.cloud < existing.cloud) {
             Object.assign(existing, scene);
           }
@@ -2248,7 +2393,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   useEffect(() => {
     let cancelled = false;
     if (!beforeScene) { setBeforePreviewUrl(null); setBeforePreviewError(null); return; }
-    makePreviewUrl(
+    makePreviewUrlMosaic(
       beforeScene, indexKey, bboxTuple, source, sentinelDecodeToken, titilerSharedRescale,
       // progressive: default-rescale image يظهر فورًا بعد الـ decode، قبل
       // ما نستنى statistics — بيتستبدل بالنتيجة النهائية (تلوين دقيق) لما
@@ -2270,7 +2415,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   useEffect(() => {
     let cancelled = false;
     if (!afterScene) { setAfterPreviewUrl(null); setAfterPreviewError(null); return; }
-    makePreviewUrl(
+    makePreviewUrlMosaic(
       afterScene, indexKey, bboxTuple, source, sentinelDecodeToken, titilerSharedRescale,
       (previewUrl) => { if (!cancelled) setAfterPreviewUrl(previewUrl); },
     )
@@ -2347,6 +2492,21 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
   }, []);
 
   const canRun = !!beforeScene && !!afterScene && canClassify && availableIndexKeys.length > 0;
+
+  // ⚠️ (2026-10-08) Warn when a selected pass's tiles don't reach the whole AOI
+  // (e.g. only one of two tiles was under the cloud limit) — otherwise the missing
+  // part just silently shows up as an empty half in the preview / change map.
+  const coverageWarning = useMemo(() => {
+    if (!beforeScene || !afterScene) return null;
+    const aoi: AoiBbox = [west, south, east, north];
+    const parts: string[] = [];
+    const b = aoiCoverageFraction(beforeScene, aoi);
+    const a = aoiCoverageFraction(afterScene, aoi);
+    if (b < 0.97) parts.push(`Before (${formatDateDMY(beforeScene.date)}) ≈ ${Math.round(b * 100)}%`);
+    if (a < 0.97) parts.push(`After (${formatDateDMY(afterScene.date)}) ≈ ${Math.round(a * 100)}%`);
+    if (!parts.length) return null;
+    return `Partial coverage of your AOI: ${parts.join(" · ")}. The uncovered part will be empty — pick another date, or raise the cloud-cover limit so the other tile of that pass isn't filtered out.`;
+  }, [beforeScene, afterScene, west, south, east, north]);
 
   const runButtonLabel = useMemo(() => {
     if (!availableIndexKeys.length) return `Change Detection isn't available yet for ${SOURCE_META[source].title}`;
@@ -2430,8 +2590,11 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
         combinedUrls = [beforeDecoded.url, afterDecoded.url];
       } else {
         const sourceAssets = getPreviewAssets(indexKey, source);
-        const beforeHrefs = sourceAssets.map((key) => getSceneAssetUrl(beforeScene, key));
-        const afterHrefs = sourceAssets.map((key) => getSceneAssetUrl(afterScene, key));
+        // ⚠️ (2026-10-08) "hrefTileA|hrefTileB" per band when the AOI spans several
+        // tiles of the pass — route.ts mosaics each "|" group (see readBandMosaic).
+        const aoi: AoiBbox = [west, south, east, north];
+        const beforeHrefs = sourceAssets.map((key) => getSceneAssetUrlGroup(beforeScene, key, aoi));
+        const afterHrefs = sourceAssets.map((key) => getSceneAssetUrlGroup(afterScene, key, aoi));
 
         if (beforeHrefs.some((h) => !h) || afterHrefs.some((h) => !h)) {
           throw new Error("Could not resolve the required band URLs for the selected scenes.");
@@ -2456,7 +2619,17 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
       // route.ts ignores it entirely for every other type.
       if (combinedBidx) params.set("bidx", combinedBidx.join(","));
 
-      const res = await fetch(`/api/raster-proxy/analyze?${params.toString()}`);
+      const analyzeUrl = `/api/raster-proxy/analyze?${params.toString()}`;
+      let res = await fetch(analyzeUrl);
+      // ⚠️ (2026-10-08) PC's SAS-sign / blob endpoints occasionally fail transiently
+      // (504 etc.) — route.ts already retries internally; this is one more cheap
+      // safety net so the person doesn't see a red error for a blip.
+      for (let attempt = 1; attempt <= 2 && (res.status === 502 || res.status === 504); attempt++) {
+        const body = await res.clone().json().catch(() => null);
+        if (!/SAS signing|Upstream fetch failed|Pixel read failed/i.test(String(body?.error ?? ""))) break;
+        await new Promise((r) => setTimeout(r, 1200 * attempt));
+        res = await fetch(analyzeUrl);
+      }
       if (!res.ok) {
         const errBody = await res.json().catch(() => null);
         throw new Error(errBody?.error ?? `Change detection API failed (${res.status})`);
@@ -2856,6 +3029,12 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
               {afterScene ? `✓ After · ${formatDateDMY(afterScene.date)}` : "✗ After scene"}
             </span>
           </div>
+        </div>
+      )}
+
+      {coverageWarning && (
+        <div className="rounded-lg border border-amber-400/20 bg-amber-400/[0.06] px-3 py-2 text-[0.6rem] text-amber-200">
+          {coverageWarning}
         </div>
       )}
 

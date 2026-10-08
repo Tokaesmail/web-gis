@@ -20,6 +20,7 @@ import { buildElevationGrid, type ElevationGrid } from "../../../../lib/elevatio
 import { gridToContours } from "../../../../lib/marchingSquares";
 import { buildTemperatureGrid, type TemperatureGrid } from "../../../../lib/temperatureGrid";
 import { gridToTemperatureContours } from "../../../../lib/temperatureContours";
+import { clipContoursToAoi, describeContours } from "../../../../lib/clipToAoi";
 
 type ContourMode = "elevation" | "weather";
 
@@ -143,6 +144,29 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
   const bounds = useMemo(() => getFeatureBounds(selectedFeature), [selectedFeature]);
   const center = useMemo(() => midOf(bounds), [bounds]);
 
+  // Clip generated lines to the exact AOI polygon (grid is sampled over the padded bbox)
+  // Also prints a debug summary (raw vs clipped vs AOI). If clipping wipes out
+  // EVERYTHING we fall back to the raw lines so something is still drawn.
+  const clipToAoi = useCallback(
+    (fc: GeoJSON.FeatureCollection, label: string = "contours") => {
+      const clipped = clipContoursToAoi(fc, selectedFeature);
+      console.log(
+        `[CONTOURS-DEBUG:${label}]`,
+        JSON.stringify({
+          aoi: describeContours(selectedFeature),
+          raw: describeContours(fc),
+          clipped: describeContours(clipped),
+        })
+      );
+      if (fc.features.length > 0 && clipped.features.length === 0) {
+        console.warn(`[CONTOURS-DEBUG:${label}] clip removed ALL lines → using unclipped lines`);
+        return fc;
+      }
+      return clipped;
+    },
+    [selectedFeature]
+  );
+
   // ── Mode switch ──────────────────────────────────────────────────────────
   const [mode, setMode] = useState<ContourMode>("elevation");
 
@@ -172,14 +196,14 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
     try {
       const g = await buildElevationGrid(bounds, resolution);
       setGrid(g);
-      const c = gridToContours(g, { interval });
+      const c = clipToAoi(gridToContours(g, { interval }), "elevation");
       setContours(c);
     } catch (e: any) {
       setError(e?.message ?? "Elevation lookup failed");
     } finally {
       setLoading(false);
     }
-  }, [bounds, resolution, interval]);
+  }, [bounds, resolution, interval, clipToAoi]);
 
   const runWeatherContours = useCallback(async () => {
     setTempLoading(true);
@@ -187,7 +211,7 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
     try {
       const g = await buildTemperatureGrid(bounds, tempResolution);
       setTempGrid(g);
-      const c = gridToTemperatureContours(g, { interval: tempInterval });
+      const c = clipToAoi(gridToTemperatureContours(g, { interval: tempInterval }), "weather");
       setTempContours(c);
       if (c.features.length === 0) {
         setTempError("No isotherm crossings found in this AOI — try a smaller interval or a larger area.");
@@ -197,7 +221,7 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
     } finally {
       setTempLoading(false);
     }
-  }, [bounds, tempResolution, tempInterval]);
+  }, [bounds, tempResolution, tempInterval, clipToAoi]);
 
   const fetchWeather = useCallback(async () => {
     setWeatherLoading(true);
@@ -219,24 +243,26 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
   const handleAddElevationToMap = useCallback(() => {
     if (!contours) return;
     const fileName = `elevation-contours-${Date.now()}.geojson`;
+    console.log("[CONTOURS-DEBUG:send-elevation]", JSON.stringify(describeContours(contours)));
     onContoursGenerated?.(contours, fileName);
   }, [contours, onContoursGenerated]);
 
   const handleAddWeatherToMap = useCallback(() => {
     if (!tempContours) return;
     const fileName = `weather-contours-${Date.now()}.geojson`;
+    console.log("[CONTOURS-DEBUG:send-weather]", JSON.stringify(describeContours(tempContours)));
     onContoursGenerated?.(tempContours, fileName);
   }, [tempContours, onContoursGenerated]);
 
   // re-interpolate contours instantly when interval changes (no new fetch needed)
   const handleIntervalChange = (val: number) => {
     setIntervalM(val);
-    if (grid) setContours(gridToContours(grid, { interval: val }));
+    if (grid) setContours(clipToAoi(gridToContours(grid, { interval: val })));
   };
 
   const handleTempIntervalChange = (val: number) => {
     setTempInterval(val);
-    if (tempGrid) setTempContours(gridToTemperatureContours(tempGrid, { interval: val }));
+    if (tempGrid) setTempContours(clipToAoi(gridToTemperatureContours(tempGrid, { interval: val })));
   };
 
   const cur = weather?.current;

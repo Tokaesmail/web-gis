@@ -5,7 +5,7 @@ import { useLang } from "../translations";
 import JSONUploadModal from "./DataManagerPanel";
 import { type MapCapture } from "./TemplateMatchPanel";
 import { MapLayer } from "../../map/LayerPanel";
-import { PanelContent } from "./PanelContent";
+import { PanelContent, preloadPanel, preloadAllPanels } from "./PanelContent";
 import { panels, type PanelId, type InsightTab } from "./panels";
 import { type RasterPreviewConfig, type SatellitePreviewConfig } from "./SatelliteDataPanel";
 import { type ChangeDetectionPreviewConfig, type ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
@@ -13,6 +13,35 @@ import { type SuperResolutionPreviewConfig } from "./SuperResolutionPanel";
 import { type InterpolationPreviewConfig } from "./temporalInterpolation";
 import { OPEN_RASTER_CALCULATOR_EVENT } from "./sharedSceneSelection";
 import { RasterCalcSidebarItem, PALM_ICON, type RasterTabKey, type PalmHeatmapPreviewConfig, type PalmPointsPreviewConfig } from "./PalmTreesPanel";
+
+/** Shows the real error instead of a blank panel body if a panel crashes while rendering. */
+class PanelErrorBoundary extends React.Component<
+  { children: React.ReactNode; panelId: string },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error) { console.error("[PANEL-DEBUG] panel crashed:", this.props.panelId, error); }
+  componentDidUpdate(prev: { panelId: string }) {
+    if (prev.panelId !== this.props.panelId && this.state.error) this.setState({ error: null });
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] p-3 text-[0.7rem] text-red-300">
+          Panel failed to load: {this.state.error.message}
+          <button
+            onClick={() => this.setState({ error: null })}
+            className="block mt-2 text-cyan-300 underline cursor-pointer"
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 /** Sub-features shown in the Insight hover flyout. Add new InsightTab members here as they ship. */
 const INSIGHT_ITEMS: { key: InsightTab; labelEn: string; labelAr: string }[] = [
@@ -194,7 +223,14 @@ export default function AnalysisSidebar(
     return () => window.removeEventListener(OPEN_RASTER_CALCULATOR_EVENT, openRasterPanel);
   }, [onActivePanelChange]);
   //^ معرفة بيانات الـ Panel
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") preloadAllPanels();
+  }, []);
+
   const activeItem = panels.find((p) => p.id === activePanel);
+  useEffect(() => {
+    if (activePanel) console.log("[PANEL-DEBUG] open:", activePanel, "known:", !!activeItem, "selectedFeature:", !!selectedFeature);
+  }, [activePanel]); // eslint-disable-line react-hooks/exhaustive-deps
   const isPalmsActive = activePanel === "raster" && rasterTab === "palms";
   const headerIcon = isPalmsActive ? PALM_ICON : activeItem?.icon;
   const isInsightActive = activePanel === "insight";
@@ -261,7 +297,9 @@ export default function AnalysisSidebar(
             {/* Panel body */}
             <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 custom-scroll">
               {activePanel && (
+                <PanelErrorBoundary panelId={activePanel}>
                 <PanelContent
+                  key={`${activePanel}-${rasterTab}-${insightTab}`}
                   id={activePanel}
                   rasterTab={rasterTab}
                   insightTab={insightTab}
@@ -302,6 +340,7 @@ export default function AnalysisSidebar(
                   onInterpolationPreview={onInterpolationPreview}
                   onOpenElevationFloat={onOpenElevationFloat}
                 />
+                </PanelErrorBoundary>
               )}
             </div>
           </div>
@@ -334,7 +373,7 @@ export default function AnalysisSidebar(
             // "insight" gets a hover flyout (Interpolation, ...) — same idea as raster.
             if (item.id === "insight") {
               return (
-                <div key={item.id} className="relative group w-full flex justify-center">
+                <div key={item.id} onMouseEnter={() => preloadPanel(item.id)} className="relative group w-full flex justify-center">
                   <button
                     onClick={() => selectInsightTab(insightTab)}
                     aria-label={isRTL ? item.labelAr : item.labelEn}
@@ -378,7 +417,7 @@ export default function AnalysisSidebar(
             }
 
             return (
-              <div key={item.id} className="relative group w-full flex justify-center">
+              <div key={item.id} onMouseEnter={() => preloadPanel(item.id)} className="relative group w-full flex justify-center">
                 <button
                   onClick={() => togglePanel(item.id)}
                   title={isRTL ? item.labelAr : item.labelEn}

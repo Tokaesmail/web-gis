@@ -13,24 +13,73 @@ import type { RasterPreviewConfig, SatellitePreviewConfig } from "./SatelliteDat
 import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from "./ChangeDetectionPanel";
 import type { InterpolationPreviewConfig } from "./temporalInterpolation";
 
+// ── Preloading: warm the chunks so opening a panel doesn't wait on the network ──
+const PANEL_LOADERS: Record<string, (() => Promise<unknown>)[]> = {
+  satellite: [() => import("./SatelliteDataPanel")],
+  raster: [() => import("./PlanetaryRasterPanel"), () => import("./PalmTreesPanel")],
+  insight: [() => import("./TemporalInterpolationPanel")],
+  "super-resolution": [() => import("./SuperResolutionPanel")],
+  "change-detection": [() => import("./ChangeDetectionPanel")],
+  "live-dashboard": [() => import("./LivePanels"), () => import("./CropsPanel"), () => import("./CapturesPanel")],
+  elevation: [() => import("./ElevationContourPanel")],
+  "template-match": [() => import("./TemplateMatchPanel")],
+  "saved-analyses": [() => import("./AnalysesManagerPanel")],
+  layers: [() => import("../../map/LayerPanel")],
+  volume: [() => import("./VolumeCalculationPanel")],
+};
+
+/** Start loading one panel's chunk(s) (e.g. on icon hover). Safe to call repeatedly. */
+export function preloadPanel(id: string) {
+  PANEL_LOADERS[id]?.forEach((load) => load().catch(() => {}));
+}
+
+/** Load every panel chunk in the background, one at a time, when the browser is idle. */
+export function preloadAllPanels() {
+  const ids = Object.keys(PANEL_LOADERS);
+  let i = 0;
+  const next = () => {
+    if (i >= ids.length) return;
+    preloadPanel(ids[i++]);
+    setTimeout(schedule, 400);
+  };
+  const schedule = () => {
+    const ric = (window as any).requestIdleCallback as undefined | ((cb: () => void) => void);
+    ric ? ric(next) : setTimeout(next, 200);
+  };
+  schedule();
+}
+
+// Shown while a lazy panel chunk is loading — without it next/dynamic renders NOTHING,
+// which looked like an "empty sidebar" (header visible, body blank).
+function PanelLoading() {
+  return (
+    <div className="flex flex-col items-center justify-center py-12 gap-3 text-slate-500">
+      <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+      </svg>
+      <p className="text-[0.7rem]">Loading panel…</p>
+    </div>
+  );
+}
+
 // ── lazy-loaded components (كل واحد chunk لوحده) ───────────────────────────
-const TemplateMatchPanel     = dynamic(() => import("./TemplateMatchPanel"), { ssr: false });
-const LayerPanel              = dynamic(() => import("../../map/LayerPanel"), { ssr: false });
+const TemplateMatchPanel     = dynamic(() => import("./TemplateMatchPanel"), { ssr: false, loading: () => <PanelLoading /> });
+const LayerPanel              = dynamic(() => import("../../map/LayerPanel"), { ssr: false, loading: () => <PanelLoading /> });
 const ExportButton            = dynamic(() => import("../../map/ExportButton"), { ssr: false });
-const CapturesPanel           = dynamic(() => import("./CapturesPanel").then(m => m.CapturesPanel), { ssr: false });
-const NDVILivePanel           = dynamic(() => import("./LivePanels").then(m => m.NDVILivePanel), { ssr: false });
-const OverviewLivePanel       = dynamic(() => import("./LivePanels").then(m => m.OverviewLivePanel), { ssr: false });
-const WeatherLivePanel        = dynamic(() => import("./LivePanels").then(m => m.WeatherLivePanel), { ssr: false });
-const PlanetaryRasterPanel    = dynamic(() => import("./PlanetaryRasterPanel"), { ssr: false });
-const PalmTreesPanel          = dynamic(() => import("./PalmTreesPanel"), { ssr: false });
-const SuperResolutionPanel    = dynamic(() => import("./SuperResolutionPanel").then(m => m.SuperResolutionPanel), { ssr: false });
-const SatelliteDataPanel      = dynamic(() => import("./SatelliteDataPanel").then(m => m.SatelliteDataPanel), { ssr: false });
-const ChangeDetectionPanel    = dynamic(() => import("./ChangeDetectionPanel").then(m => m.ChangeDetectionPanel), { ssr: false });
-const CropsPanel              = dynamic(() => import("./CropsPanel").then(m => m.CropsPanel), { ssr: false });
-const VolumeCalculationPanel  = dynamic(() => import("./VolumeCalculationPanel"), { ssr: false });
-const ElevationContourPanel   = dynamic(() => import("./ElevationContourPanel"), { ssr: false });
-const AnalysesManagerPanel    = dynamic(() => import("./AnalysesManagerPanel").then(m => m.AnalysesManagerPanel), { ssr: false });
-const TemporalInterpolationPanel = dynamic(() => import("./TemporalInterpolationPanel"), { ssr: false });
+const CapturesPanel           = dynamic(() => import("./CapturesPanel").then(m => m.CapturesPanel), { ssr: false, loading: () => <PanelLoading /> });
+const NDVILivePanel           = dynamic(() => import("./LivePanels").then(m => m.NDVILivePanel), { ssr: false, loading: () => <PanelLoading /> });
+const OverviewLivePanel       = dynamic(() => import("./LivePanels").then(m => m.OverviewLivePanel), { ssr: false, loading: () => <PanelLoading /> });
+const WeatherLivePanel        = dynamic(() => import("./LivePanels").then(m => m.WeatherLivePanel), { ssr: false, loading: () => <PanelLoading /> });
+const PlanetaryRasterPanel    = dynamic(() => import("./PlanetaryRasterPanel"), { ssr: false, loading: () => <PanelLoading /> });
+const PalmTreesPanel          = dynamic(() => import("./PalmTreesPanel"), { ssr: false, loading: () => <PanelLoading /> });
+const SuperResolutionPanel    = dynamic(() => import("./SuperResolutionPanel").then(m => m.SuperResolutionPanel), { ssr: false, loading: () => <PanelLoading /> });
+const SatelliteDataPanel      = dynamic(() => import("./SatelliteDataPanel").then(m => m.SatelliteDataPanel), { ssr: false, loading: () => <PanelLoading /> });
+const ChangeDetectionPanel    = dynamic(() => import("./ChangeDetectionPanel").then(m => m.ChangeDetectionPanel), { ssr: false, loading: () => <PanelLoading /> });
+const CropsPanel              = dynamic(() => import("./CropsPanel").then(m => m.CropsPanel), { ssr: false, loading: () => <PanelLoading /> });
+const VolumeCalculationPanel  = dynamic(() => import("./VolumeCalculationPanel"), { ssr: false, loading: () => <PanelLoading /> });
+const ElevationContourPanel   = dynamic(() => import("./ElevationContourPanel"), { ssr: false, loading: () => <PanelLoading /> });
+const AnalysesManagerPanel    = dynamic(() => import("./AnalysesManagerPanel").then(m => m.AnalysesManagerPanel), { ssr: false, loading: () => <PanelLoading /> });
+const TemporalInterpolationPanel = dynamic(() => import("./TemporalInterpolationPanel"), { ssr: false, loading: () => <PanelLoading /> });
 
 export function PanelContent({
   id,

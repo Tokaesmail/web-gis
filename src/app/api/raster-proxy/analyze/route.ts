@@ -99,6 +99,9 @@
 //                    الـ 3 قنوات بتاعته (VV dB, VH dB, ratio dB) لقيمة واحدة بنفس أوزان Rec.709
 //                    اللي change_rgb/change_swir بتستخدمها، وبعدين نصنف على الفرق زي أي change_<index>
 //
+// ⚠️ (2026-10-08) multi-tile: كل URL ممكن يبقى كذا رابط مفصولين بـ "|" (نفس الباند من tile-ين
+//   مختلفين لنفس اليوم لما الـ AOI على حد بين tile-ين) — بيتعمل لهم mosaic على grid واحد.
+//   مثال: urls=T35_B08|T36_B08,T35_B04|T36_B04
 // اختياري لـ composite: gamma (افتراضي 1.1), sharpen (0/1), low/high (2/98)
 // اختياري لـ index: colormap, min/max (افتراضي -1/1), zero, alphaLow/alphaHigh, transparent
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,24 +200,56 @@ function isAlreadySigned(url: string): boolean {
 
 // بتوقّع رابط Planetary Computer (لو محتاج توقيع فعلاً) مع caching، عشان
 // نفس الـ asset متتوقعش تاني في كل preview جديد قبل ما التوكن ينتهي.
+// ⚠️ FIX (2026-10-08): PC's /sas/v1/sign endpoint intermittently answers 504/503/429
+// (their gateway, not ours). Every band of a request signs in parallel (4–8 calls
+// per Run), with no timeout/retry — a single transient 504 failed the WHOLE request
+// ("Failed to read bands: SAS signing failed ... (504)"). That's also why the error
+// looked random: signCache hides it for URLs that were already signed.
+//   1) transient statuses (429/5xx) + network timeouts are retried with backoff
+//   2) each call has a hard timeout so a hung request can't stall the whole Run
+//   3) concurrent requests for the same URL share ONE in-flight promise
+const inflightSign = new Map<string, Promise<string>>();
+const SIGN_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const SIGN_MAX_ATTEMPTS = 4;
+const SIGN_TIMEOUT_MS = 8000;
+const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+async function fetchSignWithRetry(url: string): Promise<Response> {
+  let lastErr: Error = new Error(`PC SAS sign failed for ${url}`);
+  for (let attempt = 1; attempt <= SIGN_MAX_ATTEMPTS; attempt++) {
+    let retryable = true;
+    try {
+      const res = await fetch(
+        `https://planetarycomputer.microsoft.com/api/sas/v1/sign?href=${encodeURIComponent(url)}`,
+        { signal: AbortSignal.timeout(SIGN_TIMEOUT_MS) }
+      );
+      if (res.ok) return res;
+      const bodyText = await res.text().catch(() => "");
+      console.error(`[sign] PC sign API returned ${res.status} (attempt ${attempt}/${SIGN_MAX_ATTEMPTS}) for ${url}: ${bodyText.slice(0, 200)}`);
+      lastErr = new Error(`PC SAS sign failed (${res.status}) for ${url}`);
+      retryable = SIGN_RETRYABLE_STATUS.has(res.status);
+    } catch (err) {
+      // timeout / DNS / connection reset — all transient
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      console.error(`[sign] PC sign request error (attempt ${attempt}/${SIGN_MAX_ATTEMPTS}) for ${url}: ${lastErr.message}`);
+    }
+    if (!retryable || attempt === SIGN_MAX_ATTEMPTS) break;
+    await sleepMs(400 * 2 ** (attempt - 1) + Math.random() * 200); // ~0.4s, 0.8s, 1.6s (+jitter)
+  }
+  throw lastErr;
+}
+
 async function signPlanetaryComputerUrl(url: string): Promise<string> {
   if (!isPlanetaryComputerBlobUrl(url) || isAlreadySigned(url)) return url;
 
   const cached = signCache.get(url);
   if (cached && cached.expiresAt > Date.now()) return cached.href;
 
-  try {
-    const res = await fetch(
-      `https://planetarycomputer.microsoft.com/api/sas/v1/sign?href=${encodeURIComponent(url)}`
-    );
-    if (!res.ok) {
-      // ⚠️ كان بيرجع الرابط الأصلي (الغير موقّع) بصمت هنا، فأي فشل حقيقي في
-      // التوقيع كان بيظهر بعدين كـ "Request failed" مبهمة من geotiff.js لما
-      // Azure يرفض الرابط الغير موقّع (403) — بدل ما نعرف السبب الحقيقي فورًا.
-      const bodyText = await res.text().catch(() => "");
-      console.error(`[sign] PC sign API returned ${res.status} for ${url}: ${bodyText.slice(0, 300)}`);
-      throw new Error(`PC SAS sign failed (${res.status}) for ${url}`);
-    }
+  const pending = inflightSign.get(url);
+  if (pending) return pending;
+
+  const p = (async () => {
+    const res = await fetchSignWithRetry(url);
     const data = await res.json();
     const href = typeof data?.href === "string" ? data.href : url;
 
@@ -230,19 +265,10 @@ async function signPlanetaryComputerUrl(url: string): Promise<string> {
 
     signCache.set(url, { href, expiresAt });
     return href;
-  } catch (err) {
-    // ⚠️ FIX (2026-09-27): this used to log the real reason and then still
-    // return the unsigned `url` — but every URL that reaches this catch block
-    // is a private *.blob.core.windows.net asset (public URLs and already-signed
-    // ones both return early at line 201), so an unsigned fallback here isn't
-    // a fallback at all: Azure will reject it every time. That's exactly what
-    // produced "[signed=false]" downstream — a guaranteed-to-fail fetch with
-    // the real cause (PC sign API down/rate-limited/network) buried in a
-    // server log the person calling this never sees. Rethrowing surfaces the
-    // actual reason immediately instead of a doomed extra round-trip.
-    console.error(`[sign] Failed to sign ${url}:`, err instanceof Error ? err.message : err);
-    throw err instanceof Error ? err : new Error(String(err));
-  }
+  })().finally(() => inflightSign.delete(url));
+
+  inflightSign.set(url, p);
+  return p;
 }
 
 type AnalysisType =
@@ -2135,6 +2161,19 @@ function sentinel1CropUrl(
   );
 }
 
+// ⚠️ FIX (2026-10-08): thrown by readBand() when the requested AOI doesn't intersect
+// this raster's footprint at all. Before, the window was silently clamped to the
+// nearest edge pixel(s) — so an AOI sitting on the border between two MGRS tiles
+// (e.g. T35R/T36R at the 30°E UTM zone boundary) produced a map covering only the
+// part of the AOI that this one tile reaches. readBandMosaic() below catches this
+// to skip tiles that don't touch the AOI.
+class NoOverlapError extends Error {
+  constructor(url: string) {
+    super(`AOI does not intersect raster footprint: ${url}`);
+    this.name = "NoOverlapError";
+  }
+}
+
 async function readBand(
   url: string,
   token: string | null | undefined,
@@ -2277,6 +2316,14 @@ async function readBand(
     const queryNative = wgs84ToNative(queryBboxWGS84, geoKeys, nativeIsDegrees);
 
     if (queryNative) {
+      const qMinX = Math.min(queryNative[0], queryNative[2]);
+      const qMaxX = Math.max(queryNative[0], queryNative[2]);
+      const qMinY = Math.min(queryNative[1], queryNative[3]);
+      const qMaxY = Math.max(queryNative[1], queryNative[3]);
+      if (qMaxX <= nativeBbox[0] || qMinX >= nativeBbox[2] || qMaxY <= nativeBbox[1] || qMinY >= nativeBbox[3]) {
+        throw new NoOverlapError(effectiveUrl);
+      }
+
       const xRes = (nativeBbox[2] - nativeBbox[0]) / fullWidth;
       const yRes = (nativeBbox[3] - nativeBbox[1]) / fullHeight;
 
@@ -2381,6 +2428,91 @@ async function readBand(
 
   t.total = performance.now() - tStart;
   return { data, width, height, bbox, timing: t };
+}
+
+// ── Multi-tile mosaic (2026-10-08) ──────────────────────────────────────────
+// An AOI on the border between two Sentinel-2 MGRS tiles (or Landsat path/rows) is
+// covered by SEVERAL files for the same band on the same date. The frontend now
+// sends all of them for one band joined with "|" (…&urls=tileA_B08|tileB_B08,…),
+// and this reads each tile's window and pastes them onto ONE grid that covers the
+// whole AOI bbox — instead of returning only the sliver one tile happens to reach.
+// Pixels no tile covers stay 0 (= "no data" everywhere downstream).
+// Overlap between tiles: first tile with a non-zero value wins.
+// ⚠️ Accuracy note: reprojectToWGS84() only transforms the SW/NE corners, so each
+// tile's WGS84 bbox is approximate (zone 35/36 grids are rotated ~1.4° vs lat/lon
+// at this latitude) — a seam shifted by a few pixels is possible along the tile edge.
+const MOSAIC_MAX_DIM = 2048;
+
+async function readBandMosaic(
+  group: string[],
+  token: string | null | undefined,
+  queryBboxWGS84: [number, number, number, number],
+  bidx?: number
+): Promise<BandRaster & { timing: Record<string, number> }> {
+  const settled = await Promise.all(
+    group.map(async (u) => {
+      try {
+        return await readBand(u, token, queryBboxWGS84, bidx);
+      } catch (err) {
+        if (err instanceof NoOverlapError) return null;
+        throw err;
+      }
+    })
+  );
+  const parts = settled.filter((p): p is NonNullable<typeof p> => p !== null);
+  if (!parts.length) {
+    throw new Error(
+      `None of the ${group.length} tile(s) for this band intersects the AOI (${queryBboxWGS84.join(",")}) — the selected scene doesn't cover this area`
+    );
+  }
+
+  const [w, s, e, n] = queryBboxWGS84;
+  const covers = (p: BandRaster) => {
+    if (!p.bbox) return true; // can't tell — don't second-guess
+    const tolX = (2 * (p.bbox[2] - p.bbox[0])) / p.width;
+    const tolY = (2 * (p.bbox[3] - p.bbox[1])) / p.height;
+    return p.bbox[0] <= w + tolX && p.bbox[2] >= e - tolX && p.bbox[1] <= s + tolY && p.bbox[3] >= n - tolY;
+  };
+
+  // One tile that already covers the whole AOI → nothing to merge (old behavior).
+  if (parts.length === 1 && covers(parts[0])) return parts[0];
+
+  const pasteable = parts.filter((p) => p.bbox);
+  if (!pasteable.length) return parts[0];
+
+  // Output grid = whole AOI bbox at the finest source pixel density.
+  let densX = 0, densY = 0;
+  for (const p of pasteable) {
+    densX = Math.max(densX, p.width / (p.bbox![2] - p.bbox![0]));
+    densY = Math.max(densY, p.height / (p.bbox![3] - p.bbox![1]));
+  }
+  let W = Math.max(1, Math.round((e - w) * densX));
+  let H = Math.max(1, Math.round((n - s) * densY));
+  const cap = Math.max(W, H) / MOSAIC_MAX_DIM;
+  if (cap > 1) { W = Math.max(1, Math.round(W / cap)); H = Math.max(1, Math.round(H / cap)); }
+
+  const out = new Float32Array(W * H); // 0 = no data
+  for (const p of pasteable) {
+    const [pw, ps, pe, pn] = p.bbox!;
+    for (let y = 0; y < H; y++) {
+      const lat = n - ((y + 0.5) / H) * (n - s);
+      if (lat < ps || lat > pn) continue;
+      const sy = Math.min(p.height - 1, Math.floor(((pn - lat) / (pn - ps)) * p.height));
+      const rowOut = y * W;
+      const rowSrc = sy * p.width;
+      for (let x = 0; x < W; x++) {
+        const o = rowOut + x;
+        if (out[o] !== 0) continue;
+        const lon = w + ((x + 0.5) / W) * (e - w);
+        if (lon < pw || lon > pe) continue;
+        const sx = Math.min(p.width - 1, Math.floor(((lon - pw) / (pe - pw)) * p.width));
+        out[o] = p.data[rowSrc + sx];
+      }
+    }
+  }
+
+  const timing: Record<string, number> = { ...parts[0].timing, tiles: parts.length };
+  return { data: out, width: W, height: H, bbox: [w, s, e, n], timing };
 }
 
 function checkSameGrid(bands: BandRaster[]) {
@@ -3413,7 +3545,9 @@ export async function GET(req: NextRequest) {
   let bands: BandRaster[];
   let bandTimings: Record<string, number>[];
   try {
-    const results = await Promise.all(urls.map((u, i) => readBand(u, token, queryBbox, bidxs[i])));
+    // "a|b" = the same band from several tiles of the same pass (AOI on a tile border)
+    const urlGroups = urls.map((u) => u.split("|").map((x) => x.trim()).filter(Boolean));
+    const results = await Promise.all(urlGroups.map((g, i) => readBandMosaic(g, token, queryBbox!, bidxs[i])));
     bands = results;
     bandTimings = results.map((r) => r.timing);
   } catch (err) {
@@ -3568,6 +3702,7 @@ export async function GET(req: NextRequest) {
       overviewListMs: Math.round(bt.overviewList),
       pixelReadMs: Math.round(bt.pixelRead),
       totalMs: Math.round(bt.total),
+      tiles: bt.tiles ?? 1,
     })),
   };
 

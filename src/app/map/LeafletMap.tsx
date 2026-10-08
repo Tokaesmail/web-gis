@@ -2478,9 +2478,10 @@ export default function LeafletMap({
 
         const customColor = p._color ?? p.color ?? p.stroke ?? "#00c8ff";
         const customFill = p._fillColor ?? p.fillColor ?? p.fill ?? "#00c8ff";
+        const isLine = feature?.geometry?.type === "LineString" || feature?.geometry?.type === "MultiLineString";
         return {
           color: customColor,
-          weight: 2,
+          weight: isLine ? 2.5 : 2, // never 0 → lines always have a visible width
           opacity: 0.9 * layerOpacity,
           fillColor: customFill,
           fillOpacity: 0.2 * layerOpacity,
@@ -2555,6 +2556,56 @@ export default function LeafletMap({
     extraGeoJsonLayerRef.current = layer;
 
     console.log("✅ University polygons layer added");
+
+    // ── DEBUG: why aren't lines drawn? ────────────────────────────────────
+    try {
+      const feats: any[] = (extraGeoJsonData as any).features ?? [extraGeoJsonData];
+      const lineFeats = feats.filter((f) => /LineString/.test(f?.geometry?.type ?? ""));
+      const first = lineFeats[0];
+      const lb = (layer as any).getBounds?.();
+      const dbg = () => {
+        const r: any = (layer as any).options?.renderer;
+        const cv: HTMLCanvasElement | undefined = r?._container;
+        const cs = cv ? getComputedStyle(cv) : null;
+        const sz = map.getSize();
+        let firstLayerOpts: any = null;
+        layer.eachLayer((l: any) => {
+          if (!firstLayerOpts && /LineString|Polyline/i.test(l?.feature?.geometry?.type ?? "")) {
+            firstLayerOpts = {
+              weight: l.options?.weight, opacity: l.options?.opacity, color: l.options?.color,
+              stroke: l.options?.stroke, parts: l._parts?.length ?? null,
+            };
+          }
+        });
+        console.log(
+          "[CONTOURS-DEBUG:map]",
+          JSON.stringify({
+            totalFeatures: feats.length,
+            lineFeatures: lineFeats.length,
+            firstLineProps: first?.properties ?? null,
+            firstLineStyle: firstLayerOpts,
+            layerBounds: lb?.isValid?.() ? lb.toBBoxString() : null,
+            mapBounds: map.getBounds().toBBoxString(),
+            intersects: lb?.isValid?.() ? map.getBounds().intersects(lb) : null,
+            mapSize: { w: sz.x, h: sz.y },
+            canvas: cv
+              ? {
+                  attrW: cv.width, attrH: cv.height,
+                  cssW: cs?.width, cssH: cs?.height,
+                  display: cs?.display, opacity: cs?.opacity,
+                  visibility: cs?.visibility, zoom: map.getZoom(),
+                }
+              : "no canvas created",
+          })
+        );
+      };
+      // Leaflet creates the canvas lazily → read it a bit after adding
+      setTimeout(dbg, 400);
+      // zero-size canvas fix: make Leaflet re-measure the container
+      setTimeout(() => map.invalidateSize(false), 50);
+    } catch (e) {
+      console.warn("[CONTOURS-DEBUG:map] failed", e);
+    }
 
     return () => {
       if (extraGeoJsonLayerRef.current) {
@@ -4317,6 +4368,8 @@ export default function LeafletMap({
 .leaflet-control-scale-line{background:rgba(4,13,26,.85)!important;border:1px solid rgba(0,200,255,.4)!important;border-top:2px solid rgba(0,200,255,.8)!important;color:#e2e8f0!important;font-size:10px!important;font-weight:600!important;letter-spacing:.05em!important;padding:2px 6px!important;border-radius:0 0 4px 4px!important;backdrop-filter:blur(4px)!important;box-shadow:0 2px 8px rgba(0,0,0,.5)!important;white-space:nowrap!important}
 .leaflet-control-scale{margin-bottom:8px!important;margin-left:12px!important}
         .leaflet-container{background:#040d1a!important}
+        /* Global CSS (e.g. canvas{max-width:100%}) resolves against Leaflet's 0px-wide pane → canvas width 0 → vector lines invisible */
+        .leaflet-container .leaflet-pane canvas,.leaflet-container canvas.leaflet-zoom-animated,.leaflet-container canvas.leaflet-zoom-hide{max-width:none!important;max-height:none!important}
         .leaflet-container::before{content:'';position:absolute;inset:0;background-image:radial-gradient(1px 1px at 10% 20%,rgba(255,255,255,.6) 0%,transparent 100%),radial-gradient(1px 1px at 30% 60%,rgba(255,255,255,.4) 0%,transparent 100%),radial-gradient(1px 1px at 50% 10%,rgba(255,255,255,.5) 0%,transparent 100%),radial-gradient(1px 1px at 70% 80%,rgba(255,255,255,.3) 0%,transparent 100%),radial-gradient(1px 1px at 85% 35%,rgba(255,255,255,.5) 0%,transparent 100%),radial-gradient(1px 1px at 20% 85%,rgba(255,255,255,.4) 0%,transparent 100%),radial-gradient(1px 1px at 60% 45%,rgba(255,255,255,.3) 0%,transparent 100%),radial-gradient(1px 1px at 90% 65%,rgba(255,255,255,.5) 0%,transparent 100%),radial-gradient(1px 1px at 40% 30%,rgba(255,255,255,.4) 0%,transparent 100%),radial-gradient(1px 1px at 75% 15%,rgba(255,255,255,.6) 0%,transparent 100%);pointer-events:none;z-index:-1}
         .ndvi-tooltip{background:#0a1628!important;border:1px solid rgba(0,212,255,.3)!important;color:#e2e8f0!important;font-size:.72rem!important;border-radius:6px!important}
         .ndvi-tooltip::before{border-top-color:rgba(0,212,255,.3)!important}
