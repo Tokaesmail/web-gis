@@ -113,6 +113,9 @@ import proj4 from "proj4";
 import { toProj4 } from "geotiff-geokeys-to-proj4";
 import { RAMPS, buildLUT } from "@/lib/rasterColor"; 
 export const runtime = "nodejs";
+// ⚠️ FIX (2026-10-08, round 3): signing retries + 3-4 COG reads can take longer than the
+// default serverless limit — give the function room so a retry is not cut off mid-way.
+export const maxDuration = 60;
 
 type BandRaster = {
   data: Float32Array | Uint16Array | Uint8Array;
@@ -210,14 +213,48 @@ function isAlreadySigned(url: string): boolean {
 //   3) concurrent requests for the same URL share ONE in-flight promise
 const inflightSign = new Map<string, Promise<string>>();
 const SIGN_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
-const SIGN_MAX_ATTEMPTS = 4;
+const SIGN_MAX_ATTEMPTS = 5;
+const SIGN_TOTAL_BUDGET_MS = 20000; // hard ceiling for ALL retries of one sign call
 const SIGN_TIMEOUT_MS = 8000;
+const SIGN_MAX_RETRY_AFTER_MS = 5000; // لا نستنى أكتر من كده (Vercel functions ليها time limit)
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// ⚠️ (2026-10-08, round 2) After the first retry fix the error came back as
+// "PC SAS sign failed (429)" on Vercel — PC rate-limits the sign API per source IP,
+// and Vercel's shared egress IPs burn through that limit fast: each Run signed one
+// URL PER BAND (4–8, ×2 with tile mosaics), and every serverless instance starts
+// with an empty cache. Two changes:
+//   1) Azure SAS tokens from PC are scoped to the CONTAINER, not the single blob —
+//      so one sign call per container (e.g. sentinel2l2a01/sentinel2-12) gives a
+//      token that works for every band/tile/scene in it. We sign once and append
+//      that token to the other URLs of the same container (8 calls → 1).
+//      If you ever see 403s from blob storage after this change, set
+//      SAS_CONTAINER_REUSE = false to go back to one sign call per URL.
+//   2) 429s honor the Retry-After header (capped) before retrying.
+const SAS_CONTAINER_REUSE = true;
+// expiresAt = soft expiry (2 min safety margin → we try to refresh after it);
+// hardExpiresAt = the token's REAL expiry — still valid until then, so if a refresh
+// hits a 429 we keep using the old token instead of failing the whole request.
+type ContainerToken = { query: string; expiresAt: number; hardExpiresAt: number };
+const containerTokenCache = new Map<string, ContainerToken>();
+const inflightContainerSign = new Map<string, Promise<ContainerToken | null>>();
+
+function blobContainerKey(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const first = u.pathname.split("/").filter(Boolean)[0];
+    return first ? `${u.origin}/${first}` : null;
+  } catch {
+    return null;
+  }
+}
 
 async function fetchSignWithRetry(url: string): Promise<Response> {
   let lastErr: Error = new Error(`PC SAS sign failed for ${url}`);
+  const deadline = Date.now() + SIGN_TOTAL_BUDGET_MS;
   for (let attempt = 1; attempt <= SIGN_MAX_ATTEMPTS; attempt++) {
     let retryable = true;
+    let waitMs = 700 * 2 ** (attempt - 1) + Math.random() * 250; // ~0.7s, 1.4s, 2.8s (+jitter)
     try {
       const res = await fetch(
         `https://planetarycomputer.microsoft.com/api/sas/v1/sign?href=${encodeURIComponent(url)}`,
@@ -228,15 +265,77 @@ async function fetchSignWithRetry(url: string): Promise<Response> {
       console.error(`[sign] PC sign API returned ${res.status} (attempt ${attempt}/${SIGN_MAX_ATTEMPTS}) for ${url}: ${bodyText.slice(0, 200)}`);
       lastErr = new Error(`PC SAS sign failed (${res.status}) for ${url}`);
       retryable = SIGN_RETRYABLE_STATUS.has(res.status);
+      const retryAfter = Number(res.headers.get("retry-after"));
+      if (Number.isFinite(retryAfter) && retryAfter > 0) {
+        waitMs = Math.max(waitMs, Math.min(retryAfter * 1000, SIGN_MAX_RETRY_AFTER_MS));
+      }
     } catch (err) {
       // timeout / DNS / connection reset — all transient
       lastErr = err instanceof Error ? err : new Error(String(err));
       console.error(`[sign] PC sign request error (attempt ${attempt}/${SIGN_MAX_ATTEMPTS}) for ${url}: ${lastErr.message}`);
     }
-    if (!retryable || attempt === SIGN_MAX_ATTEMPTS) break;
-    await sleepMs(400 * 2 ** (attempt - 1) + Math.random() * 200); // ~0.4s, 0.8s, 1.6s (+jitter)
+    if (!retryable || attempt === SIGN_MAX_ATTEMPTS || Date.now() + waitMs > deadline) break;
+    await sleepMs(waitMs);
   }
   throw lastErr;
+}
+
+// One real call to PC's sign API for a single URL (+ per-URL cache).
+async function signOneUrl(url: string): Promise<{ href: string; expiresAt: number; hardExpiresAt: number }> {
+  const res = await fetchSignWithRetry(url);
+  const data = await res.json();
+  const href = typeof data?.href === "string" ? data.href : url;
+
+  let expiresAt = Date.now() + SIGN_CACHE_TTL_MS;
+  let hardExpiresAt = expiresAt;
+  const expiryRaw = data?.["msft:expiry"];
+  if (typeof expiryRaw === "string") {
+    const parsed = Date.parse(expiryRaw);
+    if (Number.isFinite(parsed)) {
+      hardExpiresAt = parsed;
+      // نسيب مساحة أمان 2 دقيقة قبل الانتهاء الفعلي
+      expiresAt = Math.min(expiresAt, parsed - 2 * 60 * 1000);
+    }
+  }
+  signCache.set(url, { href, expiresAt });
+  return { href, expiresAt, hardExpiresAt };
+}
+
+// ── Tokens signed by the BROWSER (2026-10-08, round 3) ───────────────────────
+// ROOT CAUSE of "first click fails, second click works": PC's /sas/v1/sign rate-limits per
+// source IP. On Vercel that IP is a shared egress IP used by many other apps, so a cold
+// serverless instance (empty caches) frequently gets 429 on its very first sign calls.
+// A second click works because the limit window passed / another instance already warmed up.
+// The user's own browser has its own (almost never limited) IP, so ChangeDetectionPanel now
+// signs one token per blob container in the browser and sends them in `&sas={"<container>":"<query>"}`.
+// Here we only validate them and drop them into containerTokenCache — after that the normal
+// signPlanetaryComputerUrl() path finds them and makes ZERO calls to PC's sign API.
+// If `sas` is missing/invalid/expired we simply fall back to server-side signing (old behavior).
+function seedBrowserSignedTokens(raw: string | null) {
+  if (!raw) return;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return; }
+  if (!parsed || typeof parsed !== "object") return;
+
+  for (const [key, queryRaw] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof queryRaw !== "string") continue;
+    let host: string;
+    try { host = new URL(key).hostname; } catch { continue; }
+    if (!host.endsWith(".blob.core.windows.net")) continue; // only PC blob storage
+
+    const query = queryRaw.replace(/^\?/, "");
+    const sp = new URLSearchParams(query);
+    const se = sp.get("se");
+    if (!sp.get("sig") || !se) continue;
+    const hard = Date.parse(se);
+    if (!Number.isFinite(hard)) continue;
+    const soft = hard - 2 * 60 * 1000;
+    if (soft <= Date.now()) continue; // already (almost) expired — not worth caching
+
+    const existing = containerTokenCache.get(key);
+    if (existing && existing.hardExpiresAt >= hard) continue; // keep the longer-lived one
+    containerTokenCache.set(key, { query, expiresAt: soft, hardExpiresAt: hard });
+  }
 }
 
 async function signPlanetaryComputerUrl(url: string): Promise<string> {
@@ -245,28 +344,45 @@ async function signPlanetaryComputerUrl(url: string): Promise<string> {
   const cached = signCache.get(url);
   if (cached && cached.expiresAt > Date.now()) return cached.href;
 
-  const pending = inflightSign.get(url);
-  if (pending) return pending;
+  // ── container-level token reuse (see comment above) ──
+  const ckey = SAS_CONTAINER_REUSE && !url.includes("?") ? blobContainerKey(url) : null;
+  if (ckey) {
+    const tok = containerTokenCache.get(ckey);
+    if (tok && tok.expiresAt > Date.now()) return `${url}?${tok.query}`;
 
-  const p = (async () => {
-    const res = await fetchSignWithRetry(url);
-    const data = await res.json();
-    const href = typeof data?.href === "string" ? data.href : url;
-
-    let expiresAt = Date.now() + SIGN_CACHE_TTL_MS;
-    const expiryRaw = data?.["msft:expiry"];
-    if (typeof expiryRaw === "string") {
-      const parsed = Date.parse(expiryRaw);
-      if (Number.isFinite(parsed)) {
-        // نسيب مساحة أمان 2 دقيقة قبل الانتهاء الفعلي
-        expiresAt = Math.min(expiresAt, parsed - 2 * 60 * 1000);
-      }
+    let pending = inflightContainerSign.get(ckey);
+    if (!pending) {
+      pending = signOneUrl(url)
+        .then(({ href, expiresAt, hardExpiresAt }) => {
+          let query = "";
+          try { query = new URL(href).search.replace(/^\?/, ""); } catch { /* ignore */ }
+          if (!query) return null;
+          const entry: ContainerToken = { query, expiresAt, hardExpiresAt };
+          containerTokenCache.set(ckey, entry);
+          return entry;
+        })
+        .finally(() => inflightContainerSign.delete(ckey));
+      inflightContainerSign.set(ckey, pending);
     }
+    try {
+      const entry = await pending;
+      if (entry) return `${url}?${entry.query}`;
+      // no usable token in the response → fall through to the per-URL path
+    } catch (err) {
+      // Refresh failed (e.g. 429 after all retries). If the previous token for this container
+      // is still REALLY valid (we only refresh 2 min early), keep using it instead of failing.
+      const stale = containerTokenCache.get(ckey);
+      if (stale && stale.hardExpiresAt > Date.now() + 30_000) {
+        console.warn(`[sign] refresh failed for ${ckey}, reusing still-valid token`);
+        return `${url}?${stale.query}`;
+      }
+      throw err;
+    }
+  }
 
-    signCache.set(url, { href, expiresAt });
-    return href;
-  })().finally(() => inflightSign.delete(url));
-
+  const pendingUrl = inflightSign.get(url);
+  if (pendingUrl) return pendingUrl;
+  const p = signOneUrl(url).then((r) => r.href).finally(() => inflightSign.delete(url));
   inflightSign.set(url, p);
   return p;
 }
@@ -3541,6 +3657,9 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // Tokens signed by the browser (see seedBrowserSignedTokens) — must run BEFORE readBand().
+  seedBrowserSignedTokens(searchParams.get("sas"));
+
   const tBandsStart = performance.now();
   let bands: BandRaster[];
   let bandTimings: Record<string, number>[];
@@ -3551,7 +3670,13 @@ export async function GET(req: NextRequest) {
     bands = results;
     bandTimings = results.map((r) => r.timing);
   } catch (err) {
-    return NextResponse.json({ error: `Failed to read bands: ${(err as Error).message}` }, { status: 502 });
+    const msg = (err as Error).message;
+    // PC rate-limit / sign-API trouble is TRANSIENT — tell the client so it can retry quietly.
+    const transient = /SAS signing failed|PC SAS sign failed|\(429\)|\(50[234]\)/i.test(msg);
+    return NextResponse.json(
+      { error: `Failed to read bands: ${msg}`, retryable: transient },
+      { status: transient ? 503 : 502, headers: transient ? { "Retry-After": "3" } : undefined }
+    );
   }
   const bandsMs = performance.now() - tBandsStart;
 

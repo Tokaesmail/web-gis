@@ -1500,6 +1500,85 @@ async function makePreviewUrlMosaic(
   }
 }
 
+// ── Browser-side SAS signing (2026-10-08, round 3) ──────────────────────────
+// WHY: route.ts used to call PC's /sas/v1/sign itself. PC rate-limits that API per source IP,
+// and on Vercel the IP is a shared egress IP → a cold serverless instance often got
+// "PC SAS sign failed (429)" on the FIRST Run click (second click worked because the limit
+// window had passed). The user's own browser has its own IP, so we sign ONE token per blob
+// container here (cached ~50 min) and pass them to /api/raster-proxy/analyze as
+// `&sas={"<container>":"<token query>"}`. route.ts then makes no sign calls at all.
+// Every failure here is swallowed on purpose: no `sas` param just means route.ts signs
+// server-side exactly like before.
+const BROWSER_SAS_TTL_MS = 50 * 60 * 1000;
+const browserSasCache = new Map<string, { query: string; expiresAt: number }>();
+const browserSasInflight = new Map<string, Promise<string | null>>();
+
+function blobContainerKeyOf(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (!u.hostname.endsWith(".blob.core.windows.net")) return null;
+    const first = u.pathname.split("/").filter(Boolean)[0];
+    return first ? `${u.origin}/${first}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function signContainerInBrowser(sampleUrl: string, key: string): Promise<string | null> {
+  const cached = browserSasCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.query);
+  const pending = browserSasInflight.get(key);
+  if (pending) return pending;
+
+  const p = (async () => {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch(
+          `https://planetarycomputer.microsoft.com/api/sas/v1/sign?href=${encodeURIComponent(sampleUrl)}`,
+          { signal: AbortSignal.timeout(8000) },
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const query = new URL(String(data?.href)).search.replace(/^\?/, "");
+          if (!query) return null;
+          let expiresAt = Date.now() + BROWSER_SAS_TTL_MS;
+          const parsed = Date.parse(String(data?.["msft:expiry"] ?? ""));
+          if (Number.isFinite(parsed)) expiresAt = Math.min(expiresAt, parsed - 2 * 60 * 1000);
+          browserSasCache.set(key, { query, expiresAt });
+          return query;
+        }
+        if (![429, 500, 502, 503, 504].includes(res.status)) return null; // not transient
+      } catch {
+        /* network blip / timeout → retry */
+      }
+      await new Promise((r) => setTimeout(r, 600 * attempt));
+    }
+    return null;
+  })().finally(() => browserSasInflight.delete(key));
+
+  browserSasInflight.set(key, p);
+  return p;
+}
+
+// `urlGroups` = the same strings sent as `urls` (comma-split; each may be "tileA|tileB").
+async function getBrowserSasTokens(urlGroups: string[]): Promise<Record<string, string>> {
+  const samples = new Map<string, string>();
+  for (const group of urlGroups) {
+    for (const raw of group.split("|")) {
+      const u = raw.trim();
+      if (!u || u.includes("?")) continue; // already signed
+      const key = blobContainerKeyOf(u);
+      if (key && !samples.has(key)) samples.set(key, u);
+    }
+  }
+  const entries = await Promise.all(
+    Array.from(samples, async ([key, sample]) => [key, await signContainerInBrowser(sample, key)] as const),
+  );
+  const out: Record<string, string> = {};
+  for (const [key, query] of entries) if (query) out[key] = query;
+  return out;
+}
+
 function formatDateDMY(value: string) {
   const [year, month, day] = (value || "").split("-");
   if (!year || !month || !day) return value || "DD/MM/YYYY";
@@ -2619,15 +2698,30 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
       // route.ts ignores it entirely for every other type.
       if (combinedBidx) params.set("bidx", combinedBidx.join(","));
 
+      // ⚠️ (2026-10-08, round 3) sign the blob containers from the BROWSER (own IP, not
+      // Vercel's shared one) and hand the tokens to the backend — see getBrowserSasTokens.
+      // Never throws; no tokens just means the backend signs by itself (old behavior).
+      const sasTokens = await getBrowserSasTokens(combinedUrls);
+      if (Object.keys(sasTokens).length) params.set("sas", JSON.stringify(sasTokens));
+
       const analyzeUrl = `/api/raster-proxy/analyze?${params.toString()}`;
       let res = await fetch(analyzeUrl);
-      // ⚠️ (2026-10-08) PC's SAS-sign / blob endpoints occasionally fail transiently
-      // (504 etc.) — route.ts already retries internally; this is one more cheap
-      // safety net so the person doesn't see a red error for a blip.
-      for (let attempt = 1; attempt <= 2 && (res.status === 502 || res.status === 504); attempt++) {
+      // ⚠️ PC's SAS-sign / blob endpoints fail transiently (429 rate-limit, 502/503/504).
+      // route.ts retries internally and now answers 503 + Retry-After for those; this is the
+      // client-side safety net: up to 3 quiet retries with growing delay (1.5s, 3s, 4.5s —
+      // honoring Retry-After) so the person never has to click the button a second time.
+      const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+      for (let attempt = 1; attempt <= 3 && RETRYABLE_STATUS.has(res.status); attempt++) {
         const body = await res.clone().json().catch(() => null);
-        if (!/SAS signing|Upstream fetch failed|Pixel read failed/i.test(String(body?.error ?? ""))) break;
-        await new Promise((r) => setTimeout(r, 1200 * attempt));
+        const retryable = body?.retryable === true
+          || /SAS signing|PC SAS sign|Upstream fetch failed|Pixel read failed|\(429\)/i.test(String(body?.error ?? ""));
+        if (!retryable) break;
+        const retryAfterSec = Number(res.headers.get("Retry-After"));
+        const waitMs = Math.max(
+          1500 * attempt,
+          Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? Math.min(retryAfterSec * 1000, 6000) : 0,
+        );
+        await new Promise((r) => setTimeout(r, waitMs));
         res = await fetch(analyzeUrl);
       }
       if (!res.ok) {
