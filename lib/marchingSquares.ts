@@ -169,9 +169,14 @@ export function gridToContours(
   const levels =
     options.levels ??
     (() => {
-      const start = Math.ceil(grid.min / interval) * interval;
+      // integer stepping + rounding: `lvl += 0.1` accumulates float error and drops/shifts levels
+      if (!(interval > 0) || !Number.isFinite(grid.min) || !Number.isFinite(grid.max)) return [];
+      const first = Math.ceil(grid.min / interval - 1e-9);
+      const last = Math.floor(grid.max / interval + 1e-9);
       const out: number[] = [];
-      for (let lvl = start; lvl <= grid.max; lvl += interval) out.push(lvl);
+      for (let k = first; k <= last && out.length < 200; k++) {
+        out.push(Number((k * interval).toFixed(6)));
+      }
       return out;
     })();
 

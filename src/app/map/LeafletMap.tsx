@@ -2442,7 +2442,7 @@ export default function LeafletMap({
     };
   }, [geoJsonData, mapReady, geoJsonFitBounds, geoJsonStyle, onFeatureClick]);
 
-  // ── Extra GeoJSON layer (شيكات الجامعات) ─────────────────────────────────
+    // ── Extra GeoJSON layer (شيكات الجامعات) ─────────────────────────────────
   useEffect(() => {
     const map = mapInstanceRef.current;
     const L = LRef.current;
@@ -2454,7 +2454,27 @@ export default function LeafletMap({
     }
     if (!extraGeoJsonData) return;
 
-    const layer = L.geoJSON(extraGeoJsonData, {
+    // Generated contours / isotherms get their own SVG layer on a dedicated pane (see below)
+    // so no canvas/pane stacking can hide them.
+    const allFeats: any[] =
+      (extraGeoJsonData as any).type === "FeatureCollection"
+        ? ((extraGeoJsonData as any).features ?? [])
+        : (extraGeoJsonData as any).type === "Feature"
+          ? [extraGeoJsonData]
+          : [];
+    const isGenerated = (f: any) =>
+      f?.properties?._generated === "weather-contour" ||
+      f?.properties?._generated === "elevation-contour";
+    const regularData = {
+      type: "FeatureCollection",
+      features: allFeats.filter((f) => !isGenerated(f)),
+    };
+    const generatedFeats = allFeats.filter(isGenerated);
+    let contourLayer: any = null;
+    let contourRenderer: any = null;
+
+    const layer = L.geoJSON(regularData as any, {
+      // Canvas renderer avoids one DOM <path> per feature (was the main-thread bottleneck for large GeoJSON layers)
       renderer: L.canvas({ padding: 0.5 }),
       style: (feature: any) => {
         const p = feature?.properties ?? {};
@@ -2476,6 +2496,22 @@ export default function LeafletMap({
           };
         }
 
+        // ── Generated contour / isotherm lines: pure strokes, no fill ────────
+        if (
+          p._generated === "weather-contour" ||
+          p.Contour !== undefined ||
+          p.TempC !== undefined
+        ) {
+          return {
+            color: p._color ?? p.color ?? "#00c8ff",
+            weight: 2.5,
+            opacity: 0.95 * layerOpacity,
+            fill: false,
+            fillOpacity: 0,
+          };
+        }
+
+        // ── GeoJSON مرفوع من اليوزر — لون افتراضي سيان ────────────────────────
         const customColor = p._color ?? p.color ?? p.stroke ?? "#00c8ff";
         const customFill = p._fillColor ?? p.fillColor ?? p.fill ?? "#00c8ff";
         const isLine = feature?.geometry?.type === "LineString" || feature?.geometry?.type === "MultiLineString";
@@ -2555,6 +2591,59 @@ export default function LeafletMap({
     layer.addTo(map);
     extraGeoJsonLayerRef.current = layer;
 
+    if (generatedFeats.length) {
+      try {
+        if (!map.getPane("contourPane")) {
+          map.createPane("contourPane");
+          map.getPane("contourPane")!.style.zIndex = "450";
+        }
+        contourLayer = L.geoJSON(
+          { type: "FeatureCollection", features: generatedFeats } as any,
+          {
+            pane: "contourPane",
+            renderer: (contourRenderer = L.svg({ pane: "contourPane" })),
+            style: (f: any) => {
+              const p = f?.properties ?? {};
+              const op =
+                typeof p._opacity === "number"
+                  ? Math.max(0, Math.min(1, p._opacity))
+                  : 1;
+              return {
+                color: p._color ?? p.color ?? "#00c8ff",
+                weight: 2.5,
+                opacity: 0.95 * op,
+                fill: false,
+              };
+            },
+            onEachFeature: (f: any, lyr: any) => {
+              const p = f?.properties ?? {};
+              const label =
+                p.TempC !== undefined
+                  ? `${p.TempC} °C`
+                  : p.Contour !== undefined
+                    ? `${p.Contour} m`
+                    : "";
+              if (label)
+                lyr.bindTooltip(label, {
+                  sticky: true,
+                  className: "ndvi-tooltip",
+                });
+            },
+          },
+        ).addTo(map);
+        if (contourRenderer?._container) {
+          contourRenderer._container.style.maxWidth = "none";
+          contourRenderer._container.style.maxHeight = "none";
+          contourRenderer._container.style.overflow = "visible";
+        }
+        contourLayer.bringToFront?.();
+      } catch (_) {
+        // contour layer is best-effort; the regular layer above is unaffected
+      }
+    }
+
+    // Keep the map view stable while layer controls re-render this data.
+
     console.log("✅ University polygons layer added");
 
     // ── DEBUG: why aren't lines drawn? ────────────────────────────────────
@@ -2608,6 +2697,18 @@ export default function LeafletMap({
     }
 
     return () => {
+      if (contourLayer) {
+        try {
+          map.removeLayer(contourLayer);
+        } catch (_) {}
+        contourLayer = null;
+      }
+      if (contourRenderer) {
+        try {
+          map.removeLayer(contourRenderer);
+        } catch (_) {}
+        contourRenderer = null;
+      }
       if (extraGeoJsonLayerRef.current) {
         map.removeLayer(extraGeoJsonLayerRef.current);
         extraGeoJsonLayerRef.current = null;
@@ -4367,6 +4468,7 @@ export default function LeafletMap({
       <style>{`
 .leaflet-control-scale-line{background:rgba(4,13,26,.85)!important;border:1px solid rgba(0,200,255,.4)!important;border-top:2px solid rgba(0,200,255,.8)!important;color:#e2e8f0!important;font-size:10px!important;font-weight:600!important;letter-spacing:.05em!important;padding:2px 6px!important;border-radius:0 0 4px 4px!important;backdrop-filter:blur(4px)!important;box-shadow:0 2px 8px rgba(0,0,0,.5)!important;white-space:nowrap!important}
 .leaflet-control-scale{margin-bottom:8px!important;margin-left:12px!important}
+        .leaflet-contour-pane svg{max-width:none!important;max-height:none!important;overflow:visible!important}
         .leaflet-container{background:#040d1a!important}
         /* Global CSS (e.g. canvas{max-width:100%}) resolves against Leaflet's 0px-wide pane → canvas width 0 → vector lines invisible */
         .leaflet-container .leaflet-pane canvas,.leaflet-container canvas.leaflet-zoom-animated,.leaflet-container canvas.leaflet-zoom-hide{max-width:none!important;max-height:none!important}
