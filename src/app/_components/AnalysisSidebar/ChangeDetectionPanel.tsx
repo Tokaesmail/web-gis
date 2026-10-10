@@ -2562,7 +2562,37 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
       onSwipeCompare(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onSwipeCompare, beforeDisplayUrl, afterDisplayUrl, beforeScene, afterScene, bounds]);
+    // ✅ كان `bounds` (array جديد في كل render) → الـ effect كان بيشتغل مع كل render
+    //    ويرسم الـ swipe فوق نتيجة التحليل ويمسحها. دلوقتي بالقيم نفسها بس.
+  }, [onSwipeCompare, beforeDisplayUrl, afterDisplayUrl, beforeScene, afterScene, south, west, north, east]);
+
+  // ✅ لما اليوزر يبدّل لشكل (AOI) تاني أو يرسم شكل جديد وهو في التاب:
+  //    ما نكمّلش بالمشاهد القديمة (ده كان بيشغّل التحليل تلقائي على الشكل الجديد).
+  //    بنفضّي الاختيارات واليوزر يختار المشاهد ويدوس Run بنفسه.
+  const lastShapeIdRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const props: any = selectedFeature?.properties;
+    if (!selectedFeature || props?._virtual) return; // كليك على الخريطة مش تغيير شكل
+    const shapeId: string | null = props?.id != null ? String(props.id) : null;
+    if (lastShapeIdRef.current === undefined) {
+      lastShapeIdRef.current = shapeId; // أول mount
+      return;
+    }
+    if (lastShapeIdRef.current === shapeId) return;
+    lastShapeIdRef.current = shapeId;
+    setBeforeScenes([]);
+    setAfterScenes([]);
+    setBeforeScene(null);
+    setAfterScene(null);
+    setBeforeStatus("idle");
+    setAfterStatus("idle");
+    setBeforeError(null);
+    setAfterError(null);
+    setChangeResult(null);
+    setDiffDataUrl(null);
+    setComputeError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFeature]);
 
   // Make sure the swipe never lingers on the map after leaving Change Detection.
   useEffect(() => {
@@ -2744,18 +2774,36 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
 
       setChangeResult({ stats, legend });
       setDiffDataUrl(dataUrl);
+
+      // ✅ حفظ نتيجة الـ Change Detection في المشروع: بنبعتها للأب (onPreview) بنفس
+      // حدود الـ AOI اللي اتحسبت عليها (bbox: west,south,east,north) — مش bbox المشهد الخام،
+      // وده كان سبب إنها اتشالت قبل كده. الأب بيرسمها وبيضيفها في savedAnalyses.
+      try {
+        if (onPreview) {
+          const centerLat = coords ? coords[0] : (south + north) / 2;
+          const centerLng = coords ? coords[1] : (west + east) / 2;
+          onPreview({
+            name: `Change Detection · ${indexKey}`,
+            indexKey,
+            expression: `${indexKey} change: ${beforeScene.date} → ${afterScene.date}`,
+            date: `${beforeScene.date} → ${afterScene.date}`,
+            coords: { lat: centerLat, lng: centerLng },
+            bounds: [[south, west], [north, east]],
+            opacity: 0.8,
+            colorRamp: "Change classes",
+            dataUrl,
+          });
+        }
+      } catch (e) {
+        console.warn("change detection: onPreview failed", e);
+      }
       // (no longer auto-opening the Before/After compare modal here — running
       // Change Detection should just show the diff/legend below; the person
       // can still open the full Before/After/Change compare manually via the
       // "Compare" button next to the Change Map.)
 
-      // NOTE: we intentionally do NOT push the classified diff onto the real
-      // map anymore — only the Before/After swipe stays on the real map, and
-      // the diff/classification result stays in the sidebar (Change Map card
-      // above). This also removes the old bug where the diff overlay used
-      // `afterScene.bbox` (the whole raw satellite scene tile — tens of km
-      // wide) instead of your actual selected AOI, which is why it used to
-      // cover a much bigger area than what you drew/selected.
+      // NOTE: the classified diff IS now pushed via onPreview above, using the AOI bounds
+      // (not the raw scene bbox), so it gets drawn on the map and saved into the project.
     } catch (err) {
       // ⚠️ (2026-08-22) نفس فحص isNoDataForArea الموجود في makePreviewUrl —
       // لو الـ decode step (before أو after) رجّع "no valid pixels"/"no
@@ -2770,7 +2818,7 @@ export function ChangeDetectionPanel({ selectedFeature, onPreview, onSwipeCompar
     } finally {
       setComputing(false);
     }
-  }, [beforeScene, afterScene, indexKey, previewDef, threshold, west, south, east, north, source, sentinelDecodeToken]);
+  }, [beforeScene, afterScene, indexKey, previewDef, threshold, west, south, east, north, source, sentinelDecodeToken, onPreview, coords]);
 
   // ⚠️ FIX (2026-09-27): used to just download the raw classification PNG
   // as-is — the legend (colors/labels/percentages) only ever existed as React

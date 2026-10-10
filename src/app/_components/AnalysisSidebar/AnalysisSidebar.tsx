@@ -91,7 +91,10 @@ export default function AnalysisSidebar(
   onSuperResolutionPreview,
   onInterpolationPreview,
   onOpenElevationFloat,
+  terrainFeature,
 }: {
+  /** AOI used by the Terrain panel (MapClient's `elevationFeature`). */
+  terrainFeature?: GeoJSON.Feature | null;
   selectedFeature?: GeoJSON.Feature | null;
   uploadedGeoJsonMap?: Record<string, any>;
   captures: any[];
@@ -339,6 +342,7 @@ export default function AnalysisSidebar(
                   onSuperResolutionPreview={onSuperResolutionPreview}
                   onInterpolationPreview={onInterpolationPreview}
                   onOpenElevationFloat={onOpenElevationFloat}
+                  terrainFeature={terrainFeature}
                 />
                 </PanelErrorBoundary>
               )}

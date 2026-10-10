@@ -21,7 +21,7 @@ const PANEL_LOADERS: Record<string, (() => Promise<unknown>)[]> = {
   "super-resolution": [() => import("./SuperResolutionPanel")],
   "change-detection": [() => import("./ChangeDetectionPanel")],
   "live-dashboard": [() => import("./LivePanels"), () => import("./CropsPanel"), () => import("./CapturesPanel")],
-  elevation: [() => import("./ElevationContourPanel")],
+  elevation: [() => import("./TerrainHub")],
   "template-match": [() => import("./TemplateMatchPanel")],
   "saved-analyses": [() => import("./AnalysesManagerPanel")],
   layers: [() => import("../../map/LayerPanel")],
@@ -77,7 +77,7 @@ const SatelliteDataPanel      = dynamic(() => import("./SatelliteDataPanel").the
 const ChangeDetectionPanel    = dynamic(() => import("./ChangeDetectionPanel").then(m => m.ChangeDetectionPanel), { ssr: false, loading: () => <PanelLoading /> });
 const CropsPanel              = dynamic(() => import("./CropsPanel").then(m => m.CropsPanel), { ssr: false, loading: () => <PanelLoading /> });
 const VolumeCalculationPanel  = dynamic(() => import("./VolumeCalculationPanel"), { ssr: false, loading: () => <PanelLoading /> });
-const ElevationContourPanel   = dynamic(() => import("./ElevationContourPanel"), { ssr: false, loading: () => <PanelLoading /> });
+const TerrainHub              = dynamic(() => import("./TerrainHub"), { ssr: false, loading: () => <PanelLoading /> });
 const AnalysesManagerPanel    = dynamic(() => import("./AnalysesManagerPanel").then(m => m.AnalysesManagerPanel), { ssr: false, loading: () => <PanelLoading /> });
 const TemporalInterpolationPanel = dynamic(() => import("./TemporalInterpolationPanel"), { ssr: false, loading: () => <PanelLoading /> });
 
@@ -123,8 +123,11 @@ export function PanelContent({
   onSuperResolutionPreview,
   onInterpolationPreview,
   onOpenElevationFloat,
+  terrainFeature,
 }: {
   id: PanelId;
+  /** AOI for the Terrain panel (MapClient's `elevationFeature`: never the virtual click point). */
+  terrainFeature?: GeoJSON.Feature | null;
   /** which Raster Calc sub-tab is active — set from AnalysisSidebar's hover flyout on the sidebar icon */
   rasterTab?: RasterTabKey;
   /** which Insight sub-tab is active — set from AnalysisSidebar's hover flyout, same pattern as rasterTab. Only "interpolation" exists today; more Insight features branch on this as they ship. */
@@ -348,8 +351,9 @@ export function PanelContent({
 
   if (id === "elevation") {
     return (
-      <ElevationContourPanel
-        selectedFeature={selectedFeature}
+      <TerrainHub
+        embedded
+        selectedFeature={terrainFeature ?? selectedFeature}
         onContoursGenerated={(geojson, fileName) => onGeoJSONUpload?.(geojson, fileName)}
       />
     );

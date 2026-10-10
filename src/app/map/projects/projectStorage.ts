@@ -6,6 +6,8 @@ import {
   deleteLocalProject,
 } from "./ProjectDataBaseFront";
 
+import { stashHeavyAnalyses, isDataUrl } from "./leafletStore";
+
 import type {
   ProjectDraft,
   ProjectStorageMode,
@@ -24,6 +26,56 @@ type RemoteProjectPayload = Partial<UserProject> & {
   data?: UserProject["snapshot"];
   projectData?: UserProject["snapshot"];
 };
+
+/** حقول الصور/النقاط الضخمة — بتتخزن في leafletStore (Blob) مش جوه المشروع */
+const HEAVY_ANALYSIS_FIELDS = ["dataUrl", "beforeUrl", "afterUrl", "points"];
+
+/** نسخة خفيفة من الـ snapshot: من غير الصور base64. ده اللي بيتكتب في المشروع / الباك. */
+export function slimSnapshot(
+  snap: UserProject["snapshot"],
+  onlyIds?: Set<string> // لو متحدد: نشيل ثقيل الـ analyses دي بس (اللي اتخزنت فعلاً)
+): UserProject["snapshot"] {
+  if (!snap) return snap;
+  const saved = (snap as any).savedAnalyses;
+  if (!Array.isArray(saved)) return snap;
+  return {
+    ...snap,
+    savedAnalyses: saved.map((a: any) => {
+      if (!a || typeof a !== "object") return a;
+      if (onlyIds && !onlyIds.has(String(a.id))) return a; // ما اتخزنش → سيبه كامل
+      const copy: any = { ...a };
+      for (const f of HEAVY_ANALYSIS_FIELDS) {
+        if (f === "points" || isDataUrl(copy[f])) delete copy[f];
+      }
+      if (isDataUrl(copy.tileUrl)) delete copy.tileUrl;
+      return copy;
+    }),
+  } as UserProject["snapshot"];
+}
+
+/** توقيع رخيص للـ snapshot الخفيف — عشان ما نحفظش لو ما اتغيرش حاجة */
+export function snapshotSignature(snap: UserProject["snapshot"]): string {
+  try {
+    return JSON.stringify(slimSnapshot(snap));
+  } catch {
+    return String(Date.now());
+  }
+}
+
+/** يخزّن الصور في IndexedDB (Blob) ويشيلها من الـ snapshot — لو التخزين فشل، الـ snapshot بيفضل كامل */
+async function prepareSnapshot(
+  snapshot: UserProject["snapshot"]
+): Promise<UserProject["snapshot"]> {
+  const saved = (snapshot as any)?.savedAnalyses;
+  if (!Array.isArray(saved)) return snapshot;
+  let safe = new Set<string>();
+  try {
+    safe = await stashHeavyAnalyses(saved);
+  } catch (e) {
+    console.warn("stash failed, keeping full snapshot", e);
+  }
+  return slimSnapshot(snapshot, safe);
+}
 
 function emptySnapshot(): UserProject["snapshot"] {
   const today = new Date().toISOString().slice(0, 10);
@@ -115,8 +167,6 @@ export async function listProjects(
   canUseRemote: boolean
 ): Promise<ProjectResult<UserProject[]>> {
 
-  console.log("CAN USE REMOTE:", canUseRemote);
-
   if (canUseRemote) {
     try {
       const payload = await requestJson<
@@ -165,7 +215,10 @@ export async function createProject(
           "/api/gis/projects",
           {
             method: "POST",
-            body: JSON.stringify(draft),
+            body: JSON.stringify({
+              ...draft,
+              snapshot: await prepareSnapshot(draft.snapshot),
+            }),
           }
         );
 
@@ -194,7 +247,7 @@ export async function createProject(
 
     description: draft.description,
 
-    snapshot: draft.snapshot,
+    snapshot: await prepareSnapshot(draft.snapshot),
 
     createdAt: now,
 
@@ -220,8 +273,10 @@ export async function updateProject(
   canUseRemote: boolean
 ): Promise<ProjectResult<UserProject>> {
 
+  // ✅ بنحفظ metadata بس: الصور والتحليلات الثقيلة عند اليوزر (leafletStore)
   const updated = {
     ...project,
+    snapshot: await prepareSnapshot(project.snapshot),
     updatedAt: new Date().toISOString(),
   };
 
@@ -237,7 +292,6 @@ export async function updateProject(
             body: JSON.stringify(updated),
           }
         );
-        console.log("🔥 REMOTE PROJECT SAVED:", saved);
 
       return {
         data: normalizeProject(
@@ -266,8 +320,6 @@ const updatedProjects = projects.some(
   : [...projects, updated];
 
 await writeLocalProjectsdb(updatedProjects);
-
-console.log("🔥 SAVED TO INDEXEDDB:", updated);
 
 return {
   data: updated,

@@ -19,7 +19,8 @@ const AnalysisSidebar = dynamic(() => import("../_components/AnalysisSidebar/Ana
 const AIAssistant = dynamic(() => import("../_components/AIAssistant/AIAssistant"), { ssr: false });
 const ProjectStartDialog = dynamic(() => import("./projects/ProjectStartDialog"), { ssr: false });
 import LayerPanel, { MapLayer } from "./LayerPanel";
-import { updateProject } from "./projects/projectStorage";
+import { updateProject, snapshotSignature } from "./projects/projectStorage";
+import { hydrateAnalyses } from "./projects/leafletStore";
 import type { ProjectSnapshot, UserProject } from "./projects/projectTypes";
 import type { ChangeDetectionPreviewConfig, ChangeDetectionSwipeConfig } from "../_components/AnalysisSidebar/ChangeDetectionPanel";
 import type { SuperResolutionPreviewConfig } from "../_components/AnalysisSidebar/SuperResolutionPanel";
@@ -30,7 +31,6 @@ import { SOURCE_META } from "../_components/AnalysisSidebar/SatellitePipelines";
 import AITriggerButton from "./AITriggerButton";
 import AOIListPanel from "./AOIListPanel";
 import type { AOIControl, AOIListItem } from "./AOIRegistry";
-import { FloatingElevationPanel } from "../_components/AnalysisSidebar/ElevationContourPanel";
 import CoordsPopup from "./CoordsPopup";
 
 const UPLOADED_GEOJSON_STORAGE_KEY = "uploaded_geojson_v1";
@@ -51,6 +51,43 @@ type RasterPreviewConfig = {
   dataUrl?: string;
   tileUrl?: string;
 };
+
+const GENERATED_CONTOUR_KINDS = new Set(["elevation-contour", "weather-contour"]);
+
+/** يوسّم خطوط الـ DEM / الحرارة بالشكل (AOI) اللي اتعملت عليه عشان تتمسح مع تحليله بس */
+function tagContourOwner(gj: any, owner: string | null) {
+  if (!owner || !Array.isArray(gj?.features)) return gj;
+  const gen = gj.features[0]?.properties?._generated;
+  if (!GENERATED_CONTOUR_KINDS.has(gen)) return gj;
+  return {
+    ...gj,
+    features: gj.features.map((f: any) => ({
+      ...f,
+      properties: { ...f.properties, _ownerId: f.properties?._ownerId ?? owner },
+    })),
+  };
+}
+
+/** يشيل خطوط الـ contours اللي تخص owner معيّن (أو اللي من غير وسم) من الـ map */
+function withoutOwnerContours(
+  prev: Record<string, any>,
+  owner: string | null,
+): Record<string, any> {
+  const next: Record<string, any> = {};
+  let changed = false;
+  for (const [name, gj] of Object.entries(prev)) {
+    const props = gj?.features?.[0]?.properties;
+    if (GENERATED_CONTOUR_KINDS.has(props?._generated)) {
+      const tag = props?._ownerId;
+      if (!tag || tag === owner) {
+        changed = true;
+        continue;
+      }
+    }
+    next[name] = gj;
+  }
+  return changed ? next : prev;
+}
 
 function persistUploadedGeoJSON(map: Record<string, any>, onSkipped?: () => void) {
   try {
@@ -96,6 +133,11 @@ const drawnFeaturesRef = useRef<GeoJSON.Feature[]>([]);
   // ── قائمة الـ AOIs المرسومة + الـ AOI النشط (الباقي معطّل على الخريطة) ──
   const [aoiItems, setAoiItems] = useState<AOIListItem[]>([]);
   const [activeAoiId, setActiveAoiId] = useState<string | null>(null);
+  // ✅ كل تحليل بيتسجل مع الشكل (AOI) اللي اتعمل عليه — عشان يرجع لنفس الشكل بعد فتح المشروع
+  const activeAoiIdRef = useRef<string | null>(null);
+  activeAoiIdRef.current = activeAoiId;
+  const currentOwnerTag = () =>
+    activeAoiIdRef.current ? { ownerId: activeAoiIdRef.current } : {};
   const [initialFeaturesToRestore, setInitialFeaturesToRestore] = useState<GeoJSON.Feature[] | null>(null);
   const [savedAnalyses, setSavedAnalyses] = useState<import("./projects/projectTypes").SavedAnalysisConfig[]>([]);
 
@@ -145,16 +187,16 @@ const drawnFeaturesRef = useRef<GeoJSON.Feature[]>([]);
   const changeSatRef           = useRef<((sat: SatKey) => void) | null>(null);
   const changeOpacityRef       = useRef<((o: number) => void) | null>(null);
   const startImagePlacementRef = useRef<((file: File) => void) | null>(null);
-  const rasterOverlayRef       = useRef<((config: RasterPreviewConfig | null) => void) | null>(null);
+  const rasterOverlayRef       = useRef<((config: RasterPreviewConfig | null, ownerId?: string | null) => void) | null>(null);
   const pointsOverlayRef       = useRef<((config: {
     name: string;
     indexKey: string;
     date: string;
     points: { lat: number; lng: number; value: number; color: string }[];
     opacity: number;
-  } | null) => void) | null>(null);
+  } | null, ownerId?: string | null) => void) | null>(null);
   const superResOverlayRef     = useRef<((config: SuperResolutionPreviewConfig | null) => void) | null>(null);
-  const swipeCompareRef        = useRef<((config: ChangeDetectionSwipeConfig | null) => void) | null>(null);
+  const swipeCompareRef        = useRef<((config: ChangeDetectionSwipeConfig | null, ownerId?: string | null) => void) | null>(null);
   const lastCoordsRef          = useRef<{ lat: number; lng: number }>({ lat: 30.0, lng: 31.0 });
   const lastActivePanelRef     = useRef<string>("overview");
 
@@ -340,7 +382,7 @@ const drawnFeaturesRef = useRef<GeoJSON.Feature[]>([]);
               ...f.properties, 
               // Generated isotherms carry their own heat colour - don't overwrite it
               // with the layer's default cyan.
-              _color: f.properties?._generated === "weather-contour"
+              _color: (f.properties?._generated === "weather-contour" || f.properties?._keepColor)
                 ? f.properties._color
                 : layer.color,
               _opacity: layer.opacity 
@@ -361,7 +403,8 @@ const drawnFeaturesRef = useRef<GeoJSON.Feature[]>([]);
   }, [uploadedGeoJsonMap]);
 
   // ── Stable callbacks ──────────────────────────────────────────────────────
-  const handleGeoJSONUpload = useCallback((geojson: any, fileName: string = "uploaded.json", isUpdate: boolean = false) => {
+  const handleGeoJSONUpload = useCallback((rawGeojson: any, fileName: string = "uploaded.json", isUpdate: boolean = false) => {
+    const geojson = tagContourOwner(rawGeojson, activeAoiIdRef.current);
     setUploadedGeoJsonMap((prev) => {
       // Check if this file name already exists AND if it has the same geometry roughly
       // (to avoid duplicating during the onDisplay -> onUpload cycle)
@@ -534,20 +577,9 @@ useEffect(() => {
     clearAnalysisRef.current?.();
 
     // Elevation contours / isotherms are stored as uploaded GeoJSON, not as raster
-    // overlays, so the Leaflet-side clear doesn't know about them. Remove those too.
-    setUploadedGeoJsonMap((prev) => {
-      const next: Record<string, any> = {};
-      let changed = false;
-      for (const [name, gj] of Object.entries(prev)) {
-        const gen = gj?.features?.[0]?.properties?._generated;
-        if (gen === "elevation-contour" || gen === "weather-contour") {
-          changed = true;
-          continue;
-        }
-        next[name] = gj;
-      }
-      return changed ? next : prev;
-    });
+    // overlays — بنمسح بتوع الشكل الحالي بس (مش كل الأشكال).
+    const owner = activeAoiIdRef.current;
+    setUploadedGeoJsonMap((prev) => withoutOwnerContours(prev, owner));
   }, []);
 
   const handleToggleView = useCallback(() => {
@@ -808,6 +840,7 @@ useEffect(() => {
         rasterOverlayRef.current?.(overlayConfig);
         // حفظ الـ satellite preview في الـ project — بنضيف للقائمة مش بنستبدل
         setSavedAnalyses((prev) => [...prev, {
+    ...currentOwnerTag(),
           id: crypto.randomUUID(),
           type: "satellite" as const,
           ...overlayConfig,
@@ -860,6 +893,7 @@ useEffect(() => {
 
     // حفظ الـ analysis في الـ project — بنضيف للقائمة مش بنستبدل
     setSavedAnalyses((prev) => [...prev, {
+    ...currentOwnerTag(),
       id: crypto.randomUUID(),
       type: "raster" as const,
       name: config.name,
@@ -952,6 +986,7 @@ useEffect(() => {
     // نحفظها زي أي analysis تاني عشان ترجع تظهر لما اليوزر يفتح المشروع تاني
     // (نفس منطق handleRasterPreview/handlePalmPreview فوق).
     setSavedAnalyses((prev) => [...prev, {
+    ...currentOwnerTag(),
       id: crypto.randomUUID(),
       type: "raster" as const,
       name: config.name,
@@ -992,6 +1027,7 @@ useEffect(() => {
     // نحفظها في الـ project زي أي analysis تاني — عشان ترجع تظهر تلقائي
     // لما اليوزر يفتح المشروع تاني (نفس منطق handleLoadProject تحت)
     setSavedAnalyses((prev) => [...prev, {
+    ...currentOwnerTag(),
       id: crypto.randomUUID(),
       type: "raster" as const,
       name: config.name,
@@ -1036,6 +1072,17 @@ useEffect(() => {
       points: config.points,
       opacity: config.opacity,
     });
+    setSavedAnalyses((prev) => [...prev, {
+      ...currentOwnerTag(),
+      id: crypto.randomUUID(),
+      type: "points" as const,
+      name: config.name,
+      indexKey: config.indexKey,
+      date: config.date,
+      points: config.points,
+      opacity: config.opacity,
+      savedAt: new Date().toISOString(),
+    } as any]);
 
     setLayers((prev) => {
       const resultLayer: MapLayer = {
@@ -1070,8 +1117,10 @@ useEffect(() => {
   });
   changeOpacityRef.current?.(config.opacity);
 
-  // حفظ الـ change detection في الـ project — بنضيف للقائمة مش بنستبدل
-  setSavedAnalyses((prev) => [...prev, {
+  // حفظ الـ change detection في الـ project — تحليل واحد لكل شكل (بيستبدل القديم بدل ما يتكرر)
+  const _cdOwner: string | undefined = (currentOwnerTag() as any).ownerId;
+  setSavedAnalyses((prev) => [...prev.filter((a: any) => (a?.ownerId ?? undefined) !== _cdOwner), {
+    ...currentOwnerTag(),
     id: crypto.randomUUID(),
     type: "change-detection" as const,
     name: config.name,
@@ -1105,6 +1154,18 @@ useEffect(() => {
   // ── Change Detection: Before/After swipe overlay on the map ───────────────
   const handleSwipeCompare = useCallback((config: ChangeDetectionSwipeConfig | null) => {
     swipeCompareRef.current?.(config);
+    if (config) {
+      // ✅ بنحفظه في المشروع زي باقي التحليلات (قبل كده كان بيضيع)
+      // تحليل واحد لكل شكل: بيستبدل القديم (الـ effect بيتنادى مع كل تغيير مشهد → كان بيتراكم)
+      const _swOwner: string | undefined = (currentOwnerTag() as any).ownerId;
+      setSavedAnalyses((prev) => [...prev.filter((a: any) => (a?.ownerId ?? undefined) !== _swOwner), {
+        ...currentOwnerTag(),
+        ...(config as any),
+        id: crypto.randomUUID(),
+        type: "swipe" as const,
+        savedAt: new Date().toISOString(),
+      } as any]);
+    }
   }, []);
 
   // Sync uploaded GeoJSON as layers
@@ -1143,7 +1204,6 @@ useEffect(() => {
   }), [coords, selectedArea, layers, combinedGeoJson]);
 
   const currentProjectSnapshot = useMemo<ProjectSnapshot>(() => {
-    console.log("SNAPSHOT DRAWN FEATURES:", drawnFeatures);
     const today = new Date();
     const from = new Date(today);
     from.setDate(today.getDate() - 30);
@@ -1221,47 +1281,55 @@ const handleLoadProject = useCallback(
       snapshot.analysisSettings?.coords ?? null
     );
 
- console.log("LOADED SNAPSHOT:", snapshot);
-console.log("DRAWN FEATURES FROM SNAPSHOT:", snapshot.drawnFeatures);
 
 const restoredFeatures = snapshot.drawnFeatures ?? [];
 
-console.log("RESTORED FEATURES:", restoredFeatures);
 
 setDrawnFeatures(restoredFeatures);
 setInitialFeaturesToRestore(restoredFeatures);
 
     // Restore analysis overlays
-    const analyses =
-      snapshot.savedAnalyses ?? [];
+    // ✅ المشروع بيحتفظ بـ metadata بس — الصور بترجع من IndexedDB (Blob) بالـ analysis.id
+    const featureIds = new Set(
+      (snapshot.drawnFeatures ?? []).map((f: any) => String(f?.properties?.id)),
+    );
+    hydrateAnalyses(snapshot.savedAnalyses ?? []).then((all: any[]) => {
+      // تحليل واحد لكل شكل (آخر واحد) + شيل تحليلات الأشكال اللي اتمسحت
+      const lastByOwner = new Map<string, any>();
+      all.forEach((a: any) => {
+        if (a?.ownerId) lastByOwner.set(String(a.ownerId), a);
+      });
+      const analyses = all.filter((a: any) => {
+        if (!a?.ownerId) return true; // قديم من غير شكل
+        if (!featureIds.has(String(a.ownerId))) return false; // الشكل اتمسح
+        return lastByOwner.get(String(a.ownerId)) === a;
+      });
+      setSavedAnalyses(analyses);
 
-    setSavedAnalyses(analyses);
-
-    if (analyses.length > 0) {
-      analyses.forEach((analysis, index) => {
-        if (
-          !analysis?.dataUrl &&
-          !analysis?.tileUrl
-        ) {
-          return;
-        }
-
+      analyses.forEach((analysis: any, index: number) => {
+        const owner = analysis.ownerId ?? null;
         setTimeout(() => {
-          rasterOverlayRef.current?.({
-            name: analysis.name,
-            indexKey: analysis.indexKey,
-            expression: analysis.expression,
-            date: analysis.date,
-            coords: analysis.coords,
-            bounds: analysis.bounds,
-            opacity: analysis.opacity,
-            colorRamp: analysis.colorRamp,
-            dataUrl: analysis.dataUrl,
-            tileUrl: analysis.tileUrl,
-          });
+          if (analysis.type === "swipe" && analysis.beforeUrl && analysis.afterUrl) {
+            swipeCompareRef.current?.(analysis, owner);
+          } else if (analysis.type === "points" && analysis.points?.length) {
+            pointsOverlayRef.current?.(analysis, owner);
+          } else if (analysis.dataUrl || analysis.tileUrl) {
+            rasterOverlayRef.current?.({
+              name: analysis.name,
+              indexKey: analysis.indexKey,
+              expression: analysis.expression,
+              date: analysis.date,
+              coords: analysis.coords,
+              bounds: analysis.bounds,
+              opacity: analysis.opacity,
+              colorRamp: analysis.colorRamp,
+              dataUrl: analysis.dataUrl,
+              tileUrl: analysis.tileUrl,
+            }, owner);
+          }
         }, 1000 + index * 500);
       });
-    }
+    });
 
     // Restore active panel
     const restoredPanel =
@@ -1287,8 +1355,6 @@ setInitialFeaturesToRestore(restoredFeatures);
   },
   [isRTL]
 );
-
-
 
   const handleCreateStartupProject = useCallback((project: UserProject) => {
     setActiveProject(project);
@@ -1324,11 +1390,6 @@ setInitialFeaturesToRestore(restoredFeatures);
     if (!activeProject || projectSaving) return;
     setProjectSaving(true);
     try {
-      console.log("🔥 SAVING PROJECT:", {
-  projectId: activeProject.id,
-  snapshot: currentProjectSnapshot,
-  authenticated: sessionStatus === "authenticated",
-});
       const result = await updateProject(
         projectOwnerKey,
         { ...activeProject, snapshot: currentProjectSnapshot },
@@ -1344,27 +1405,40 @@ setInitialFeaturesToRestore(restoredFeatures);
   }, [activeProject, currentProjectSnapshot, projectOwnerKey, projectSaving, sessionStatus]);
 
   // ── Auto-save project on snapshot change ─────────────────────────────────
+  // ✅ كان: الـ effect بيعتمد على activeProject، و setActiveProject(result.data) بيغيّره
+  //    → الـ effect يشتغل تاني → حفظ كل ثانيتين لا نهائي. دلوقتي: ref + مقارنة توقيع.
+  const activeProjectRef = useRef<UserProject | null>(activeProject);
+  activeProjectRef.current = activeProject;
+  const lastSavedSigRef = useRef<{ id: string; sig: string } | null>(null);
+  const activeProjectId = activeProject?.id ?? null;
+
   useEffect(() => {
-    if (!activeProject) return;
+    if (!activeProjectId) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
 
     autoSaveTimerRef.current = setTimeout(async () => {
+      const project = activeProjectRef.current;
+      if (!project) return;
+      const sig = snapshotSignature(currentProjectSnapshot);
+      const last = lastSavedSigRef.current;
+      if (last && last.id === project.id && last.sig === sig) return; // مفيش تغيير
       try {
-        const result = await updateProject(
+        await updateProject(
           projectOwnerKey,
-          { ...activeProject, snapshot: currentProjectSnapshot },
+          { ...project, snapshot: currentProjectSnapshot },
           sessionStatus === "authenticated",
         );
-        setActiveProject(result.data);
+        lastSavedSigRef.current = { id: project.id, sig };
+        // مفيش setActiveProject هنا: ده كان سبب الحلقة
       } catch {
         // silent — مش بنزعج المستخدم بـ auto-save errors
       }
-    }, 2000);
+    }, 3000);
 
     return () => {
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     };
-  }, [currentProjectSnapshot, activeProject, projectOwnerKey, sessionStatus]);
+  }, [currentProjectSnapshot, activeProjectId, projectOwnerKey, sessionStatus]);
 
   // ── Feature used by the floating Elevation panel ──────────────────────────
   // With the pointer tool, every map click (even on a drawn shape) fires a virtual
@@ -1436,6 +1510,7 @@ setInitialFeaturesToRestore(restoredFeatures);
       onSuperResolutionPreview={handleSuperResolutionPreview}
       onInterpolationPreview={handleInterpolationPreview}
       onOpenElevationFloat={() => setElevationFloatOpen(true)}
+      terrainFeature={elevationFeature}
     />
   ), [
     selectedFeature,
@@ -1473,6 +1548,7 @@ setInitialFeaturesToRestore(restoredFeatures);
     handleSwipeCompare,
     handleSuperResolutionPreview,
     handleInterpolationPreview,
+    elevationFeature,
   ]);
 
   const toggle2DButton = useMemo(() => (
@@ -1556,7 +1632,18 @@ console.log("MAP CLIENT INITIAL FEATURES:", initialFeaturesToRestore);
             initialFeatures={initialFeaturesToRestore || []}
             aoiControlRef={aoiControlRef}
             onAOIListChange={(items, id) => { setAoiItems(items); setActiveAoiId(id); }}
-            onAOIRemove={(id) => setDrawnFeatures((prev) => prev.filter((f) => f.properties?.id !== id))}
+            onAOIRemove={(id) => {
+              setDrawnFeatures((prev) => prev.filter((f) => f.properties?.id !== id));
+              // الشكل اتمسح → تحليله وخطوطه يتمسحوا معاه
+              setSavedAnalyses((prev) => prev.filter((a: any) => a.ownerId !== id));
+              setUploadedGeoJsonMap((prev) => withoutOwnerContours(prev, id));
+            }}
+            onAnalysisCleared={(ownerId) => {
+              // ✅ "Delete Analysis" بيمسح تحليل الشكل ده بس من المشروع
+              setSavedAnalyses((prev) =>
+                ownerId ? prev.filter((a: any) => a.ownerId !== ownerId) : [],
+              );
+            }}
             onDrawnFeaturesChange={(features) => {
   setDrawnFeatures(features);
 }}
@@ -1807,15 +1894,6 @@ console.log("MAP CLIENT INITIAL FEATURES:", initialFeaturesToRestore);
             <AITriggerButton onClick={() => setAiOpen(!aiOpen)} active={aiOpen} />
             <AIAssistant open={aiOpen} onClose={() => setAiOpen(false)} />
             {sharedSidebar}
-
-            {/* ── Floating Elevation Panel — renders above the map, not inside sidebar ── */}
-            <FloatingElevationPanel
-              open={elevationFloatOpen}
-              onClose={() => setElevationFloatOpen(false)}
-              selectedFeature={elevationFeature}
-              onContoursGenerated={(geojson, fileName) => handleGeoJSONUpload(geojson, fileName)}
-              initialPosition={{ x: 16, y: 64 }}
-            />
 
           </>
         )}

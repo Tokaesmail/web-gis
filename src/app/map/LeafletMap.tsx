@@ -30,6 +30,10 @@ import {
   imageOverlaysClear,
   analysisGet,
   analysisClear,
+  analysesGetAll,
+  analysesPutMany,
+  analysesDeleteMany,
+  analysesClearAll,
   deletedIdsGetAll,
   deletedIdsAdd,
   type StoredAnalysis,
@@ -155,16 +159,26 @@ interface Props {
   /** register an image placement workflow (2 clicks to place image) */
   onImagePlacerRegister?: (handler: (file: File) => void) => void;
   onRasterOverlayRegister?: (
-    handler: (config: RasterOverlayConfig | null) => void,
+    handler: (
+      config: RasterOverlayConfig | null,
+      /** الشكل صاحب التحليل (وقت استرجاع المشروع) — الافتراضي: الشكل الحالي */
+      ownerId?: string | null,
+    ) => void,
   ) => void;
   onSwipeOverlayRegister?: (
-    handler: (config: SwipeOverlayConfig | null) => void,
+    handler: (
+      config: SwipeOverlayConfig | null,
+      ownerId?: string | null,
+    ) => void,
   ) => void;
   onSuperResOverlayRegister?: (
     handler: (config: SuperResOverlayConfig | null) => void,
   ) => void;
   onPointsOverlayRegister?: (
-    handler: (config: PointsOverlayConfig | null) => void,
+    handler: (
+      config: PointsOverlayConfig | null,
+      ownerId?: string | null,
+    ) => void,
   ) => void;
   onCapture?: (capture: CaptureResult) => void;
   /** callback لما يضغط على GeoJSON feature */
@@ -385,6 +399,8 @@ export default function LeafletMap({
   // ═══════════════════════════════════════════════════════════════════════════
   /** آخر شكل بقى "الحالي" (اتعمل / اتفعّل / اتعدّل) — ده اللي البانلز بتحلله */
   const currentShapeIdRef = useRef<string | null>(null);
+  /** آخر مرة الشكل النشط اتغيّر (تبديل / رسم) — لتجاهل cleanup التلقائي من البانلز */
+  const lastAreaChangeAtRef = useRef(0);
 
   type LiveAnalysis = {
     kind: StoredAnalysis["kind"];
@@ -427,7 +443,7 @@ export default function LeafletMap({
   };
 
   const readAnalyses = async (): Promise<Record<string, any>> =>
-    (await kvGet<Record<string, any>>(ANALYSES_KEY)) ?? {};
+    (await analysesGetAll()) ?? {};
 
   /** يشيل overlay تحليل شكل معيّن من الخريطة (من غير DB / الأب) */
   const removeOverlayFor = (owner: string) => {
@@ -444,22 +460,48 @@ export default function LeafletMap({
     const a = analysesRef.current.get(owner);
     if (!persistDataRef.current || !a || !savedIdsRef.current.has(owner))
       return;
-    enqueue(async () => {
-      const all = await readAnalyses();
-      all[owner] = {
+    // ✅ بنكتب record الشكل ده بس (مش كل التحليلات)
+    enqueue(() =>
+      analysesPutMany({
+        [owner]: {
+          kind: a.kind,
+          config: a.config,
+          savedAt: Date.now(),
+          ownerId: owner,
+        },
+      }),
+    ).catch((e) => console.warn("analysis save failed", e));
+    onAnalysisSavedRef.current?.(owner, a.kind, a.config);
+  };
+
+  /** بعد Save / Save All: اكتب تحليلات كل الأشكال اللي بقت متسيفة
+   *  ✅ قراءة واحدة + كتابة واحدة بدل (قراءة + كتابة) لكل شكل — كانت O(n²) على الـ dataUrls */
+  const flushAllAnalyses = () => {
+    if (!persistDataRef.current) return;
+    const owners: string[] = [];
+    analysesRef.current.forEach((_, owner) => {
+      if (savedIdsRef.current.has(owner)) owners.push(owner);
+    });
+    if (!owners.length) return;
+    const records: Record<string, any> = {};
+    for (const owner of owners) {
+      const a = analysesRef.current.get(owner);
+      if (!a) continue;
+      records[owner] = {
         kind: a.kind,
         config: a.config,
         savedAt: Date.now(),
         ownerId: owner,
       };
-      await kvSet(ANALYSES_KEY, all);
-    }).catch((e) => console.warn("analysis save failed", e));
-    onAnalysisSavedRef.current?.(owner, a.kind, a.config);
-  };
-
-  /** بعد Save / Save All: اكتب تحليلات كل الأشكال اللي بقت متسيفة */
-  const flushAllAnalyses = () => {
-    analysesRef.current.forEach((_, owner) => persistAnalysisFor(owner));
+    }
+    // ✅ كتابة الأشكال دي بس، كل واحد record لوحده (من غير قراءة الباقي)
+    enqueue(() => analysesPutMany(records)).catch((e) =>
+      console.warn("analysis batch save failed", e),
+    );
+    owners.forEach((owner) => {
+      const a = analysesRef.current.get(owner);
+      if (a) onAnalysisSavedRef.current?.(owner, a.kind, a.config);
+    });
   };
 
   /** يسجّل تحليل شكل معيّن (بيستبدل تحليل نفس الشكل بس، مش بتاع غيره) */
@@ -472,7 +514,13 @@ export default function LeafletMap({
   ) => {
     removeOverlayFor(owner);
     analysesRef.current.set(owner, { kind, config, cleanup });
-    if (persist) persistAnalysisFor(owner);
+    // ✅ الشكل اللي اتعمل عليه تحليل بيتحفظ معاه تلقائي (قبل كده التحليل كان بيفضل
+    //    والشكل بيضيع لو اليوزر ما داسش Save على الشكل نفسه)
+    if (persist && pendingShapesRef.current.has(owner)) {
+      void saveShape(owner, true);
+    } else if (persist) {
+      persistAnalysisFor(owner);
+    }
   };
 
   /** مسح تحليل شكل واحد: خريطة + IndexedDB + بروجكت (عن طريق الأب) */
@@ -486,13 +534,9 @@ export default function LeafletMap({
     }
     removeOverlayFor(owner);
     // ✅ دايماً (من غير gating بـ persistData) عشان مفيش تحليل يتيم يفضل في الـ DB
-    enqueue(async () => {
-      const all = await readAnalyses();
-      if (owner in all) {
-        delete all[owner];
-        await kvSet(ANALYSES_KEY, all);
-      }
-    }).catch((e) => console.warn("analysis delete failed", e));
+    enqueue(() => analysesDeleteMany([owner])).catch((e) =>
+      console.warn("analysis delete failed", e),
+    );
     if (notify) onAnalysisClearedRef.current?.(owner);
   };
 
@@ -523,7 +567,7 @@ export default function LeafletMap({
     }
     swipeOverlayRef.current = null;
 
-    enqueue(() => kvSet(ANALYSES_KEY, {})).catch((e) =>
+    enqueue(() => analysesClearAll()).catch((e) =>
       console.warn("analyses clear failed", e),
     );
     analysisClear().catch(() => {}); // السجل القديم (legacy single record)
@@ -592,7 +636,7 @@ export default function LeafletMap({
   };
 
   /** زرار Save (شكل واحد) */
-  const saveShape = async (id: string) => {
+  const saveShape = async (id: string, silent = false) => {
     const p = pendingShapesRef.current.get(id);
     if (!p) return;
     try {
@@ -629,7 +673,7 @@ export default function LeafletMap({
     try {
       mapInstanceRef.current?.closePopup();
     } catch (_) {}
-    toast.success(isRTL ? "تم الحفظ" : "Saved");
+    if (!silent) toast.success(isRTL ? "تم الحفظ" : "Saved");
   };
 
   /** زرار Save All اللي فوق — بيحفظ كل الأشكال الـ pending */
@@ -974,10 +1018,8 @@ export default function LeafletMap({
       return;
     }
 
-    // ⚠️ الـ swipe UI واحد بس على الخريطة → أي swipe تاني (لأي شكل) يتشال من الخريطة
-    analysesRef.current.forEach((a, o) => {
-      if (a.kind === "swipe") removeOverlayFor(o);
-    });
+    // ✅ كل شكل (AOI) له swipe خاص بيه — بنشيل swipe نفس الشكل بس، مش بتاع الأشكال التانية
+    //    (قبل كده أي swipe جديد كان بيشيل كل الباقي فكان بيفضل الأخير بس)
     removeOverlayFor(ownerId);
 
     const bounds = L.latLngBounds(config.bounds[0], config.bounds[1]);
@@ -1127,14 +1169,15 @@ export default function LeafletMap({
     if (!persistDataRef.current) return;
     try {
       const all = await readAnalyses();
-      let changed = false;
+      const staleOwners: string[] = [];
+      const migrated: Record<string, any> = {};
 
       // migration من السجل القديم (single record) لو موجود
       try {
         const legacy: any = await analysisGet();
         if (legacy?.ownerId && !all[legacy.ownerId]) {
           all[legacy.ownerId] = legacy;
-          changed = true;
+          migrated[legacy.ownerId] = legacy;
         }
         if (legacy) analysisClear().catch(() => {});
       } catch (_) {}
@@ -1147,7 +1190,7 @@ export default function LeafletMap({
           // صاحب التحليل مش موجود (اتمسح / ماتحفظش) → امسح التحليل اليتيم من الـ DB
           console.warn("🧹 Stale analysis in IndexedDB (owner missing):", owner);
           delete all[owner];
-          changed = true;
+          staleOwners.push(owner);
           continue;
         }
         switch (rec.kind) {
@@ -1166,7 +1209,10 @@ export default function LeafletMap({
         }
       }
 
-      if (changed) await enqueue(() => kvSet(ANALYSES_KEY, all));
+      if (staleOwners.length)
+        await enqueue(() => analysesDeleteMany(staleOwners));
+      if (Object.keys(migrated).length)
+        await enqueue(() => analysesPutMany(migrated));
     } catch (e) {
       console.warn("Analysis restore failed", e);
     }
@@ -2115,14 +2161,17 @@ export default function LeafletMap({
   // ── Raster overlay (config === null → "Remove from map": تحليل الشكل الحالي بس) ──
   useEffect(() => {
     if (!onRasterOverlayRegister) return;
-    onRasterOverlayRegister((config) => {
+    onRasterOverlayRegister((config, ownerId) => {
       if (config === null) {
+        // 🛡️ طلب مسح جه بعد تغيير الشكل بلحظات = cleanup تلقائي من البانل (مش اليوزر)
+        //    ومسحه هيشيل تحليل الشكل الجديد بالغلط — فبنتجاهله
+        if (Date.now() - lastAreaChangeAtRef.current < 1200) return;
         const owner = currentShapeIdRef.current;
         if (owner) deleteAnalysisFor(owner);
         return;
       }
       if (isEchoAfterClear("raster", config)) return;
-      applyRasterOverlay(config);
+      applyRasterOverlay(config, true, ownerId ?? currentShapeIdRef.current);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onRasterOverlayRegister, mapReady]);
@@ -2130,14 +2179,17 @@ export default function LeafletMap({
   // ── Points render style (Palm Trees "points" mode) ──────────────────────────
   useEffect(() => {
     if (!onPointsOverlayRegister) return;
-    onPointsOverlayRegister((config) => {
+    onPointsOverlayRegister((config, ownerId) => {
       if (!config) {
+        // 🛡️ طلب مسح جه بعد تغيير الشكل بلحظات = cleanup تلقائي من البانل (مش اليوزر)
+        //    ومسحه هيشيل تحليل الشكل الجديد بالغلط — فبنتجاهله
+        if (Date.now() - lastAreaChangeAtRef.current < 1200) return;
         const owner = currentShapeIdRef.current;
         if (owner) deleteAnalysisFor(owner);
         return;
       }
       if (isEchoAfterClear("points", config)) return;
-      applyPointsOverlay(config);
+      applyPointsOverlay(config, true, ownerId ?? currentShapeIdRef.current);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onPointsOverlayRegister, mapReady]);
@@ -2147,6 +2199,9 @@ export default function LeafletMap({
     if (!onSuperResOverlayRegister) return;
     onSuperResOverlayRegister((config) => {
       if (!config) {
+        // 🛡️ طلب مسح جه بعد تغيير الشكل بلحظات = cleanup تلقائي من البانل (مش اليوزر)
+        //    ومسحه هيشيل تحليل الشكل الجديد بالغلط — فبنتجاهله
+        if (Date.now() - lastAreaChangeAtRef.current < 1200) return;
         const owner = currentShapeIdRef.current;
         if (owner) deleteAnalysisFor(owner);
         return;
@@ -2160,14 +2215,20 @@ export default function LeafletMap({
   // ── Change Detection: real, georeferenced Before/After swipe on the map ────
   useEffect(() => {
     if (!onSwipeOverlayRegister) return;
-    onSwipeOverlayRegister((config) => {
+    onSwipeOverlayRegister((config, ownerId) => {
       if (!config) {
+        // 🛡️ طلب مسح جه بعد تغيير الشكل بلحظات = cleanup تلقائي من البانل (مش اليوزر)
+        //    ومسحه هيشيل تحليل الشكل الجديد بالغلط — فبنتجاهله
+        if (Date.now() - lastAreaChangeAtRef.current < 1200) return;
         const owner = currentShapeIdRef.current;
-        if (owner) deleteAnalysisFor(owner);
+        // ✅ null بتاع الـ swipe يمسح الـ swipe بس — لو الشكل ده تحليله نتيجة Change Map
+        //    (raster) متسيفة، قفل البانل / تغيير الشكل ما يمسحهاش من الخريطة والمشروع
+        if (owner && analysesRef.current.get(owner)?.kind === "swipe")
+          deleteAnalysisFor(owner);
         return;
       }
       if (isEchoAfterClear("swipe", config)) return;
-      applySwipeOverlay(config);
+      applySwipeOverlay(config, true, ownerId ?? currentShapeIdRef.current);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onSwipeOverlayRegister, mapReady]);
@@ -2472,6 +2533,7 @@ export default function LeafletMap({
     const generatedFeats = allFeats.filter(isGenerated);
     let contourLayer: any = null;
     let contourRenderer: any = null;
+    let demHoverCleanup: (() => void) | null = null;
 
     const layer = L.geoJSON(regularData as any, {
       // Canvas renderer avoids one DOM <path> per feature (was the main-thread bottleneck for large GeoJSON layers)
@@ -2517,10 +2579,10 @@ export default function LeafletMap({
         const isLine = feature?.geometry?.type === "LineString" || feature?.geometry?.type === "MultiLineString";
         return {
           color: customColor,
-          weight: isLine ? 2.5 : 2, // never 0 → lines always have a visible width
+          weight: typeof p._weight === "number" ? p._weight : isLine ? 2.5 : 2, // never 0 → lines always have a visible width
           opacity: 0.9 * layerOpacity,
           fillColor: customFill,
-          fillOpacity: 0.2 * layerOpacity,
+          fillOpacity: (typeof p._fillOpacity === "number" ? p._fillOpacity : 0.2) * layerOpacity,
         };
       },
       onEachFeature: (feature: any, lyr: any) => {
@@ -2563,10 +2625,11 @@ export default function LeafletMap({
                 `<span style="color:#94a3b8">${k}:</span> <span style="color:#e2e8f0">${p[k]}</span>`,
             )
             .join("<br/>");
-          lyr.bindTooltip(
-            `<div style="font-size:.72rem;line-height:1.6;padding:2px 4px">${preview}</div>`,
-            { sticky: true, className: "ndvi-tooltip" },
-          );
+          if (!p._demCell)
+            lyr.bindTooltip(
+              `<div style="font-size:.72rem;line-height:1.6;padding:2px 4px">${preview}</div>`,
+              { sticky: true, className: "ndvi-tooltip" },
+            );
           const allProps = propKeys
             .map(
               (k) =>
@@ -2590,6 +2653,92 @@ export default function LeafletMap({
 
     layer.addTo(map);
     extraGeoJsonLayerRef.current = layer;
+
+    // ── DEM cells: قيمة الخلية تحت الماوس تظهر في أي مكان (حتى جوه الـ AOI) ──────────
+    // الـ tooltip العادي بتاع الـ layer مش بيشتغل جوه الـ AOI لأن شكل الـ AOI المرسوم هو اللي
+    // بياخد الماوس. فبنسمع على حاوية الخريطة نفسها (capture) ونحسب الخلية من إحداثيات الماوس.
+    try {
+      const cells: { w: number; s: number; e: number; n: number; props: Record<string, any> }[] = [];
+      for (const f of regularData.features as any[]) {
+        const p = f?.properties ?? {};
+        if (!p._demCell) continue;
+        const g = f.geometry;
+        const ring: number[][] | undefined =
+          g?.type === "Polygon" ? g.coordinates?.[0] : g?.type === "MultiPolygon" ? g.coordinates?.[0]?.[0] : undefined;
+        if (!ring?.length) continue;
+        let w = Infinity, e = -Infinity, so = Infinity, n = -Infinity;
+        for (const [x, y] of ring) {
+          if (x < w) w = x; if (x > e) e = x;
+          if (y < so) so = y; if (y > n) n = y;
+        }
+        const props: Record<string, any> = {};
+        for (const k of Object.keys(p)) if (!k.startsWith("_")) props[k] = p[k];
+        if (Object.keys(props).length) cells.push({ w, s: so, e, n, props });
+      }
+      if (cells.length) {
+        const container: HTMLElement = map.getContainer();
+        let raf = 0;
+        let openTip: any = null;
+        const hide = () => {
+          if (openTip) {
+            try { map.closeTooltip(openTip); } catch (_) {}
+            openTip = null;
+          }
+        };
+        const onMove = (ev: MouseEvent) => {
+          if ((ev.target as HTMLElement)?.closest?.(".leaflet-control, .leaflet-popup, .swipe-compare-ui")) {
+            hide();
+            return;
+          }
+          if (raf) return;
+          raf = requestAnimationFrame(() => {
+            raf = 0;
+            const ll = map.mouseEventToLatLng(ev);
+            // ✅ بنعرض داتا الطبقة العلوية بس (آخر طبقة اتحطت تحت الماوس) — من غير دمج:
+            //    لما طبقة جديدة تتحط، بتحل محل اللي قبلها في الـ tooltip، وكل طبقة بتظهر قيمها هي بس
+            let top: (typeof cells)[number] | null = null;
+            for (let i = cells.length - 1; i >= 0; i--) {
+              const c = cells[i];
+              if (ll.lng >= c.w && ll.lng <= c.e && ll.lat >= c.s && ll.lat <= c.n) {
+                top = c;
+                break;
+              }
+            }
+            if (!top) return hide();
+            const merged: Record<string, any> = top.props;
+            const keys = Object.keys(merged).filter((k) => k !== "Elevation" && k !== "Cell");
+            const ordered = [
+              ...("Elevation" in merged ? ["Elevation"] : []),
+              ...keys,
+              ...("Cell" in merged ? ["Cell"] : []),
+            ];
+            const html = ordered
+              .map((k) => `<span style="color:#94a3b8">${k}:</span> <span style="color:#e2e8f0">${merged[k]}</span>`)
+              .join("<br/>");
+            hide();
+            openTip = L.tooltip({
+              className: "ndvi-tooltip",
+              direction: "right",
+              offset: [14, 0],
+              opacity: 1,
+            })
+              .setLatLng(ll)
+              .setContent(`<div style="font-size:.72rem;line-height:1.6;padding:2px 4px">${html}</div>`)
+              .addTo(map);
+          });
+        };
+        container.addEventListener("mousemove", onMove, true);
+        container.addEventListener("mouseleave", hide, true);
+        demHoverCleanup = () => {
+          container.removeEventListener("mousemove", onMove, true);
+          container.removeEventListener("mouseleave", hide, true);
+          if (raf) cancelAnimationFrame(raf);
+          hide();
+        };
+      }
+    } catch (e) {
+      console.warn("DEM hover setup failed", e);
+    }
 
     if (generatedFeats.length) {
       try {
@@ -2697,6 +2846,8 @@ export default function LeafletMap({
     }
 
     return () => {
+      demHoverCleanup?.();
+      demHoverCleanup = null;
       if (contourLayer) {
         try {
           map.removeLayer(contourLayer);
@@ -3379,6 +3530,7 @@ export default function LeafletMap({
             return;
           }
           currentShapeIdRef.current = e.id;
+          lastAreaChangeAtRef.current = Date.now();
           lastCoordsRef.current = e.coords;
           lastToolRef.current = e.tool;
           if (canvasRef.current) {

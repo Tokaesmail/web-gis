@@ -1,7 +1,8 @@
 "use client";
 
 // ─── ElevationContourPanel.tsx ──────────────────────────────────────────────────
-// Now hosts TWO contour modes, switched via tabs at the top:
+// Hosts THREE modes, switched via tabs at the top (the third is "DEM Tools":
+// color ramp, hillshade, slope, aspect, contour, multi-directional hillshade, curvature):
 //   🗻 Elevation Contours (existing) — Open-Elevation/Open-Meteo elevation grid
 //      → marching-squares interpolation → lines colored/labeled by meters.
 //   🌡 Weather Contours (new)       — Open-Meteo current-temperature grid
@@ -12,17 +13,18 @@
 // "Add to Map" action (which emits a GeoJSON FeatureCollection the same way
 // for either mode via onContoursGenerated).
 //
-// FloatingElevationPanel wraps ElevationContourPanel in a draggable, resizable
-// floating panel that sits above the map — no sidebar needed.
+// TerrainHub.tsx hosts this panel: a list of Weather / Elevation / DEM Tools, and
+// each one opens as its own screen (this component with the `mode` prop set).
 
-import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import { buildElevationGrid, fillGridGaps, sanitizeContours, type ElevationGrid } from "../../../../lib/elevation";
 import { gridToContours } from "../../../../lib/marchingSquares";
 import { buildTemperatureGrid, type TemperatureGrid } from "../../../../lib/temperatureGrid";
 import { gridToTemperatureContours } from "../../../../lib/temperatureContours";
 import { clipContoursToAoi, describeContours } from "../../../../lib/clipToAoi";
+import DemToolsSection from "./DemToolsSection";
 
-type ContourMode = "elevation" | "weather";
+export type ContourMode = "elevation" | "weather" | "dem";
 
 // ── helper: bbox from a GeoJSON feature, with sane fallback ────────────────────
 function getFeatureBounds(feature?: GeoJSON.Feature | null) {
@@ -150,11 +152,14 @@ function GridPreview({
 }
 
 interface Props {
+  /** When set, the panel shows ONLY this view (no tab switcher / header card).
+   *  TerrainHub uses this so each tool opens as its own screen. */
+  mode?: ContourMode;
   selectedFeature?: GeoJSON.Feature | null;
   onContoursGenerated?: (geojson: GeoJSON.FeatureCollection, fileName: string) => void;
 }
 
-export default function ElevationContourPanel({ selectedFeature, onContoursGenerated }: Props) {
+export default function ElevationContourPanel({ selectedFeature, onContoursGenerated, mode: controlledMode }: Props) {
   const bounds = useMemo(() => getFeatureBounds(selectedFeature), [selectedFeature]);
   const center = useMemo(() => midOf(bounds), [bounds]);
 
@@ -193,7 +198,8 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
   ) : null;
 
   // ── Mode switch ──────────────────────────────────────────────────────────
-  const [mode, setMode] = useState<ContourMode>("elevation");
+  const [innerMode, setMode] = useState<ContourMode>("elevation");
+  const mode = controlledMode ?? innerMode;
 
   // ── Elevation state ──────────────────────────────────────────────────────
   const [resolution, setResolution] = useState(18);
@@ -211,6 +217,10 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
   const [tempLoading, setTempLoading] = useState(false);
   const [tempError, setTempError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // ── DEM tools state (the grid itself is shared with elevation mode) ──────
+  const [demLoading, setDemLoading] = useState(false);
+  const [demError, setDemError] = useState<string | null>(null);
 
   // ── Shared live weather card ─────────────────────────────────────────────
   const [weather, setWeather] = useState<any>(null);
@@ -243,6 +253,33 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
       setError(e?.message ?? "Elevation lookup failed");
     } finally {
       setLoading(false);
+    }
+  }, [bounds, resolution, interval, isAreaSelected, clipToAoi]);
+
+  // Loads the DEM for the DEM Tools tab. Uses the SAME grid state as the Elevation tab,
+  // so one download feeds both (and the Elevation preview stays in sync).
+  const loadDem = useCallback(async () => {
+    if (!isAreaSelected) {
+      setDemError("Draw a polygon / rectangle / circle first - the DEM can only be loaded for a real area.");
+      return;
+    }
+    setDemLoading(true);
+    setDemError(null);
+    try {
+      const g = await buildElevationGrid(bounds, resolution);
+      setGrid(g);
+      const range = g.max - g.min;
+      let iv = interval;
+      if (range > 0 && range / iv < 3) {
+        iv = niceIntervalFor(range);
+        setIntervalM(iv);
+      }
+      setContours(sanitizeContours(clipToAoi(gridToContours(g, { interval: iv }), "elevation")));
+      setError(null);
+    } catch (e: any) {
+      setDemError(e?.message ?? "Elevation lookup failed");
+    } finally {
+      setDemLoading(false);
     }
   }, [bounds, resolution, interval, isAreaSelected, clipToAoi]);
 
@@ -343,11 +380,14 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
 
   return (
     <div className="space-y-4">
+      {controlledMode == null && (
+        <>
       {/* ── Mode switch ── */}
       <div className="flex items-center bg-white/[0.03] border border-white/[0.07] rounded-xl p-1 gap-1">
         {([
-          { key: "elevation" as ContourMode, icon: "🗻", label: "Elevation Contours" },
-          { key: "weather" as ContourMode, icon: "🌡", label: "Weather Contours" },
+          { key: "elevation" as ContourMode, icon: "🗻", label: "Contours" },
+          { key: "weather" as ContourMode, icon: "🌡", label: "Weather" },
+          { key: "dem" as ContourMode, icon: "⛰", label: "DEM Tools" },
         ]).map((m) => (
           <button
             key={m.key}
@@ -368,17 +408,22 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
       {/* ── Header ── */}
       <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3">
         <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider mb-0.5">
-          {mode === "elevation" ? "Elevation & Contours" : "Weather & Isotherms"}
+          {mode === "elevation" ? "Elevation & Contours" : mode === "weather" ? "Weather & Isotherms" : "DEM Tools"}
         </p>
         <p className="text-xs text-slate-300">
           {mode === "elevation"
             ? "Open-Meteo weather · DEM terrain · client-side contour interpolation"
-            : "Open-Meteo current temperature · client-side isotherm interpolation"}
+            : mode === "weather"
+            ? "Open-Meteo current temperature · client-side isotherm interpolation"
+            : "Visualize one elevation raster: color, light, steepness, direction, lines and curvature"}
         </p>
       </div>
 
-      {/* ── Weather (shared current conditions card) ── */}
-      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-3">
+        </>
+      )}
+
+      {/* ── Weather (shared current conditions card) — hidden in DEM mode ── */}
+      <div className={`bg-white/[0.03] border border-white/[0.07] rounded-xl p-3 ${mode === "dem" || (controlledMode != null && mode !== "weather") ? "hidden" : ""}`}>
         <div className="flex items-center justify-between mb-2">
           <p className="text-[0.62rem] text-slate-500 uppercase tracking-wider">Weather · {center.lat.toFixed(3)}, {center.lng.toFixed(3)}</p>
           <button
@@ -681,147 +726,25 @@ export default function ElevationContourPanel({ selectedFeature, onContoursGener
           </p>
         </>
       )}
-    </div>
-  );
-}
 
-// ── FloatingElevationPanel ────────────────────────────────────────────────────
-// Draggable floating panel that wraps ElevationContourPanel and renders above
-// the map. Import and use this instead of ElevationContourPanel directly when
-// you want a free-floating widget over the map canvas.
-//
-// Usage example (inside your Map component):
-//   import { FloatingElevationPanel } from "./ElevationContourPanel";
-//   const [open, setOpen] = useState(false);
-//   <FloatingElevationPanel
-//     open={open}
-//     onClose={() => setOpen(false)}
-//     selectedFeature={activeFeature}
-//     onContoursGenerated={handleContours}
-//   />
-
-interface FloatingProps extends Props {
-  /** whether the panel is visible */
-  open: boolean;
-  /** called when the user clicks × */
-  onClose: () => void;
-  /** starting position in px from viewport top-left — defaults to {x:16, y:16} */
-  initialPosition?: { x: number; y: number };
-}
-
-export function FloatingElevationPanel({
-  open,
-  onClose,
-  initialPosition = { x: 16, y: 16 },
-  ...panelProps
-}: FloatingProps) {
-  const [pos, setPos] = useState(initialPosition);
-  const [collapsed, setCollapsed] = useState(false);
-  const dragging = useRef(false);
-  const origin = useRef({ mx: 0, my: 0, px: 0, py: 0 });
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  // ── drag ────────────────────────────────────────────────────────────────
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
-    dragging.current = true;
-    origin.current = { mx: e.clientX, my: e.clientY, px: pos.x, py: pos.y };
-    e.preventDefault();
-  }, [pos]);
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragging.current) return;
-      setPos({
-        x: origin.current.px + (e.clientX - origin.current.mx),
-        y: origin.current.py + (e.clientY - origin.current.my),
-      });
-    };
-    const onUp = () => { dragging.current = false; };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, []);
-
-  if (!open) return null;
-
-  return (
-    <div
-      ref={panelRef}
-      style={{
-        position: "fixed",
-        left: pos.x,
-        top: pos.y,
-        zIndex: 1000,
-        width: 320,
-      }}
-      className="flex flex-col rounded-2xl overflow-hidden
-        shadow-[0_8px_40px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.06)]
-        border border-white/[0.08]
-        bg-[#040d1a]/90 "
-    >
-      {/* ── header / drag handle ── */}
-      <div
-        onMouseDown={onMouseDown}
-        className="flex items-center gap-2 px-3.5 py-2.5
-          cursor-grab active:cursor-grabbing select-none
-          border-b border-white/[0.07] bg-white/[0.025]"
-      >
-        {/* grip dots */}
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-slate-600 shrink-0">
-          {([0, 4, 8] as const).map((cy) =>
-            ([0, 4, 8] as const).map((cx) => (
-              <circle key={`${cx}-${cy}`} cx={cx + 2} cy={cy + 2} r="1" fill="currentColor" />
-            ))
-          )}
-        </svg>
-
-        <span className="flex-1 text-[0.68rem] font-semibold text-slate-300 tracking-wide truncate">
-          Elevation &amp; Weather Contours
-        </span>
-
-        {/* collapse */}
-        <button
-          onClick={() => setCollapsed((c) => !c)}
-          className="w-6 h-6 flex items-center justify-center rounded
-            hover:bg-white/[0.08] text-slate-500 hover:text-slate-300
-            transition-colors cursor-pointer"
-          title={collapsed ? "Expand" : "Collapse"}
-        >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8">
-            {collapsed ? (
-              <path d="M2 3.5l3 3 3-3" />
-            ) : (
-              <path d="M2 6.5l3-3 3 3" />
-            )}
-          </svg>
-        </button>
-
-        {/* close */}
-        <button
-          onClick={onClose}
-          className="w-6 h-6 flex items-center justify-center rounded
-            hover:bg-red-500/20 text-slate-500 hover:text-red-400
-            transition-colors cursor-pointer"
-          title="Close panel"
-        >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8">
-            <path d="M2 2l6 6M8 2l-6 6" />
-          </svg>
-        </button>
-      </div>
-
-      {/* ── scrollable content ── */}
-      {!collapsed && (
-        <div
-          className="overflow-y-auto p-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-white/10"
-          style={{ maxHeight: "calc(100vh - 96px)" }}
-        >
-          <ElevationContourPanel {...panelProps} />
-        </div>
+      {/* ════════════════════════════════════════════════════════════════ */}
+      {/* DEM TOOLS MODE */}
+      {/* ════════════════════════════════════════════════════════════════ */}
+      {mode === "dem" && (
+        <DemToolsSection
+          grid={grid}
+          bounds={bounds}
+          selectedFeature={selectedFeature}
+          areaWarning={areaWarning}
+          resolution={resolution}
+          onResolutionChange={setResolution}
+          loading={demLoading}
+          error={demError}
+          onLoadDem={loadDem}
+          clip={clipToAoi}
+          onSendToMap={sendToMap}
+          notice={notice}
+        />
       )}
     </div>
   );
